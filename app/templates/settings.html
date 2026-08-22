@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Settings · Upstream Healer{% endblock %}
+
+{% block content %}
+<div class="max-w-xl">
+  <h1 class="text-2xl font-bold text-slate-900 mb-6">Settings</h1>
+
+  <div class="bg-white rounded-xl border border-slate-200 p-6 space-y-4 shadow-sm">
+    <div class="flex justify-between text-sm">
+      <span class="text-slate-500">Default grace period</span>
+      <span class="font-medium">{{ conf.get('grace_minutes', '10') }} minutes</span>
+    </div>
+    <div class="flex justify-between text-sm">
+      <span class="text-slate-500">Check interval</span>
+      <span class="font-medium">{{ conf.get('check_interval_seconds', '60') }} seconds</span>
+    </div>
+    <p class="text-xs text-slate-400 pt-2">
+      More settings (including changing defaults globally) will be added in a future update.
+      Per-host grace period can already be changed on each host’s edit page.
+    </p>
+  </div>
+
+  <div class="mt-8 bg-amber-50 border border-amber-100 rounded-xl p-5 text-sm text-amber-900">
+    <p class="font-medium mb-1">Future remote access</p>
+    <p>
+      The UI currently listens on all interfaces (port 8787).  
+      When you set up the VPN between houses, simply access it over the VPN.  
+      No public exposure is required. You can later add a reverse-proxy rule in NPM with IP restriction or mutual TLS if needed.
+    </p>
+  </div>
+</div>
+{% endblock %}

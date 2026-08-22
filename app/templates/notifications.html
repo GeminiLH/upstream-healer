@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Notifications · Upstream Healer{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-8">
+  <div>
+    <h1 class="text-2xl font-bold text-slate-900">Notifications</h1>
+    <p class="text-slate-500 text-sm mt-1">Telegram & Email channels + per-event toggles</p>
+  </div>
+  <div class="flex gap-2">
+    <a href="/notifications/add/telegram"
+       class="px-4 py-2 bg-sky-600 text-white text-sm font-medium rounded-lg hover:bg-sky-700">
+      + Telegram
+    </a>
+    <a href="/notifications/add/email"
+       class="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700">
+      + Email
+    </a>
+  </div>
+</div>
+
+{% if not channels %}
+<div class="bg-white rounded-xl border border-slate-200 p-10 text-center text-slate-500">
+  No notification channels yet. Add Telegram and/or Email to start receiving alerts.
+</div>
+{% else %}
+
+<div class="space-y-6">
+  {% for ch in channels %}
+  <div class="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+    <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="font-semibold text-slate-800">{{ ch.name }}</span>
+        <span class="text-xs px-2 py-0.5 rounded-full
+          {% if ch.type == 'telegram' %}bg-sky-100 text-sky-700{% else %}bg-emerald-100 text-emerald-700{% endif %}">
+          {{ ch.type }}
+        </span>
+        {% if ch.enabled %}
+          <span class="text-xs text-emerald-600">Enabled</span>
+        {% else %}
+          <span class="text-xs text-slate-400">Disabled</span>
+        {% endif %}
+      </div>
+      <div class="flex gap-2">
+        <form method="post" action="/notifications/channel/{{ ch.id }}/toggle">
+          <button class="text-sm text-slate-600 hover:text-brand-600">
+            {% if ch.enabled %}Disable{% else %}Enable{% endif %}
+          </button>
+        </form>
+        <form method="post" action="/notifications/channel/{{ ch.id }}/delete"
+              onsubmit="return confirm('Delete this channel?')">
+          <button class="text-sm text-red-500 hover:text-red-700">Delete</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="px-5 py-4">
+      <p class="text-xs text-slate-400 mb-3">Which events should this channel receive?</p>
+      <div class="flex flex-wrap gap-2">
+        {% for et in event_types %}
+        <form method="post" action="/notifications/rule/{{ ch.id }}/{{ et }}/toggle">
+          <button type="submit"
+                  class="px-3 py-1.5 text-xs rounded-full border transition
+                  {% if ch.rules.get(et) %}
+                    bg-brand-50 border-brand-300 text-brand-700
+                  {% else %}
+                    bg-slate-50 border-slate-200 text-slate-400
+                  {% endif %}">
+            {{ et }}
+          </button>
+        </form>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

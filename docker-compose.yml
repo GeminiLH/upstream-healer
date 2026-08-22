@@ -1,0 +1,18 @@
+services:
+  upstream-healer:
+    build: .
+    container_name: upstream-healer
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - healer-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=America/New_York
+      # Optional: pre-seed if you want (otherwise use the UI)
+      # - TELEGRAM_BOT_TOKEN=your_token_here
+    # The UI will be available on http://<pi-ip>:8787
+    # network_mode: host is required for proper LAN ARP scanning
+
+volumes:
+  healer-data:
