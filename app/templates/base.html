@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<html lang="en" class="h-full">
+<html lang="en" class="h-full" id="html-root">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,49 +8,180 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
+      darkMode: 'class',
       theme: {
         extend: {
           colors: {
             brand: {
               50: '#f0f9ff',
               100: '#e0f2fe',
+              400: '#38bdf8',
               500: '#0ea5e9',
               600: '#0284c7',
               700: '#0369a1',
+              800: '#075985',
               900: '#0c4a6e',
             }
           }
         }
       }
     }
+
+    // Apply saved theme as early as possible to avoid flash
+    if (localStorage.getItem('theme') === 'dark' ||
+      (!localStorage.getItem('theme') && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
   </script>
   <style>
-    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    /* ========== Form controls – high contrast in both modes ========== */
+    input[type="text"],
+    input[type="number"],
+    input[type="password"],
+    input[type="email"],
+    select,
+    textarea {
+      background-color: #ffffff !important;
+      color: #0f172a !important;
+      /* slate-900 */
+      border: 1px solid #94a3b8 !important;
+      /* slate-400 */
+      border-radius: 0.5rem;
+    }
+
+    .dark input[type="text"],
+    .dark input[type="number"],
+    .dark input[type="password"],
+    .dark input[type="email"],
+    .dark select,
+    .dark textarea {
+      background-color: #0f172a !important;
+      /* slate-900 */
+      color: #f1f5f9 !important;
+      /* slate-100 */
+      border: 1px solid #64748b !important;
+      /* slate-500 */
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+      color: #64748b !important;
+      /* slate-500 */
+      opacity: 1;
+    }
+
+    .dark input::placeholder,
+    .dark textarea::placeholder {
+      color: #94a3b8 !important;
+      /* slate-400 */
+    }
+
+    /* ========== Event toggle buttons (Notifications page) ========== */
+    .event-btn {
+      padding: 0.35rem 0.75rem;
+      font-size: 0.75rem;
+      border-radius: 9999px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      color: #64748b;
+      transition: all 0.15s;
+    }
+
+    .event-btn:hover {
+      border-color: #94a3b8;
+    }
+
+    .event-btn.active {
+      background: #0ea5e9;
+      /* brand-500 */
+      border-color: #0284c7;
+      /* brand-600 */
+      color: white;
+      font-weight: 600;
+    }
+
+    .dark .event-btn {
+      background: #1e293b;
+      border-color: #475569;
+      color: #94a3b8;
+    }
+
+    .dark .event-btn.active {
+      background: #0ea5e9;
+      border-color: #38bdf8;
+      color: white;
+    }
+
+    /* Cancel / secondary buttons */
+    .btn-secondary {
+      background: #f1f5f9;
+      color: #1e293b;
+      border: 1px solid #94a3b8;
+    }
+
+    .btn-secondary:hover {
+      background: #e2e8f0;
+    }
+
+    .dark .btn-secondary {
+      background: #334155;
+      color: #f1f5f9;
+      border-color: #64748b;
+    }
+
+    .dark .btn-secondary:hover {
+      background: #475569;
+    }
   </style>
 </head>
-<body class="h-full bg-slate-50 text-slate-800">
+
+<body class="h-full bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100 transition-colors duration-200">
   <div class="min-h-full">
     <!-- Nav -->
-    <nav class="bg-white border-b border-slate-200">
+    <nav class="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
       <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-14">
           <div class="flex items-center gap-8">
-            <a href="/" class="flex items-center gap-2 font-semibold text-brand-700">
+            <a href="/" class="flex items-center gap-2 font-semibold text-brand-700 dark:text-brand-400">
               <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                  d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
               </svg>
               Upstream Healer
             </a>
-            <div class="hidden sm:flex gap-4 text-sm">
-              <a href="/" class="text-slate-600 hover:text-brand-600">Dashboard</a>
-              <a href="/hosts/add" class="text-slate-600 hover:text-brand-600">Add Host</a>
-              <a href="/notifications" class="text-slate-600 hover:text-brand-600">Notifications</a>
-              <a href="/settings" class="text-slate-600 hover:text-brand-600">Settings</a>
+            <div class="hidden sm:flex gap-5 text-sm font-medium">
+              <a href="/"
+                class="text-slate-600 hover:text-brand-600 dark:text-slate-300 dark:hover:text-brand-400">Dashboard</a>
+              <a href="/hosts/add"
+                class="text-slate-600 hover:text-brand-600 dark:text-slate-300 dark:hover:text-brand-400">Add Host</a>
+              <a href="/notifications"
+                class="text-slate-600 hover:text-brand-600 dark:text-slate-300 dark:hover:text-brand-400">Notifications</a>
+              <a href="/settings"
+                class="text-slate-600 hover:text-brand-600 dark:text-slate-300 dark:hover:text-brand-400">Settings</a>
             </div>
           </div>
-          <div class="flex items-center text-xs text-slate-400">
-            v1 · Raspberry Pi
+
+          <div class="flex items-center gap-4">
+            <!-- Dark mode toggle -->
+            <button id="theme-toggle" type="button"
+              class="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 dark:text-slate-300"
+              title="Toggle dark mode">
+              <!-- Sun icon (shown in dark mode) -->
+              <svg id="icon-sun" class="w-5 h-5 hidden" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd"
+                  d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
+                  clip-rule="evenodd" />
+              </svg>
+              <!-- Moon icon (shown in light mode) -->
+              <svg id="icon-moon" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
+              </svg>
+            </button>
+            <span class="text-xs text-slate-400 dark:text-slate-500">v1</span>
           </div>
         </div>
       </div>
@@ -59,5 +191,27 @@
       {% block content %}{% endblock %}
     </main>
   </div>
+
+  <script>
+    const html = document.getElementById('html-root');
+    const toggle = document.getElementById('theme-toggle');
+    const iconSun = document.getElementById('icon-sun');
+    const iconMoon = document.getElementById('icon-moon');
+
+    function updateIcons() {
+      const isDark = html.classList.contains('dark');
+      iconSun.classList.toggle('hidden', !isDark);
+      iconMoon.classList.toggle('hidden', isDark);
+    }
+
+    toggle.addEventListener('click', () => {
+      html.classList.toggle('dark');
+      localStorage.setItem('theme', html.classList.contains('dark') ? 'dark' : 'light');
+      updateIcons();
+    });
+
+    updateIcons();
+  </script>
 </body>
+
 </html>

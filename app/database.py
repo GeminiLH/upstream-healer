@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS host_state (
 
 DEFAULT_SETTINGS = {
     "grace_minutes": "10",
-    "check_interval_seconds": "60",
+    "check_interval_seconds": "600",
     "telegram_enabled": "1",
     "email_enabled": "1",
 }

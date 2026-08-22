@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # Defaults
     default_grace_minutes: int = 10
-    check_interval_seconds: int = 60
+    check_interval_seconds: int = 600
     scan_timeout_seconds: int = 30
 
     # UI

@@ -1,18 +1,17 @@
 """
 LAN scanner – finds devices by MAC address.
 Uses arp-scan when available, falls back to scapy.
+Designed to be quiet on Windows (local development).
 """
+from __future__ import annotations
+
 import asyncio
+import logging
 import re
 import subprocess
 from typing import Optional
-from scapy.all import ARP, Ether, srp, conf
-import logging
 
 logger = logging.getLogger("healer.scanner")
-
-# Suppress scapy verbosity
-conf.verb = 0
 
 
 def normalize_mac(mac: str) -> str:
@@ -25,7 +24,7 @@ def normalize_mac(mac: str) -> str:
     return mac
 
 
-async def find_ip_by_mac(target_mac: str, interface: str = None) -> Optional[str]:
+async def find_ip_by_mac(target_mac: str, interface: Optional[str] = None) -> Optional[str]:
     """
     Search the local network for a device with the given MAC.
     Returns the IP address if found, else None.
@@ -38,14 +37,13 @@ async def find_ip_by_mac(target_mac: str, interface: str = None) -> Optional[str
     if ip:
         return ip
 
-    # Fallback to scapy
+    # Fallback to scapy (mainly useful on Linux)
     ip = await _scan_with_scapy(target_mac, interface)
     return ip
 
 
 async def _scan_with_arp_scan(target_mac: str) -> Optional[str]:
     try:
-        # arp-scan -l  (local network)
         proc = await asyncio.create_subprocess_exec(
             "arp-scan",
             "-l",
@@ -54,14 +52,15 @@ async def _scan_with_arp_scan(target_mac: str) -> Optional[str]:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=45)
         output = stdout.decode(errors="ignore")
 
         for line in output.splitlines():
             # Typical line: 192.168.86.23  aa:bb:cc:dd:ee:ff  Some Vendor
             parts = line.split()
             if len(parts) >= 2:
-                ip, mac = parts[0], normalize_mac(parts[1])
+                ip = parts[0]
+                mac = normalize_mac(parts[1])
                 if mac == target_mac:
                     logger.info(f"Found {target_mac} at {ip} via arp-scan")
                     return ip
@@ -72,13 +71,15 @@ async def _scan_with_arp_scan(target_mac: str) -> Optional[str]:
     return None
 
 
-async def _scan_with_scapy(target_mac: str, interface: str = None) -> Optional[str]:
+async def _scan_with_scapy(target_mac: str, interface: Optional[str] = None) -> Optional[str]:
     try:
-        # Determine local network
-        # We send ARP who-has to the whole /24 of the primary interface
-        conf.iface = interface  # None = default
+        # Import scapy only when needed (avoids Windows noise at startup)
+        from scapy.all import ARP, Ether, srp, conf  # type: ignore
 
-        # Get local IP to derive network
+        conf.verb = 0
+        if interface:
+            conf.iface = interface
+
         local_ip = _get_primary_ip()
         if not local_ip:
             logger.error("Could not determine local IP")
@@ -87,14 +88,14 @@ async def _scan_with_scapy(target_mac: str, interface: str = None) -> Optional[s
         network = ".".join(local_ip.split(".")[:3]) + ".0/24"
         logger.info(f"Scapy scanning {network}")
 
-        def _do_scan():
+        def _do_scan() -> Optional[str]:
             ans, _ = srp(
                 Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network),
                 timeout=3,
                 retry=2,
                 verbose=0,
             )
-            for sent, received in ans:
+            for _, received in ans:
                 if normalize_mac(received.hwsrc) == target_mac:
                     return received.psrc
             return None
@@ -103,12 +104,17 @@ async def _scan_with_scapy(target_mac: str, interface: str = None) -> Optional[s
         if ip:
             logger.info(f"Found {target_mac} at {ip} via scapy")
         return ip
+    except ImportError:
+        logger.debug("scapy not available")
+        return None
     except Exception as e:
         logger.error(f"Scapy scan failed: {e}")
         return None
 
 
 def _get_primary_ip() -> Optional[str]:
+    """Best-effort way to get the primary local IPv4 address."""
+    # Linux
     try:
         result = subprocess.run(
             ["ip", "-4", "route", "get", "1.1.1.1"],
@@ -116,12 +122,24 @@ def _get_primary_ip() -> Optional[str]:
             text=True,
             timeout=5,
         )
-        # Example: 1.1.1.1 via 192.168.86.1 dev eth0 src 192.168.86.10 uid 0
         match = re.search(r"src\s+(\d+\.\d+\.\d+\.\d+)", result.stdout)
         if match:
             return match.group(1)
     except Exception:
         pass
+
+    # Fallback for Windows / other systems
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(1)
+        s.connect(("1.1.1.1", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        pass
+
     return None
 
 
