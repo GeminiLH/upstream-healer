@@ -22,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_host.add_argument("--mac", required=True)
     add_host.add_argument("--ip", default=None)
     add_host.add_argument("--domain", default=None)
+    add_host.add_argument("--port", type=int, default=80, help="Port to monitor (default: 80)")
     add_host.add_argument("--npm-proxy-host-id", type=int, default=None,
                           help="Optional Nginx Proxy Manager proxy host ID")
     add_host.add_argument("--grace-minutes", type=int, default=10)
@@ -53,18 +54,21 @@ def build_parser() -> argparse.ArgumentParser:
 async def add_host(args: argparse.Namespace, db: aiosqlite.Connection) -> None:
     if args.grace_minutes < 0:
         raise ValueError("--grace-minutes must be zero or greater")
+    if not 1 <= args.port <= 65535:
+        raise ValueError("--port must be between 1 and 65535")
     now = current_time().isoformat()
     cursor = await db.execute(
         """INSERT INTO hosts
-           (name, domain, mac_address, current_ip, npm_proxy_host_id,
+           (name, domain, mac_address, current_ip, npm_proxy_host_id, port,
             grace_minutes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             args.name,
             args.domain,
             normalize_mac(args.mac),
             args.ip,
             args.npm_proxy_host_id,
+            args.port,
             args.grace_minutes,
             now,
             now,
@@ -82,8 +86,8 @@ async def add_host(args: argparse.Namespace, db: aiosqlite.Connection) -> None:
 async def list_hosts(db: aiosqlite.Connection) -> None:
     db.row_factory = aiosqlite.Row
     async with db.execute(
-        """SELECT h.id, h.name, h.domain, h.mac_address, h.current_ip,
-                  h.grace_minutes, h.enabled, s.status
+        """SELECT h.id, h.name, h.domain, h.mac_address, h.current_ip, h.port,
+              h.grace_minutes, h.enabled, s.status
            FROM hosts h LEFT JOIN host_state s ON s.host_id = h.id
            ORDER BY h.id"""
     ) as cursor:

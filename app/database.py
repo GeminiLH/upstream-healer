@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS hosts (
     mac_address TEXT NOT NULL UNIQUE,
     current_ip TEXT,
     npm_proxy_host_id INTEGER,
+    port INTEGER NOT NULL DEFAULT 80,
     grace_minutes INTEGER DEFAULT 10,
     enabled INTEGER DEFAULT 1,
     notes TEXT,
@@ -72,6 +73,10 @@ async def init_db():
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(settings.db_path) as db:
         await db.executescript(SCHEMA)
+        async with db.execute("PRAGMA table_info(hosts)") as cursor:
+            host_columns = {row[1] for row in await cursor.fetchall()}
+        if "port" not in host_columns:
+            await db.execute("ALTER TABLE hosts ADD COLUMN port INTEGER NOT NULL DEFAULT 80")
         # Seed default settings if empty
         async with db.execute("SELECT COUNT(*) FROM settings") as cursor:
             count = (await cursor.fetchone())[0]

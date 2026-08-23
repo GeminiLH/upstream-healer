@@ -49,7 +49,7 @@ The same configuration can be managed without the UI from the host running Docke
 
 ```bash
 # Add and list monitored hosts
-docker exec upstream-healer python -m app.cli add-host --name vault --mac aa:bb:cc:dd:ee:ff --ip 192.168.1.20 --domain vault.example.com
+docker exec upstream-healer python -m app.cli add-host --name vault --mac aa:bb:cc:dd:ee:ff --ip 192.168.1.20 --port 8080 --domain vault.example.com
 docker exec upstream-healer python -m app.cli list-hosts
 
 # List the 10 most recent events from the last day

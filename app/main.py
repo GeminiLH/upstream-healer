@@ -102,6 +102,7 @@ async def add_host(
     domain: str = Form(""),
     mac_address: str = Form(...),
     current_ip: str = Form(""),
+    port: int = Form(80),
     npm_proxy_host_id: str = Form(""),
     grace_minutes: int = Form(10),
     notes: str = Form(""),
@@ -109,11 +110,13 @@ async def add_host(
 ):
     mac = normalize_mac(mac_address)
     npm_id = int(npm_proxy_host_id) if npm_proxy_host_id.strip() else None
+    if not 1 <= port <= 65535:
+        raise HTTPException(400, "Port must be between 1 and 65535")
 
     await db.execute(
-            """INSERT INTO hosts (name, domain, mac_address, current_ip, npm_proxy_host_id, grace_minutes, notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, domain, mac, current_ip or None, npm_id, grace_minutes, notes,
+            """INSERT INTO hosts (name, domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes,
             current_time().isoformat(), current_time().isoformat()),
     )
     await db.commit()
@@ -154,6 +157,7 @@ async def edit_host(
     domain: str = Form(""),
     mac_address: str = Form(...),
     current_ip: str = Form(""),
+    port: int = Form(80),
     npm_proxy_host_id: str = Form(""),
     grace_minutes: int = Form(10),
     notes: str = Form(""),
@@ -163,14 +167,16 @@ async def edit_host(
     mac = normalize_mac(mac_address)
     npm_id = int(npm_proxy_host_id) if npm_proxy_host_id.strip() else None
     is_enabled = 1 if enabled == "on" else 0
+    if not 1 <= port <= 65535:
+        raise HTTPException(400, "Port must be between 1 and 65535")
 
     await db.execute(
         """UPDATE hosts SET
             name = ?, domain = ?, mac_address = ?, current_ip = ?,
-            npm_proxy_host_id = ?, grace_minutes = ?, notes = ?, enabled = ?,
+            npm_proxy_host_id = ?, port = ?, grace_minutes = ?, notes = ?, enabled = ?,
                 updated_at = ?
             WHERE id = ?""",
-            (name, domain, mac, current_ip or None, npm_id, grace_minutes, notes, is_enabled,
+            (name, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes, is_enabled,
             current_time().isoformat(), host_id),
     )
     await db.commit()

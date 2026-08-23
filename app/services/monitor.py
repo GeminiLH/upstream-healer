@@ -70,6 +70,7 @@ class Monitor:
         name = host["name"]
         current_ip = host["current_ip"] or host["last_ip"]
         mac = host["mac_address"]
+        port = host["port"] or 80
         grace_minutes = host["grace_minutes"] or settings.default_grace_minutes
         status = host["status"] or "unknown"
         unreachable_since = host["unreachable_since"]
@@ -87,7 +88,7 @@ class Monitor:
             logger.warning(f"Host {name} has no current IP – skipping reachability check")
             return
 
-        reachable = await check_host_reachable(current_ip, port=80)
+        reachable = await check_host_reachable(current_ip, port=port)
 
         if reachable:
             # Healthy
@@ -256,7 +257,7 @@ class Monitor:
 
         # Final reachability check
         await asyncio.sleep(2)
-        if await check_host_reachable(new_ip):
+        if await check_host_reachable(new_ip, port=port):
             await send_event(
                 db,
                 "recovered",

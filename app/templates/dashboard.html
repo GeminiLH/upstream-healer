@@ -65,6 +65,7 @@
           <div><span class="text-slate-400">Domain:</span> {{ h.domain or '—' }}</div>
           <div><span class="text-slate-400">Current IP:</span> <code
               class="text-slate-800">{{ h.current_ip or h.last_ip or '—' }}</code></div>
+          <div><span class="text-slate-400">Monitor port:</span> {{ h.port or 80 }}</div>
           <div><span class="text-slate-400">MAC:</span> <code class="text-slate-800">{{ h.mac_address }}</code></div>
           <div><span class="text-slate-400">NPM Host ID:</span> {{ h.npm_proxy_host_id or '—' }}</div>
           <div><span class="text-slate-400">Grace period:</span> {{ h.grace_minutes }} min</div>
