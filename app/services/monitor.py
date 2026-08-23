@@ -90,10 +90,28 @@ class Monitor:
         if quiet_active != previous_quiet_active or (quiet_active and quiet_mode != previous_quiet_mode):
             transition = "started" if quiet_active else "ended"
             mode_label = quiet_mode if quiet_active else (previous_quiet_mode or quiet_mode)
+            mode_description = (
+                "SUPPRESS notifications; monitoring continues"
+                if mode_label == "suppress"
+                else "DELETE checks; monitoring is paused"
+            )
+            transition_description = (
+                "Notifications are suppressed for this host"
+                if transition == "started" and mode_label == "suppress"
+                else "Monitoring is paused for this host"
+                if transition == "started"
+                else "Notifications resume for this host"
+                if mode_label == "suppress"
+                else "Monitoring resumes for this host"
+            )
             await send_event(
                 db,
                 "quiet_time",
-                    f"⏱️ Quiet time {transition} for {name}: {'suppress notifications' if mode_label == 'suppress' else 'stop monitoring and delete checks'}.",
+                f"⏱️ Quiet time {transition.upper()} for {name}: {mode_description}.",
+                details=(
+                    f"{transition_description}. Quiet window: "
+                    f"{host['quiet_start'] or 'not set'} to {host['quiet_end'] or 'not set'}."
+                ),
                 host_id=host_id,
                 notify=False,
             )
