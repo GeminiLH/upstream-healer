@@ -213,7 +213,7 @@ class Monitor:
             await send_event(
                 db,
                 "failed",
-                f"❌ Could not find {name} on the network (MAC {mac}). Manual intervention needed.",
+                f"❌ Could not find {name} on the network using the configured MAC address. Manual intervention needed.",
                 host_id=host_id,
                 notify=notify,
             )
