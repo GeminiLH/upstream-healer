@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS hosts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     local_device_name TEXT,
+    quiet_enabled INTEGER DEFAULT 0,
+    quiet_start TEXT,
+    quiet_end TEXT,
+    quiet_mode TEXT DEFAULT 'suppress',
     domain TEXT,
     mac_address TEXT NOT NULL,
     current_ip TEXT,
@@ -59,6 +63,8 @@ CREATE TABLE IF NOT EXISTS host_state (
     unreachable_since TEXT,
     last_check_at TEXT,
     last_ip TEXT,
+    quiet_active INTEGER DEFAULT 0,
+    quiet_mode TEXT,
     FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE
 );
 """
@@ -77,8 +83,25 @@ async def init_db():
         await db.executescript(SCHEMA)
         async with db.execute("PRAGMA table_info(hosts)") as cursor:
             host_columns = {row[1] for row in await cursor.fetchall()}
-        if "port" not in host_columns:
-            await db.execute("ALTER TABLE hosts ADD COLUMN port INTEGER NOT NULL DEFAULT 80")
+        host_columns_to_add = {
+            "local_device_name": "TEXT",
+            "quiet_enabled": "INTEGER DEFAULT 0",
+            "quiet_start": "TEXT",
+            "quiet_end": "TEXT",
+            "quiet_mode": "TEXT DEFAULT 'suppress'",
+            "port": "INTEGER NOT NULL DEFAULT 80",
+        }
+        for column, definition in host_columns_to_add.items():
+            if column not in host_columns:
+                await db.execute(f"ALTER TABLE hosts ADD COLUMN {column} {definition}")
+        async with db.execute("PRAGMA table_info(host_state)") as cursor:
+            state_columns = {row[1] for row in await cursor.fetchall()}
+        for column, definition in {
+            "quiet_active": "INTEGER DEFAULT 0",
+            "quiet_mode": "TEXT",
+        }.items():
+            if column not in state_columns:
+                await db.execute(f"ALTER TABLE host_state ADD COLUMN {column} {definition}")
         await _migrate_host_identity(db)
         # Seed default settings if empty
         async with db.execute("SELECT COUNT(*) FROM settings") as cursor:
@@ -110,6 +133,11 @@ async def _migrate_host_identity(db: aiosqlite.Connection):
         await db.execute("""CREATE TABLE hosts_new (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            local_device_name TEXT,
+            quiet_enabled INTEGER DEFAULT 0,
+            quiet_start TEXT,
+            quiet_end TEXT,
+            quiet_mode TEXT DEFAULT 'suppress',
             domain TEXT,
             mac_address TEXT NOT NULL,
             current_ip TEXT,
@@ -123,10 +151,12 @@ async def _migrate_host_identity(db: aiosqlite.Connection):
             UNIQUE (mac_address, port)
         )""")
         await db.execute("""INSERT INTO hosts_new
-            (id, name, domain, mac_address, current_ip, npm_proxy_host_id, port,
-             grace_minutes, enabled, notes, created_at, updated_at)
-            SELECT id, name, domain, mac_address, current_ip, npm_proxy_host_id, port,
-                   grace_minutes, enabled, notes, created_at, updated_at
+             (id, name, local_device_name, quiet_enabled, quiet_start, quiet_end, quiet_mode,
+              domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes,
+              enabled, notes, created_at, updated_at)
+             SELECT id, name, local_device_name, quiet_enabled, quiet_start, quiet_end, quiet_mode,
+                 domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes,
+                 enabled, notes, created_at, updated_at
             FROM hosts""")
         await db.execute("DROP TABLE hosts")
         await db.execute("ALTER TABLE hosts_new RENAME TO hosts")

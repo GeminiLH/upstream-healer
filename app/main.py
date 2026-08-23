@@ -136,6 +136,10 @@ async def add_host_form(request: Request):
 async def add_host(
     name: str = Form(...),
     local_device_name: str = Form(""),
+    quiet_enabled: str = Form("off"),
+    quiet_start: str = Form(""),
+    quiet_end: str = Form(""),
+    quiet_mode: str = Form("suppress"),
     domain: str = Form(""),
     mac_address: str = Form(...),
     current_ip: str = Form(""),
@@ -151,9 +155,12 @@ async def add_host(
         raise HTTPException(400, "Port must be between 1 and 65535")
 
     await db.execute(
-            """INSERT INTO hosts (name, local_device_name, domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes, notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, local_device_name or None, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes,
+            """INSERT INTO hosts (name, local_device_name, quiet_enabled, quiet_start, quiet_end, quiet_mode,
+                domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, local_device_name or None, quiet_enabled == "on", quiet_start or None, quiet_end or None,
+             quiet_mode if quiet_mode in ("suppress", "delete") else "suppress", domain, mac, current_ip or None,
+             npm_id, port, grace_minutes, notes,
             current_time().isoformat(), current_time().isoformat()),
     )
     await db.commit()
@@ -192,6 +199,10 @@ async def edit_host(
     host_id: int,
     name: str = Form(...),
     local_device_name: str = Form(""),
+    quiet_enabled: str = Form("off"),
+    quiet_start: str = Form(""),
+    quiet_end: str = Form(""),
+    quiet_mode: str = Form("suppress"),
     domain: str = Form(""),
     mac_address: str = Form(...),
     current_ip: str = Form(""),
@@ -210,11 +221,14 @@ async def edit_host(
 
     await db.execute(
         """UPDATE hosts SET
-            name = ?, local_device_name = ?, domain = ?, mac_address = ?, current_ip = ?,
+            name = ?, local_device_name = ?, quiet_enabled = ?, quiet_start = ?, quiet_end = ?, quiet_mode = ?,
+            domain = ?, mac_address = ?, current_ip = ?,
             npm_proxy_host_id = ?, port = ?, grace_minutes = ?, notes = ?, enabled = ?,
                 updated_at = ?
             WHERE id = ?""",
-            (name, local_device_name or None, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes, is_enabled,
+            (name, local_device_name or None, quiet_enabled == "on", quiet_start or None, quiet_end or None,
+             quiet_mode if quiet_mode in ("suppress", "delete") else "suppress", domain, mac, current_ip or None,
+             npm_id, port, grace_minutes, notes, is_enabled,
             current_time().isoformat(), host_id),
     )
     await db.commit()

@@ -35,6 +35,42 @@
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
     </div>
 
+    <fieldset class="space-y-3 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+      <legend class="px-1 text-sm font-medium text-slate-700 dark:text-slate-300">Quiet time</legend>
+      <div class="flex items-center gap-2">
+        <input type="checkbox" name="quiet_enabled" id="quiet_enabled" {% if host and host.quiet_enabled %}checked{%
+          endif %} class="rounded border-slate-300 dark:border-slate-600 text-brand-600 focus:ring-brand-500">
+        <label for="quiet_enabled" class="text-sm text-slate-700 dark:text-slate-300">Enable quiet time for this
+          host</label>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label for="quiet_start"
+            class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Start</label>
+          <input type="time" name="quiet_start" id="quiet_start" value="{{ host.quiet_start if host else '' }}"
+            class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+        </div>
+        <div>
+          <label for="quiet_end" class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">End</label>
+          <input type="time" name="quiet_end" id="quiet_end" value="{{ host.quiet_end if host else '' }}"
+            class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+        </div>
+      </div>
+      <div>
+        <label for="quiet_mode" class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">During quiet
+          time</label>
+        <select name="quiet_mode" id="quiet_mode"
+          class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+          <option value="suppress" {% if not host or host.quiet_mode !='delete' %}selected{% endif %}>Suppress
+            notifications, continue monitoring</option>
+          <option value="delete" {% if host and host.quiet_mode=='delete' %}selected{% endif %}>Stop monitoring and
+            delete checks</option>
+        </select>
+      </div>
+      <p class="text-xs text-slate-500 dark:text-slate-400">Times use the configured application timezone. Overnight
+        periods are supported.</p>
+    </fieldset>
+
     <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">MAC Address *</label>
       <input type="text" name="mac_address" required value="{{ host.mac_address if host else '' }}"

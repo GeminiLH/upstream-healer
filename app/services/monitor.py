@@ -3,7 +3,7 @@ Main monitoring & recovery loop.
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 import aiosqlite
 from app.config import settings
 from app.config import current_time
@@ -74,21 +74,44 @@ class Monitor:
         grace_minutes = host["grace_minutes"] or settings.default_grace_minutes
         status = host["status"] or "unknown"
         unreachable_since = host["unreachable_since"]
+        quiet_active, quiet_mode = self._quiet_state(host)
 
         now = current_time().isoformat()
 
-        # Ensure state row exists
+        # Ensure state row exists before recording quiet-time transitions.
         await db.execute(
             "INSERT OR IGNORE INTO host_state (host_id, status) VALUES (?, 'unknown')",
             (host_id,),
         )
         await db.commit()
 
+        previous_quiet_active = bool(host["quiet_active"] or 0)
+        previous_quiet_mode = host["quiet_mode"]
+        if quiet_active != previous_quiet_active or (quiet_active and quiet_mode != previous_quiet_mode):
+            transition = "started" if quiet_active else "ended"
+            mode_label = quiet_mode if quiet_active else (previous_quiet_mode or quiet_mode)
+            await send_event(
+                db,
+                "quiet_time",
+                    f"⏱️ Quiet time {transition} for {name}: {'suppress notifications' if mode_label == 'suppress' else 'stop monitoring and delete checks'}.",
+                host_id=host_id,
+                notify=False,
+            )
+        await db.execute(
+            "UPDATE host_state SET quiet_active = ?, quiet_mode = ? WHERE host_id = ?",
+            (int(quiet_active), quiet_mode if quiet_active else None, host_id),
+        )
+        await db.commit()
+
+        if quiet_active and quiet_mode == "delete":
+            return
+
         if not current_ip:
             logger.warning(f"Host {name} has no current IP – skipping reachability check")
             return
 
         reachable = await check_host_reachable(current_ip, port=port)
+        notifications_enabled = not (quiet_active and quiet_mode == "suppress")
 
         if reachable:
             # Healthy
@@ -98,6 +121,7 @@ class Monitor:
                     "recovered",
                     f"✅ {name} is reachable again at {current_ip}",
                     host_id=host_id,
+                    notify=notifications_enabled,
                 )
             await db.execute(
                 """UPDATE host_state SET
@@ -152,13 +176,14 @@ class Monitor:
                 return
 
             # Grace period expired → start recovery
-            await self._start_recovery(db, host)
+            await self._start_recovery(db, host, notify=notifications_enabled)
 
-    async def _start_recovery(self, db: aiosqlite.Connection, host):
+    async def _start_recovery(self, db: aiosqlite.Connection, host, notify: bool = True):
         host_id = host["id"]
         name = host["name"]
         mac = host["mac_address"]
         npm_id = host["npm_proxy_host_id"]
+        port = host["port"] or 80
 
         await db.execute(
             "UPDATE host_state SET status = 'recovering', last_check_at = ? WHERE host_id = ?",
@@ -171,6 +196,7 @@ class Monitor:
             "unreachable",
             f"⚠️ {name} has been unreachable longer than the grace period. Starting recovery.",
             host_id=host_id,
+            notify=notify,
         )
 
         await send_event(
@@ -178,6 +204,7 @@ class Monitor:
             "scan_started",
             f"🔍 Scanning local network for {name} (MAC {mac})",
             host_id=host_id,
+            notify=notify,
         )
 
         new_ip = await find_ip_by_mac(mac)
@@ -188,6 +215,7 @@ class Monitor:
                 "failed",
                 f"❌ Could not find {name} on the network (MAC {mac}). Manual intervention needed.",
                 host_id=host_id,
+                notify=notify,
             )
             await db.execute(
                 "UPDATE host_state SET status = 'unreachable' WHERE host_id = ?",
@@ -201,6 +229,7 @@ class Monitor:
             "ip_found",
             f"📍 Found {name} at new IP {new_ip}",
             host_id=host_id,
+            notify=notify,
         )
 
         # Update NPM
@@ -214,6 +243,7 @@ class Monitor:
                         "updated",
                         f"🔄 Updated NPM proxy host #{npm_id} to {new_ip} and reloaded nginx",
                         host_id=host_id,
+                        notify=notify,
                     )
                 else:
                     await send_event(
@@ -221,6 +251,7 @@ class Monitor:
                         "failed",
                         f"Updated IP in DB but nginx reload failed for {name}",
                         host_id=host_id,
+                        notify=notify,
                     )
             else:
                 await send_event(
@@ -228,6 +259,7 @@ class Monitor:
                     "failed",
                     f"Failed to update NPM database for {name}",
                     host_id=host_id,
+                    notify=notify,
                 )
         else:
             await send_event(
@@ -235,6 +267,7 @@ class Monitor:
                 "failed",
                 f"No NPM proxy host ID configured for {name}",
                 host_id=host_id,
+                notify=notify,
             )
 
         # Update our records
@@ -263,6 +296,7 @@ class Monitor:
                 "recovered",
                 f"✅ {name} recovered successfully at {new_ip}",
                 host_id=host_id,
+                notify=notify,
             )
         else:
             await send_event(
@@ -270,7 +304,24 @@ class Monitor:
                 "failed",
                 f"⚠️ Updated to {new_ip} but host still not responding on port 80",
                 host_id=host_id,
+                notify=notify,
             )
+
+    @staticmethod
+    def _quiet_state(host):
+        if not host["quiet_enabled"] or not host["quiet_start"] or not host["quiet_end"]:
+            return False, host["quiet_mode"] or "suppress"
+
+        start = time.fromisoformat(host["quiet_start"])
+        end = time.fromisoformat(host["quiet_end"])
+        current = current_time().time().replace(tzinfo=None)
+        if start == end:
+            return False, host["quiet_mode"] or "suppress"
+        if start < end:
+            active = start <= current < end
+        else:
+            active = current >= start or current < end
+        return active, host["quiet_mode"] or "suppress"
 
 
 # Global instance

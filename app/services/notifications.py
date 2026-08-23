@@ -30,7 +30,14 @@ EVENT_TYPES = [
 ]
 
 
-async def send_event(db: aiosqlite.Connection, event_type: str, message: str, details: str = "", host_id: int = None):
+async def send_event(
+    db: aiosqlite.Connection,
+    event_type: str,
+    message: str,
+    details: str = "",
+    host_id: int = None,
+    notify: bool = True,
+):
     """Log the event and send to all enabled channels that have this event enabled."""
     # Log to events table
     await db.execute(
@@ -38,6 +45,9 @@ async def send_event(db: aiosqlite.Connection, event_type: str, message: str, de
         (host_id, event_type, message, details, current_time().isoformat()),
     )
     await db.commit()
+
+    if not notify:
+        return
 
     # Find matching channels
     query = """
