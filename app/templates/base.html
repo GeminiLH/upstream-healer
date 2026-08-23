@@ -80,6 +80,28 @@
       /* slate-400 */
     }
 
+    .form-control {
+      color-scheme: light;
+    }
+
+    .dark .form-control {
+      color-scheme: dark;
+    }
+
+    .form-control:-webkit-autofill,
+    .form-control:-webkit-autofill:hover,
+    .form-control:-webkit-autofill:focus {
+      -webkit-text-fill-color: #0f172a !important;
+      -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+    }
+
+    .dark .form-control:-webkit-autofill,
+    .dark .form-control:-webkit-autofill:hover,
+    .dark .form-control:-webkit-autofill:focus {
+      -webkit-text-fill-color: #f1f5f9 !important;
+      -webkit-box-shadow: 0 0 0 1000px #0f172a inset !important;
+    }
+
     /* ========== Event toggle buttons (Notifications page) ========== */
     .event-btn {
       padding: 0.35rem 0.75rem;

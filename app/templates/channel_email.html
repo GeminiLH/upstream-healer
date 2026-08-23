@@ -8,27 +8,25 @@
     Configure SMTP for Dynu (or Gmail later). You can list multiple recipients.
   </p>
 
-  <form method="post" class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 space-y-5 shadow-sm">
+  <form method="post"
+    class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 space-y-5 shadow-sm">
     <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Display name</label>
-      <input type="text" name="name" value="Email"
-            class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+      <input type="text" name="name" value="Email" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
     </div>
 
-    <div class="grid grid-cols-3 gap-3">
-      <div class="col-span-2">
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div class="sm:col-span-2">
         <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">SMTP Host *</label>
-        <input type="text" name="smtp_host" required value="smtp.dynu.com"
-              class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+        <input type="text" name="smtp_host" required value="smtp.dynu.com" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                       bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                       focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
       </div>
       <div>
         <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Port</label>
-        <input type="number" name="smtp_port" value="587"
-              class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+        <input type="number" name="smtp_port" value="587" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                       bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                       focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
       </div>
@@ -36,9 +34,7 @@
 
     <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Username *</label>
-      <input type="text" name="username" required
-            placeholder="your@dynu-email.com"
-            class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+      <input type="text" name="username" required placeholder="your@dynu-email.com" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                     placeholder-slate-400 dark:placeholder-slate-500
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
@@ -46,27 +42,23 @@
 
     <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Password *</label>
-      <input type="password" name="password" required
-            class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+      <input type="password" name="password" required class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
     </div>
 
     <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">From address</label>
-      <input type="text" name="from_addr"
-            placeholder="Leave blank to use username"
-            class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+      <input type="text" name="from_addr" placeholder="Leave blank to use username" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                     placeholder-slate-400 dark:placeholder-slate-500
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
     </div>
 
     <div>
-      <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">To addresses * (comma-separated)</label>
-      <input type="text" name="to_addrs" required
-            placeholder="person1@email.com, person2@email.com"
-            class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+      <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">To addresses *
+        (comma-separated)</label>
+      <input type="text" name="to_addrs" required placeholder="person1@email.com, person2@email.com" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                     placeholder-slate-400 dark:placeholder-slate-500
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
@@ -75,11 +67,10 @@
 
     <div class="flex gap-3 pt-2">
       <button type="submit"
-              class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition">
+        class="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition">
         Save Email Channel
       </button>
-      <a href="/notifications"
-        class="px-5 py-2.5 text-sm rounded-lg btn-secondary">
+      <a href="/notifications" class="px-5 py-2.5 text-sm rounded-lg btn-secondary">
         Cancel
       </a>
     </div>
