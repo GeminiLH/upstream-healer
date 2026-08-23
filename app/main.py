@@ -6,13 +6,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import aiosqlite
 import json
-from datetime import timedelta
 
 from app.config import current_time, format_timestamp, settings, time_ago
 from app.database import init_db
 from app.services.monitor import monitor
 from app.services.npm import NPMClient
-from app.services.scanner import normalize_mac
+from app.services.notifications import send_event
+from app.services.scanner import check_host_reachable, find_ip_by_mac, normalize_mac
 
 logging.basicConfig(
     level=logging.INFO,
@@ -244,24 +244,56 @@ async def delete_host(host_id: int, db: aiosqlite.Connection = Depends(get_db)):
 
 @app.post("/hosts/{host_id}/force-scan")
 async def force_scan(host_id: int, db: aiosqlite.Connection = Depends(get_db)):
-    """Manually trigger recovery for a host."""
+    """Run an immediate log-only IP/port and MAC verification for a host."""
     async with db.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)) as cur:
         host = await cur.fetchone()
     if not host:
         raise HTTPException(404)
 
-    # Force status to unreachable past grace so recovery runs
-    past = (current_time()).isoformat()
-    unreachable_since = (current_time() - timedelta(hours=1)).isoformat()
+    name = host["name"]
+    current_ip = host["current_ip"]
+    port = host["port"] or 80
+    recorded_mac = normalize_mac(host["mac_address"])
+    checked_at = current_time().isoformat()
+    ip_port_ok = bool(current_ip) and await check_host_reachable(current_ip, port=port)
+    mac_ip = await find_ip_by_mac(recorded_mac)
+    mac_ok = mac_ip is not None
+    npm_id = host["npm_proxy_host_id"]
+
+    await db.execute(
+        "INSERT OR IGNORE INTO host_state (host_id, status) VALUES (?, 'unknown')",
+        (host_id,),
+    )
     await db.execute(
         """UPDATE host_state SET
-            status = 'unreachable',
-            unreachable_since = ?,
-            last_check_at = ?
+            status = ?,
+            unreachable_since = CASE WHEN ? THEN NULL ELSE unreachable_since END,
+            last_check_at = ?,
+            last_seen_at = CASE WHEN ? THEN ? ELSE last_seen_at END,
+            last_ip = COALESCE(?, last_ip)
             WHERE host_id = ?""",
-        (unreachable_since, past, host_id),
+        ("healthy" if ip_port_ok else "unreachable", ip_port_ok, checked_at,
+         ip_port_ok, checked_at, mac_ip, host_id),
     )
     await db.commit()
+
+    npm_summary = f"configured (ID {npm_id})" if npm_id else "not configured"
+    details = (
+        f"IP/port check: {'SUCCESS' if ip_port_ok else 'FAILURE'}; "
+        f"current IP: {current_ip or 'none'}; port: {port}; "
+        f"MAC verification: {'SUCCESS' if mac_ok else 'FAILURE'}; "
+        f"recorded MAC: {recorded_mac}; MAC-discovered IP: {mac_ip or 'none'}; "
+        f"NPM host ID: {npm_summary}; last check reset: {checked_at}"
+    )
+    await send_event(
+        db,
+        "manual",
+        f"🔎 Force scan for {name}: IP/port {'passed' if ip_port_ok else 'failed'}, "
+        f"MAC {'verified' if mac_ok else 'not verified'}.",
+        details=details,
+        host_id=host_id,
+        notify=False,
+    )
     return RedirectResponse("/", status_code=303)
 
 

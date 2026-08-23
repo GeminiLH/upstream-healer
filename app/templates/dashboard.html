@@ -137,7 +137,11 @@
       <time class="text-slate-400 dark:text-slate-500 whitespace-nowrap sm:w-48" datetime="{{ e.created_at }}">{{
         e.created_at_display or '—' }}</time>
       <span class="font-medium text-slate-500 sm:w-28">{{ e.event_type }}</span>
-      <span class="text-slate-700 dark:text-slate-300">{{ e.message }}</span>
+      <div class="text-slate-700 dark:text-slate-300">
+        <div>{{ e.message }}</div>
+        {% if e.details %}<div class="mt-1 text-xs text-slate-500 dark:text-slate-400 break-words">{{ e.details }}</div>
+        {% endif %}
+      </div>
     </li>
     {% endfor %}
   </ul>
