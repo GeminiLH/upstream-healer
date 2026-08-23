@@ -56,7 +56,7 @@ class Monitor:
 
     async def _check_all_hosts(self, db: aiosqlite.Connection):
         async with db.execute(
-            "SELECT h.*, s.status, s.unreachable_since, s.last_ip "
+            "SELECT h.*, s.status, s.unreachable_since, s.last_ip, s.quiet_active, s.quiet_mode "
             "FROM hosts h LEFT JOIN host_state s ON s.host_id = h.id "
             "WHERE h.enabled = 1"
         ) as cursor:
