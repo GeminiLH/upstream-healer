@@ -13,8 +13,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     grace_minutes INTEGER DEFAULT 10,
     enabled INTEGER DEFAULT 1,
     notes TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT,
+    updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS notification_channels (
     name TEXT NOT NULL,
     enabled INTEGER DEFAULT 1,
     config TEXT NOT NULL,             -- JSON
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notification_rules (
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS events (
     event_type TEXT NOT NULL,
     message TEXT,
     details TEXT,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TEXT,
     FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE SET NULL
 );
 

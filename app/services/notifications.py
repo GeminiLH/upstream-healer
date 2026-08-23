@@ -9,6 +9,7 @@ from typing import List, Optional
 import httpx
 import aiosqlite
 from app.config import settings
+from app.config import current_time
 
 logger = logging.getLogger("healer.notifications")
 
@@ -27,8 +28,8 @@ async def send_event(db: aiosqlite.Connection, event_type: str, message: str, de
     """Log the event and send to all enabled channels that have this event enabled."""
     # Log to events table
     await db.execute(
-        "INSERT INTO events (host_id, event_type, message, details) VALUES (?, ?, ?, ?)",
-        (host_id, event_type, message, details),
+        "INSERT INTO events (host_id, event_type, message, details, created_at) VALUES (?, ?, ?, ?, ?)",
+        (host_id, event_type, message, details, current_time().isoformat()),
     )
     await db.commit()
 

@@ -6,9 +6,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import aiosqlite
 import json
-from datetime import datetime
+from datetime import timedelta
 
-from app.config import settings
+from app.config import current_time, settings
 from app.database import init_db
 from app.services.monitor import monitor
 from app.services.npm import NPMClient
@@ -50,9 +50,9 @@ async def get_db():
 async def dashboard(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     async with db.execute(
         """SELECT h.*, s.status, s.last_seen_at, s.unreachable_since, s.last_check_at, s.last_ip
-           FROM hosts h
-           LEFT JOIN host_state s ON s.host_id = h.id
-           ORDER BY h.name"""
+            FROM hosts h
+            LEFT JOIN host_state s ON s.host_id = h.id
+            ORDER BY h.name"""
     ) as cursor:
         hosts = [dict(r) for r in await cursor.fetchall()]
 
@@ -63,8 +63,15 @@ async def dashboard(request: Request, db: aiosqlite.Connection = Depends(get_db)
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "hosts": hosts, "events": events, "now": datetime.utcnow()},
+        {"request": request, "hosts": hosts, "events": events, "now": current_time()},
     )
+
+
+@app.post("/events/clear")
+async def clear_events(db: aiosqlite.Connection = Depends(get_db)):
+    await db.execute("DELETE FROM events")
+    await db.commit()
+    return RedirectResponse("/", status_code=303)
 
 
 # ───────────────────────────── Hosts ─────────────────────────────
@@ -97,9 +104,10 @@ async def add_host(
     npm_id = int(npm_proxy_host_id) if npm_proxy_host_id.strip() else None
 
     await db.execute(
-        """INSERT INTO hosts (name, domain, mac_address, current_ip, npm_proxy_host_id, grace_minutes, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (name, domain, mac, current_ip or None, npm_id, grace_minutes, notes),
+            """INSERT INTO hosts (name, domain, mac_address, current_ip, npm_proxy_host_id, grace_minutes, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, domain, mac, current_ip or None, npm_id, grace_minutes, notes,
+            current_time().isoformat(), current_time().isoformat()),
     )
     await db.commit()
 
@@ -153,9 +161,10 @@ async def edit_host(
         """UPDATE hosts SET
             name = ?, domain = ?, mac_address = ?, current_ip = ?,
             npm_proxy_host_id = ?, grace_minutes = ?, notes = ?, enabled = ?,
-            updated_at = datetime('now')
-           WHERE id = ?""",
-        (name, domain, mac, current_ip or None, npm_id, grace_minutes, notes, is_enabled, host_id),
+                updated_at = ?
+            WHERE id = ?""",
+            (name, domain, mac, current_ip or None, npm_id, grace_minutes, notes, is_enabled,
+            current_time().isoformat(), host_id),
     )
     await db.commit()
     return RedirectResponse("/", status_code=303)
@@ -177,14 +186,15 @@ async def force_scan(host_id: int, db: aiosqlite.Connection = Depends(get_db)):
         raise HTTPException(404)
 
     # Force status to unreachable past grace so recovery runs
-    past = (datetime.utcnow()).isoformat()
+    past = (current_time()).isoformat()
+    unreachable_since = (current_time() - timedelta(hours=1)).isoformat()
     await db.execute(
         """UPDATE host_state SET
             status = 'unreachable',
-            unreachable_since = datetime('now', '-1 hour'),
+            unreachable_since = ?,
             last_check_at = ?
-           WHERE host_id = ?""",
-        (past, host_id),
+            WHERE host_id = ?""",
+        (unreachable_since, past, host_id),
     )
     await db.commit()
     return RedirectResponse("/", status_code=303)
@@ -233,8 +243,8 @@ async def add_telegram(
     config = json.dumps({"bot_token": bot_token.strip(), "chat_ids": ids})
 
     await db.execute(
-        "INSERT INTO notification_channels (type, name, config) VALUES ('telegram', ?, ?)",
-        (name, config),
+        "INSERT INTO notification_channels (type, name, config, created_at) VALUES ('telegram', ?, ?, ?)",
+        (name, config, current_time().isoformat()),
     )
     await db.commit()
     async with db.execute("SELECT last_insert_rowid()") as cur:
@@ -279,8 +289,8 @@ async def add_email(
         "to_addrs": addrs,
     }
     await db.execute(
-        "INSERT INTO notification_channels (type, name, config) VALUES ('email', ?, ?)",
-        (name, json.dumps(config)),
+        "INSERT INTO notification_channels (type, name, config, created_at) VALUES ('email', ?, ?, ?)",
+        (name, json.dumps(config), current_time().isoformat()),
     )
     await db.commit()
     async with db.execute("SELECT last_insert_rowid()") as cur:

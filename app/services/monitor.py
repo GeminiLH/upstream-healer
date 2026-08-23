@@ -3,9 +3,10 @@ Main monitoring & recovery loop.
 """
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import aiosqlite
 from app.config import settings
+from app.config import current_time
 from app.services.scanner import check_host_reachable, find_ip_by_mac, normalize_mac
 from app.services.npm import NPMClient
 from app.services.notifications import send_event
@@ -66,7 +67,7 @@ class Monitor:
         status = host["status"] or "unknown"
         unreachable_since = host["unreachable_since"]
 
-        now = datetime.utcnow().isoformat()
+        now = current_time().isoformat()
 
         # Ensure state row exists
         await db.execute(
@@ -97,7 +98,7 @@ class Monitor:
                     unreachable_since = NULL,
                     last_check_at = ?,
                     last_ip = ?
-                 WHERE host_id = ?""",
+                    WHERE host_id = ?""",
                 (now, now, current_ip, host_id),
             )
             # Also keep hosts.current_ip in sync
@@ -116,7 +117,7 @@ class Monitor:
                     status = 'unreachable',
                     unreachable_since = ?,
                     last_check_at = ?
-                 WHERE host_id = ?""",
+                    WHERE host_id = ?""",
                 (now, now, host_id),
             )
             await db.commit()
@@ -129,9 +130,11 @@ class Monitor:
                 return
 
             down_since = datetime.fromisoformat(unreachable_since)
+            if down_since.tzinfo is None:
+                down_since = down_since.replace(tzinfo=timezone.utc)
             grace_end = down_since + timedelta(minutes=grace_minutes)
 
-            if datetime.utcnow() < grace_end:
+            if datetime.now(timezone.utc) < grace_end.astimezone(timezone.utc):
                 # Still in grace – do nothing
                 await db.execute(
                     "UPDATE host_state SET last_check_at = ? WHERE host_id = ?",
@@ -151,7 +154,7 @@ class Monitor:
 
         await db.execute(
             "UPDATE host_state SET status = 'recovering', last_check_at = ? WHERE host_id = ?",
-            (datetime.utcnow().isoformat(), host_id),
+            (current_time().isoformat(), host_id),
         )
         await db.commit()
 
@@ -227,7 +230,7 @@ class Monitor:
             )
 
         # Update our records
-        now = datetime.utcnow().isoformat()
+        now = current_time().isoformat()
         await db.execute(
             "UPDATE hosts SET current_ip = ?, updated_at = ? WHERE id = ?",
             (new_ip, now, host_id),

@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 class Settings(BaseSettings):
     # Paths
@@ -14,6 +16,7 @@ class Settings(BaseSettings):
     default_grace_minutes: int = 10
     check_interval_seconds: int = 600
     scan_timeout_seconds: int = 30
+    timezone: str = "America/New_York"
 
     # UI
     host: str = "0.0.0.0"
@@ -23,3 +26,7 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 settings = Settings()
+
+
+def current_time() -> datetime:
+    return datetime.now(ZoneInfo(settings.timezone))
