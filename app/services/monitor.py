@@ -19,6 +19,7 @@ class Monitor:
         self.running = False
         self._task = None
         self.npm = NPMClient()
+        self._last_event_cleanup_date = None
 
     async def start(self):
         if self.running:
@@ -49,10 +50,30 @@ class Monitor:
                         setting = await cursor.fetchone()
                     if setting:
                         check_interval_seconds = max(1, int(setting["value"]))
+                    await self._cleanup_old_events(db)
                     await self._check_all_hosts(db)
             except Exception as e:
                 logger.exception(f"Monitor loop error: {e}")
             await asyncio.sleep(check_interval_seconds)
+
+    async def _cleanup_old_events(self, db: aiosqlite.Connection):
+        today = current_time().date()
+        if self._last_event_cleanup_date == today:
+            return
+
+        async with db.execute(
+            "SELECT value FROM settings WHERE key = 'event_retention_days'"
+        ) as cursor:
+            setting = await cursor.fetchone()
+        try:
+            retention_days = max(1, int(setting["value"])) if setting else 10
+        except (TypeError, ValueError):
+            retention_days = 10
+
+        cutoff = current_time() - timedelta(days=retention_days)
+        await db.execute("DELETE FROM events WHERE created_at < ?", (cutoff.isoformat(),))
+        await db.commit()
+        self._last_event_cleanup_date = today
 
     async def _check_all_hosts(self, db: aiosqlite.Connection):
         async with db.execute(

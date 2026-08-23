@@ -507,15 +507,23 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get
 @app.post("/settings")
 async def save_settings(
     check_interval_seconds: int = Form(...),
+    event_retention_days: int = Form(...),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     if check_interval_seconds < 1:
         raise HTTPException(400, "Check interval must be at least 1 second")
+    if event_retention_days < 1:
+        raise HTTPException(400, "Event retention must be at least 1 day")
 
     await db.execute(
         "INSERT INTO settings (key, value) VALUES ('check_interval_seconds', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (str(check_interval_seconds),),
+    )
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES ('event_retention_days', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(event_retention_days),),
     )
     await db.commit()
     return RedirectResponse("/settings", status_code=303)

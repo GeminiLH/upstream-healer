@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS host_state (
 DEFAULT_SETTINGS = {
     "grace_minutes": "10",
     "check_interval_seconds": "600",
+    "event_retention_days": "10",
     "telegram_enabled": "1",
     "email_enabled": "1",
 }
@@ -112,6 +113,10 @@ async def init_db():
                     "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
                     (k, v),
                 )
+        else:
+            await db.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES ('event_retention_days', '10')"
+            )
         await db.commit()
 
 
