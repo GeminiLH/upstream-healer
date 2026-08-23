@@ -239,6 +239,28 @@ async def add_telegram_form(request: Request):
     )
 
 
+@app.get("/notifications/channel/{channel_id}/edit", response_class=HTMLResponse)
+async def edit_telegram_form(
+    channel_id: int,
+    request: Request,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    async with db.execute(
+        "SELECT * FROM notification_channels WHERE id = ? AND type = 'telegram'",
+        (channel_id,),
+    ) as cur:
+        channel = await cur.fetchone()
+    if not channel:
+        raise HTTPException(404)
+
+    channel = dict(channel)
+    channel["config"] = json.loads(channel["config"])
+    return templates.TemplateResponse(
+        "channel_telegram.html",
+        {"request": request, "channel": channel},
+    )
+
+
 @app.post("/notifications/add/telegram")
 async def add_telegram(
     name: str = Form("Telegram"),
@@ -263,6 +285,35 @@ async def add_telegram(
             "INSERT INTO notification_rules (event_type, channel_id, enabled) VALUES (?, ?, 1)",
             (event, channel_id),
         )
+    await db.commit()
+    return RedirectResponse("/notifications", status_code=303)
+
+
+@app.post("/notifications/channel/{channel_id}/edit")
+async def edit_telegram(
+    channel_id: int,
+    name: str = Form("Telegram"),
+    bot_token: str = Form(""),
+    chat_ids: str = Form(...),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    async with db.execute(
+        "SELECT config FROM notification_channels WHERE id = ? AND type = 'telegram'",
+        (channel_id,),
+    ) as cur:
+        channel = await cur.fetchone()
+    if not channel:
+        raise HTTPException(404)
+
+    existing_config = json.loads(channel["config"])
+    config = json.dumps({
+        "bot_token": bot_token.strip() or existing_config.get("bot_token", ""),
+        "chat_ids": [x.strip() for x in chat_ids.split(",") if x.strip()],
+    })
+    await db.execute(
+        "UPDATE notification_channels SET name = ?, config = ? WHERE id = ?",
+        (name.strip() or "Telegram", config, channel_id),
+    )
     await db.commit()
     return RedirectResponse("/notifications", status_code=303)
 
@@ -361,6 +412,23 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get
         "settings.html",
         {"request": request, "conf": conf},
     )
+
+
+@app.post("/settings")
+async def save_settings(
+    check_interval_seconds: int = Form(...),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    if check_interval_seconds < 1:
+        raise HTTPException(400, "Check interval must be at least 1 second")
+
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES ('check_interval_seconds', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(check_interval_seconds),),
+    )
+    await db.commit()
+    return RedirectResponse("/settings", status_code=303)
 
 
 @app.get("/api/health")

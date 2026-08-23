@@ -39,13 +39,20 @@ class Monitor:
 
     async def _loop(self):
         while self.running:
+            check_interval_seconds = settings.check_interval_seconds
             try:
                 async with aiosqlite.connect(settings.db_path) as db:
                     db.row_factory = aiosqlite.Row
+                    async with db.execute(
+                        "SELECT value FROM settings WHERE key = 'check_interval_seconds'"
+                    ) as cursor:
+                        setting = await cursor.fetchone()
+                    if setting:
+                        check_interval_seconds = max(1, int(setting["value"]))
                     await self._check_all_hosts(db)
             except Exception as e:
                 logger.exception(f"Monitor loop error: {e}")
-            await asyncio.sleep(settings.check_interval_seconds)
+            await asyncio.sleep(check_interval_seconds)
 
     async def _check_all_hosts(self, db: aiosqlite.Connection):
         async with db.execute(
