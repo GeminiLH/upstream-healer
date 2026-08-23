@@ -68,7 +68,15 @@
           <div><span class="text-slate-400">MAC:</span> <code class="text-slate-800">{{ h.mac_address }}</code></div>
           <div><span class="text-slate-400">NPM Host ID:</span> {{ h.npm_proxy_host_id or '—' }}</div>
           <div><span class="text-slate-400">Grace period:</span> {{ h.grace_minutes }} min</div>
-          <div><span class="text-slate-400">Last check:</span> {{ h.last_check_at or '—' }}</div>
+          <div><span class="text-slate-400">Last check:</span>
+            {% if h.last_check_at %}
+            <span class="text-slate-700 dark:text-slate-300" title="{{ h.last_check_at }}">{{ h.last_check_display
+              }}</span>
+            <span class="text-slate-400 dark:text-slate-500">({{ h.last_check_age }})</span>
+            {% else %}
+            —
+            {% endif %}
+          </div>
         </div>
       </div>
       <div class="flex gap-2">
@@ -109,7 +117,8 @@
   <ul class="divide-y divide-slate-200 dark:divide-slate-700">
     {% for e in events %}
     <li class="px-5 py-3 text-sm flex gap-3">
-      <span class="text-slate-400 whitespace-nowrap">{{ e.created_at }}</span>
+      <time class="text-slate-400 dark:text-slate-500 whitespace-nowrap" datetime="{{ e.created_at }}">{{
+        e.created_at_display or '—' }}</time>
       <span class="font-medium text-slate-500 w-28">{{ e.event_type }}</span>
       <span class="text-slate-700 dark:text-slate-300">{{ e.message }}</span>
     </li>

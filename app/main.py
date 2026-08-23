@@ -8,7 +8,7 @@ import aiosqlite
 import json
 from datetime import timedelta
 
-from app.config import current_time, settings
+from app.config import current_time, format_timestamp, settings, time_ago
 from app.database import init_db
 from app.services.monitor import monitor
 from app.services.npm import NPMClient
@@ -55,11 +55,18 @@ async def dashboard(request: Request, db: aiosqlite.Connection = Depends(get_db)
             ORDER BY h.name"""
     ) as cursor:
         hosts = [dict(r) for r in await cursor.fetchall()]
+    for host in hosts:
+        if host["last_check_at"]:
+            host["last_check_display"] = format_timestamp(host["last_check_at"])
+            host["last_check_age"] = time_ago(host["last_check_at"])
 
     async with db.execute(
         "SELECT * FROM events ORDER BY id DESC LIMIT 20"
     ) as cursor:
         events = [dict(r) for r in await cursor.fetchall()]
+    for event in events:
+        if event["created_at"]:
+            event["created_at_display"] = format_timestamp(event["created_at"])
 
     return templates.TemplateResponse(
         "dashboard.html",
