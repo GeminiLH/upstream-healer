@@ -45,31 +45,80 @@ http://<raspberry-pi-ip>:8787
 
 ## Docker exec administration
 
-The same configuration can be managed without the UI from the host running Docker. Run these commands from the project directory or any shell with access to the container:
+The same configuration can be managed without the UI from the host running Docker. Run these commands from the project directory or any shell with access to the container. Every command prints JSON on success and an error message with a non-zero exit code on failure.
+
+### Hosts
+
+Add a monitored host. The MAC address is normalized automatically; `--port` defaults to `80`, `--grace-minutes` defaults to `10`, and `--ip` and `--domain` are optional.
 
 ```bash
-# Add and list monitored hosts
-docker exec upstream-healer python -m app.cli add-host --name vault --mac aa:bb:cc:dd:ee:ff --ip 192.168.1.20 --port 8080 --domain vault.example.com
-docker exec upstream-healer python -m app.cli list-hosts
-
-# List the 10 most recent events from the last day
-docker exec upstream-healer python -m app.cli list-events
-
-# Optionally filter events by host, number of results, and age
-docker exec upstream-healer python -m app.cli list-events --host-id HOST_ID --limit 25 --days 7
-
-# Disable monitoring for a host by its ID
-docker exec upstream-healer python -m app.cli disable-host HOST_ID
-
-# Add a Telegram channel with every notification enabled, then list channels
-docker exec upstream-healer python -m app.cli add-telegram --name Alerts --bot-token 'BOT_TOKEN' --chat-ids 'CHAT_ID_1,CHAT_ID_2'
-docker exec upstream-healer python -m app.cli list-telegram
-
-# Disable a Telegram channel by its ID
-docker exec upstream-healer python -m app.cli disable-telegram CHANNEL_ID
+docker exec upstream-healer python -m app.cli add-host \
+   --name vault \
+   --mac aa:bb:cc:dd:ee:ff \
+   --ip 192.168.1.20 \
+   --port 8080 \
+   --domain vault.example.com \
+   --npm-proxy-host-id 12 \
+   --grace-minutes 10
 ```
 
-Commands return JSON. Use `list-hosts` and `list-telegram` first to find IDs for disable operations. `list-events` defaults to 10 events from the last day and can optionally filter by `--host-id`, `--limit`, and `--days`. The optional `--npm-proxy-host-id` enables automatic NPM updates during recovery; omit it when recovery updates are not desired. `add-telegram` enables all current event types automatically.
+`--npm-proxy-host-id` is optional. Include it to update that Nginx Proxy Manager proxy host during recovery; omit it when the healer should only monitor and report the host.
+
+Host identity is unique by the combination of MAC address and port. The same MAC can therefore be monitored on multiple ports, but adding the same MAC/port pair twice is rejected.
+
+List monitored hosts and their IDs, ports, current IPs, and statuses:
+
+```bash
+docker exec upstream-healer python -m app.cli list-hosts
+```
+
+Disable monitoring for a host without deleting it. Get `HOST_ID` from `list-hosts`:
+
+```bash
+docker exec upstream-healer python -m app.cli disable-host HOST_ID
+```
+
+### Events
+
+List the 10 most recent events from the last day (the defaults):
+
+```bash
+docker exec upstream-healer python -m app.cli list-events
+```
+
+Filter by host, return up to 25 events, and search the last 7 days:
+
+```bash
+docker exec upstream-healer python -m app.cli list-events \
+   --host-id HOST_ID \
+   --limit 25 \
+   --days 7
+```
+
+`--host-id` is optional. `--limit` and `--days` must each be at least `1`.
+
+### Telegram notifications
+
+Add an enabled Telegram channel. Multiple chat IDs can be supplied as a comma-separated list. All current event types are enabled automatically for the new channel.
+
+```bash
+docker exec upstream-healer python -m app.cli add-telegram \
+   --name Alerts \
+   --bot-token 'BOT_TOKEN' \
+   --chat-ids 'CHAT_ID_1,CHAT_ID_2'
+```
+
+List Telegram channels and their IDs:
+
+```bash
+docker exec upstream-healer python -m app.cli list-telegram
+```
+
+Disable a Telegram channel without deleting it. Get `CHANNEL_ID` from `list-telegram`:
+
+```bash
+docker exec upstream-healer python -m app.cli disable-telegram CHANNEL_ID
+```
 
 ## First-time setup in the UI
 

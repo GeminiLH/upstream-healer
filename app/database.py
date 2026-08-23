@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS hosts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     domain TEXT,
-    mac_address TEXT NOT NULL UNIQUE,
+    mac_address TEXT NOT NULL,
     current_ip TEXT,
     npm_proxy_host_id INTEGER,
     port INTEGER NOT NULL DEFAULT 80,
@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS hosts (
     enabled INTEGER DEFAULT 1,
     notes TEXT,
     created_at TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    UNIQUE (mac_address, port)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -77,6 +78,7 @@ async def init_db():
             host_columns = {row[1] for row in await cursor.fetchall()}
         if "port" not in host_columns:
             await db.execute("ALTER TABLE hosts ADD COLUMN port INTEGER NOT NULL DEFAULT 80")
+        await _migrate_host_identity(db)
         # Seed default settings if empty
         async with db.execute("SELECT COUNT(*) FROM settings") as cursor:
             count = (await cursor.fetchone())[0]
@@ -87,6 +89,48 @@ async def init_db():
                     (k, v),
                 )
         await db.commit()
+
+
+async def _migrate_host_identity(db: aiosqlite.Connection):
+    """Replace the legacy MAC-only uniqueness constraint with MAC plus port."""
+    async with db.execute("PRAGMA index_list(hosts)") as cursor:
+        indexes = await cursor.fetchall()
+
+    for index in indexes:
+        if not index[2]:
+            continue
+        async with db.execute(f'PRAGMA index_info("{index[1]}")') as cursor:
+            columns = [row[2] for row in await cursor.fetchall()]
+        if columns != ["mac_address"]:
+            continue
+
+        await db.commit()
+        await db.execute("PRAGMA foreign_keys = OFF")
+        await db.execute("""CREATE TABLE hosts_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            domain TEXT,
+            mac_address TEXT NOT NULL,
+            current_ip TEXT,
+            npm_proxy_host_id INTEGER,
+            port INTEGER NOT NULL DEFAULT 80,
+            grace_minutes INTEGER DEFAULT 10,
+            enabled INTEGER DEFAULT 1,
+            notes TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            UNIQUE (mac_address, port)
+        )""")
+        await db.execute("""INSERT INTO hosts_new
+            (id, name, domain, mac_address, current_ip, npm_proxy_host_id, port,
+             grace_minutes, enabled, notes, created_at, updated_at)
+            SELECT id, name, domain, mac_address, current_ip, npm_proxy_host_id, port,
+                   grace_minutes, enabled, notes, created_at, updated_at
+            FROM hosts""")
+        await db.execute("DROP TABLE hosts")
+        await db.execute("ALTER TABLE hosts_new RENAME TO hosts")
+        await db.execute("PRAGMA foreign_keys = ON")
+        return
 
 
 async def get_db():
