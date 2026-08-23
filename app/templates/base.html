@@ -220,6 +220,16 @@
           </div>
 
           <div class="flex items-center gap-4">
+            {% if overall_status is defined %}
+            <span class="inline-flex items-center gap-2 text-xs font-medium" title="{{ overall_status_label }}">
+              <span class="w-2.5 h-2.5 rounded-full
+                {% if overall_status == 'healthy' %}bg-emerald-500
+                {% elif overall_status == 'degraded' %}bg-amber-400
+                {% elif overall_status == 'down' %}bg-red-500
+                {% else %}bg-slate-400{% endif %}"></span>
+              <span class="hidden sm:inline text-slate-600 dark:text-slate-300">{{ overall_status_label }}</span>
+            </span>
+            {% endif %}
             <!-- Dark mode toggle -->
             <button id="theme-toggle" type="button"
               class="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 dark:text-slate-300"

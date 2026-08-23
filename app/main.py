@@ -60,6 +60,21 @@ async def dashboard(request: Request, db: aiosqlite.Connection = Depends(get_db)
             host["last_check_display"] = format_timestamp(host["last_check_at"])
             host["last_check_age"] = time_ago(host["last_check_at"])
 
+    monitored_hosts = [host for host in hosts if host["enabled"]]
+    healthy_hosts = [host for host in monitored_hosts if host["status"] == "healthy"]
+    if not monitored_hosts:
+        overall_status = "unknown"
+        overall_status_label = "No hosts monitored"
+    elif len(healthy_hosts) == len(monitored_hosts):
+        overall_status = "healthy"
+        overall_status_label = "All hosts reachable"
+    elif len(healthy_hosts) == 0:
+        overall_status = "down"
+        overall_status_label = "All hosts unreachable"
+    else:
+        overall_status = "degraded"
+        overall_status_label = "Some hosts unreachable"
+
     async with db.execute(
         "SELECT * FROM events ORDER BY id DESC LIMIT 20"
     ) as cursor:
@@ -70,7 +85,28 @@ async def dashboard(request: Request, db: aiosqlite.Connection = Depends(get_db)
 
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "hosts": hosts, "events": events, "now": current_time()},
+        {"request": request, "hosts": hosts, "events": events, "now": current_time(),
+         "overall_status": overall_status, "overall_status_label": overall_status_label},
+    )
+
+
+@app.get("/hosts/{host_id}/events", response_class=HTMLResponse)
+async def host_events(host_id: int, request: Request, db: aiosqlite.Connection = Depends(get_db)):
+    async with db.execute("SELECT id, name FROM hosts WHERE id = ?", (host_id,)) as cursor:
+        host = await cursor.fetchone()
+    if not host:
+        raise HTTPException(404)
+
+    async with db.execute(
+        "SELECT * FROM events WHERE host_id = ? ORDER BY id DESC", (host_id,)
+    ) as cursor:
+        events = [dict(row) for row in await cursor.fetchall()]
+    for event in events:
+        if event["created_at"]:
+            event["created_at_display"] = format_timestamp(event["created_at"])
+
+    return templates.TemplateResponse(
+        "host_events.html", {"request": request, "host": dict(host), "events": events}
     )
 
 

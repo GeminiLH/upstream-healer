@@ -3,6 +3,7 @@ Notification system – Telegram + Email with per-event toggles.
 """
 import json
 import logging
+import re
 import aiosmtplib
 from email.message import EmailMessage
 from typing import List, Optional
@@ -12,6 +13,8 @@ from app.config import settings
 from app.config import current_time
 
 logger = logging.getLogger("healer.notifications")
+
+IP_ADDRESS = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 EVENT_TYPES = [
     "unreachable",
@@ -61,9 +64,11 @@ async def _send_telegram(config: dict, message: str, details: str = ""):
         logger.warning("Telegram not configured properly")
         return
 
-    text = f"🔔 *Upstream Healer*\n\n{message}"
+    message_without_ip = IP_ADDRESS.sub("", message).replace("  ", " ").strip()
+    text = f"🔔 *Upstream Healer*\n\n{message_without_ip}"
     if details:
-        text += f"\n\n`{details}`"
+        details_without_ip = IP_ADDRESS.sub("", details).replace("  ", " ").strip()
+        text += f"\n\n`{details_without_ip}`"
 
     async with httpx.AsyncClient(timeout=15) as client:
         for chat_id in chat_ids:

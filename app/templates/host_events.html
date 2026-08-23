@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{{ host.name }} Event History · Upstream Healer{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-8 gap-4">
+    <div>
+        <a href="/" class="text-sm text-brand-600 dark:text-brand-400 hover:underline">← Dashboard</a>
+        <h1 class="text-2xl font-bold text-slate-900 dark:text-slate-100 mt-2">{{ host.name }} Event History</h1>
+        <p class="text-slate-500 dark:text-slate-400 text-sm mt-1">All recorded monitoring and recovery events for this
+            host</p>
+    </div>
+</div>
+
+<div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 overflow-hidden">
+    {% if events %}
+    <ul class="divide-y divide-slate-200 dark:divide-slate-700">
+        {% for e in events %}
+        <li class="px-5 py-4 text-sm flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-4">
+            <time class="text-slate-400 dark:text-slate-500 whitespace-nowrap sm:w-48" datetime="{{ e.created_at }}">{{
+                e.created_at_display or '—' }}</time>
+            <span class="font-medium text-slate-500 sm:w-28">{{ e.event_type }}</span>
+            <span class="text-slate-700 dark:text-slate-300">{{ e.message }}</span>
+            {% if e.details %}<span class="text-slate-500 dark:text-slate-400 sm:ml-auto">{{ e.details }}</span>{% endif
+            %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="px-5 py-10 text-center text-slate-400 text-sm">No events recorded for this host</p>
+    {% endif %}
+</div>
+{% endblock %}
