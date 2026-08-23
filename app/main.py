@@ -135,6 +135,7 @@ async def add_host_form(request: Request):
 @app.post("/hosts/add")
 async def add_host(
     name: str = Form(...),
+    local_device_name: str = Form(""),
     domain: str = Form(""),
     mac_address: str = Form(...),
     current_ip: str = Form(""),
@@ -150,9 +151,9 @@ async def add_host(
         raise HTTPException(400, "Port must be between 1 and 65535")
 
     await db.execute(
-            """INSERT INTO hosts (name, domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes, notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes,
+            """INSERT INTO hosts (name, local_device_name, domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, local_device_name or None, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes,
             current_time().isoformat(), current_time().isoformat()),
     )
     await db.commit()
@@ -190,6 +191,7 @@ async def edit_host_form(host_id: int, request: Request, db: aiosqlite.Connectio
 async def edit_host(
     host_id: int,
     name: str = Form(...),
+    local_device_name: str = Form(""),
     domain: str = Form(""),
     mac_address: str = Form(...),
     current_ip: str = Form(""),
@@ -208,11 +210,11 @@ async def edit_host(
 
     await db.execute(
         """UPDATE hosts SET
-            name = ?, domain = ?, mac_address = ?, current_ip = ?,
+            name = ?, local_device_name = ?, domain = ?, mac_address = ?, current_ip = ?,
             npm_proxy_host_id = ?, port = ?, grace_minutes = ?, notes = ?, enabled = ?,
                 updated_at = ?
             WHERE id = ?""",
-            (name, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes, is_enabled,
+            (name, local_device_name or None, domain, mac, current_ip or None, npm_id, port, grace_minutes, notes, is_enabled,
             current_time().isoformat(), host_id),
     )
     await db.commit()

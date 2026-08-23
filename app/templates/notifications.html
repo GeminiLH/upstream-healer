@@ -2,18 +2,18 @@
 {% block title %}Notifications · Upstream Healer{% endblock %}
 
 {% block content %}
-<div class="flex items-center justify-between mb-8">
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
   <div>
     <h1 class="text-2xl font-bold text-slate-900 dark:text-slate-100">Notifications</h1>
     <p class="text-slate-600 dark:text-slate-400 text-sm mt-1">Telegram & Email channels + per-event toggles</p>
   </div>
-  <div class="flex gap-2">
+  <div class="flex flex-wrap gap-2">
     <a href="/notifications/add/telegram"
-      class="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium rounded-lg transition">
+      class="flex-1 sm:flex-none text-center px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white text-sm font-medium rounded-lg transition">
       + Telegram
     </a>
     <a href="/notifications/add/email"
-      class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition">
+      class="flex-1 sm:flex-none text-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition">
       + Email
     </a>
   </div>
@@ -30,8 +30,9 @@
   {% for ch in channels %}
   <div
     class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
-    <div class="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
-      <div class="flex items-center gap-3">
+    <div
+      class="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div class="flex flex-wrap items-center gap-2 sm:gap-3">
         <span class="font-semibold text-slate-800 dark:text-slate-100">{{ ch.name }}</span>
         <span class="text-xs px-2 py-0.5 rounded-full
           {% if ch.type == 'telegram' %}bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200
@@ -44,9 +45,10 @@
         <span class="text-xs text-slate-400">Disabled</span>
         {% endif %}
       </div>
-      <div class="flex flex-wrap justify-end gap-2">
+      <div class="flex flex-wrap gap-2 w-full sm:w-auto sm:justify-end">
         {% if ch.type == 'telegram' %}
-        <a href="/notifications/channel/{{ ch.id }}/edit" class="channel-action" title="Edit {{ ch.name }}">
+        <a href="/notifications/channel/{{ ch.id }}/edit" class="channel-action flex-1 sm:flex-none justify-center"
+          title="Edit {{ ch.name }}">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.5-8.5a2.121 2.121 0 013 3L12 14l-4 1 1-4 7.5-7.5z" />
@@ -55,7 +57,7 @@
         </a>
         {% endif %}
         <form method="post" action="/notifications/channel/{{ ch.id }}/toggle">
-          <button type="submit" class="channel-action"
+          <button type="submit" class="channel-action w-full sm:w-auto justify-center"
             title="{% if ch.enabled %}Disable{% else %}Enable{% endif %} {{ ch.name }}">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -66,7 +68,8 @@
         </form>
         <form method="post" action="/notifications/channel/{{ ch.id }}/delete"
           onsubmit="return confirm('Delete this channel?')">
-          <button type="submit" class="channel-action channel-action-danger" title="Delete {{ ch.name }}">
+          <button type="submit" class="channel-action channel-action-danger w-full sm:w-auto justify-center"
+            title="Delete {{ ch.name }}">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />

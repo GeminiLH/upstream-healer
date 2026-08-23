@@ -15,6 +15,9 @@ from app.config import current_time
 logger = logging.getLogger("healer.notifications")
 
 IP_ADDRESS = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+MAC_ADDRESS = re.compile(
+    r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b|\b(?:[0-9a-f]{4}\.){2}[0-9a-f]{4}\b"
+)
 
 EVENT_TYPES = [
     "unreachable",
@@ -64,11 +67,13 @@ async def _send_telegram(config: dict, message: str, details: str = ""):
         logger.warning("Telegram not configured properly")
         return
 
-    message_without_ip = IP_ADDRESS.sub("", message).replace("  ", " ").strip()
-    text = f"🔔 *Upstream Healer*\n\n{message_without_ip}"
+    message_without_network_identifiers = MAC_ADDRESS.sub("", IP_ADDRESS.sub("", message))
+    message_without_network_identifiers = message_without_network_identifiers.replace("  ", " ").strip()
+    text = f"🔔 *Upstream Healer*\n\n{message_without_network_identifiers}"
     if details:
-        details_without_ip = IP_ADDRESS.sub("", details).replace("  ", " ").strip()
-        text += f"\n\n`{details_without_ip}`"
+        details_without_network_identifiers = MAC_ADDRESS.sub("", IP_ADDRESS.sub("", details))
+        details_without_network_identifiers = details_without_network_identifiers.replace("  ", " ").strip()
+        text += f"\n\n`{details_without_network_identifiers}`"
 
     async with httpx.AsyncClient(timeout=15) as client:
         for chat_id in chat_ids:

@@ -6,6 +6,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS hosts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    local_device_name TEXT,
     domain TEXT,
     mac_address TEXT NOT NULL,
     current_ip TEXT,

@@ -221,13 +221,15 @@
 
           <div class="flex items-center gap-4">
             {% if overall_status is defined %}
-            <span class="inline-flex items-center gap-2 text-xs font-medium" title="{{ overall_status_label }}">
-              <span class="w-2.5 h-2.5 rounded-full
+            <span
+              class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-xs font-medium"
+              title="{{ overall_status_label }}" aria-label="{{ overall_status_label }}">
+              <span class="w-5 h-5 flex-none rounded-full
                 {% if overall_status == 'healthy' %}bg-emerald-500
                 {% elif overall_status == 'degraded' %}bg-amber-400
                 {% elif overall_status == 'down' %}bg-red-500
                 {% else %}bg-slate-400{% endif %}"></span>
-              <span class="hidden sm:inline text-slate-600 dark:text-slate-300">{{ overall_status_label }}</span>
+              <span class="text-slate-600 dark:text-slate-300">{{ overall_status_label }}</span>
             </span>
             {% endif %}
             <!-- Dark mode toggle -->
@@ -245,7 +247,34 @@
                 <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
               </svg>
             </button>
+            <button id="mobile-nav-toggle" type="button"
+              class="sm:hidden p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 dark:text-slate-300"
+              title="Open navigation menu" aria-label="Open navigation menu" aria-expanded="false"
+              aria-controls="mobile-nav">
+              <svg id="mobile-nav-open" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+              <svg id="mobile-nav-close" class="w-5 h-5 hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 6l12 12M6 18L18 6" />
+              </svg>
+            </button>
             <span class="text-xs text-slate-400 dark:text-slate-500">v1</span>
+          </div>
+        </div>
+        <div id="mobile-nav" class="hidden sm:hidden border-t border-slate-200 dark:border-slate-700 py-3"
+          aria-hidden="true">
+          <div class="flex flex-col gap-1 text-sm font-medium">
+            <a href="/"
+              class="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700">Dashboard</a>
+            <a href="/hosts/add"
+              class="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700">Add
+              Host</a>
+            <a href="/notifications"
+              class="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700">Notifications</a>
+            <a href="/settings"
+              class="px-3 py-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700">Settings</a>
           </div>
         </div>
       </div>
@@ -261,6 +290,10 @@
     const toggle = document.getElementById('theme-toggle');
     const iconSun = document.getElementById('icon-sun');
     const iconMoon = document.getElementById('icon-moon');
+    const mobileNavToggle = document.getElementById('mobile-nav-toggle');
+    const mobileNav = document.getElementById('mobile-nav');
+    const mobileNavOpen = document.getElementById('mobile-nav-open');
+    const mobileNavClose = document.getElementById('mobile-nav-close');
 
     function updateIcons() {
       const isDark = html.classList.contains('dark');
@@ -272,6 +305,17 @@
       html.classList.toggle('dark');
       localStorage.setItem('theme', html.classList.contains('dark') ? 'dark' : 'light');
       updateIcons();
+    });
+
+    mobileNavToggle.addEventListener('click', () => {
+      const isOpen = mobileNavToggle.getAttribute('aria-expanded') === 'true';
+      mobileNavToggle.setAttribute('aria-expanded', String(!isOpen));
+      mobileNavToggle.setAttribute('aria-label', isOpen ? 'Open navigation menu' : 'Close navigation menu');
+      mobileNavToggle.setAttribute('title', isOpen ? 'Open navigation menu' : 'Close navigation menu');
+      mobileNav.setAttribute('aria-hidden', String(isOpen));
+      mobileNav.classList.toggle('hidden', isOpen);
+      mobileNavOpen.classList.toggle('hidden', !isOpen);
+      mobileNavClose.classList.toggle('hidden', isOpen);
     });
 
     updateIcons();
