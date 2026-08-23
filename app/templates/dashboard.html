@@ -79,17 +79,23 @@
           </div>
         </div>
       </div>
-      <div class="flex gap-2">
+      <div class="flex flex-wrap gap-2">
+        <a href="/hosts/{{ h.id }}/edit" class="channel-action" title="Edit {{ h.name }}">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.5-8.5a2.121 2.121 0 013 3L12 14l-4 1 1-4 7.5-7.5z" />
+          </svg>
+          Edit
+        </a>
         <form method="post" action="/hosts/{{ h.id }}/force-scan">
-          <button type="submit"
-            class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-700">
+          <button type="submit" class="channel-action" title="Force scan {{ h.name }}">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h5M20 20v-5h-5M5.05 9A7 7 0 0117.5 6.5L20 9M19 15a7 7 0 01-12.45 2.5L4 15" />
+            </svg>
             Force Scan
           </button>
         </form>
-        <a href="/hosts/{{ h.id }}/edit"
-          class="px-3 py-1.5 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 text-slate-700">
-          Edit
-        </a>
       </div>
     </div>
   </div>

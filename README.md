@@ -43,6 +43,34 @@ UI will be available at:
 http://<raspberry-pi-ip>:8787
 ```
 
+## Docker exec administration
+
+The same configuration can be managed without the UI from the host running Docker. Run these commands from the project directory or any shell with access to the container:
+
+```bash
+# Add and list monitored hosts
+docker exec upstream-healer python -m app.cli add-host --name vault --mac aa:bb:cc:dd:ee:ff --ip 192.168.1.20 --domain vault.example.com
+docker exec upstream-healer python -m app.cli list-hosts
+
+# List the 10 most recent events from the last day
+docker exec upstream-healer python -m app.cli list-events
+
+# Optionally filter events by host, number of results, and age
+docker exec upstream-healer python -m app.cli list-events --host-id HOST_ID --limit 25 --days 7
+
+# Disable monitoring for a host by its ID
+docker exec upstream-healer python -m app.cli disable-host HOST_ID
+
+# Add a Telegram channel with every notification enabled, then list channels
+docker exec upstream-healer python -m app.cli add-telegram --name Alerts --bot-token 'BOT_TOKEN' --chat-ids 'CHAT_ID_1,CHAT_ID_2'
+docker exec upstream-healer python -m app.cli list-telegram
+
+# Disable a Telegram channel by its ID
+docker exec upstream-healer python -m app.cli disable-telegram CHANNEL_ID
+```
+
+Commands return JSON. Use `list-hosts` and `list-telegram` first to find IDs for disable operations. `list-events` defaults to 10 events from the last day and can optionally filter by `--host-id`, `--limit`, and `--days`. The optional `--npm-proxy-host-id` enables automatic NPM updates during recovery; omit it when recovery updates are not desired. `add-telegram` enables all current event types automatically.
+
 ## First-time setup in the UI
 
 1. **Add Telegram channel**  
