@@ -13,3 +13,4 @@ email-validator==2.2.0
 python-dotenv==1.0.1
 apscheduler==3.10.4
 jinja2-time==0.2.0
+pymysql==1.1.1
