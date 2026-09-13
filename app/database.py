@@ -1,5 +1,4 @@
 import aiosqlite
-from pathlib import Path
 from app.config import settings
 
 SCHEMA = """

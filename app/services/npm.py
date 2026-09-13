@@ -2,7 +2,10 @@
 Interact with Nginx Proxy Manager (MariaDB/MySQL backend).
 
 Credentials are read at runtime from the NPM app container environment
-so nothing confidential is stored in the repository or healer config.
+so nothing confidential is stored in the repository or healer config. If
+the container does not expose the required DB_MYSQL_* values, the connection
+falls back to the NPM_DB_* settings on the healer itself (see app.config) —
+those also come from the environment, never from the repository.
 """
 from __future__ import annotations
 
@@ -58,7 +61,11 @@ class NPMClient:
     def exec(self, cmd: str) -> str:
         """Run a command inside the NPM app container."""
         container = self._get_container()
-        exit_code, output = container.exec_run(cmd, demux=False)
+        try:
+            exit_code, output = container.exec_run(cmd, demux=False)
+        except Exception as e:
+            logger.error(f"Command failed to run in {self.container_name}: {cmd} ({e})")
+            raise RuntimeError(f"failed to run '{cmd}' in container {self.container_name}: {e}")
         result = output.decode(errors="ignore") if output else ""
         if exit_code != 0:
             logger.warning(f"Command failed ({exit_code}): {cmd}\n{result}")
@@ -95,16 +102,33 @@ class NPMClient:
                 creds[key] = value.strip()
 
         required = ["DB_MYSQL_HOST", "DB_MYSQL_USER", "DB_MYSQL_PASSWORD", "DB_MYSQL_NAME"]
-        missing = [k for k in required if k not in creds]
+        missing = [k for k in required if not creds.get(k)]
+        source = "NPM container environment"
         if missing:
-            raise RuntimeError(f"Missing DB environment variables in NPM container: {missing}")
+            logger.info(
+                f"NPM container does not expose {missing}; falling back to NPM_DB_* settings"
+            )
+            creds = {
+                "DB_MYSQL_HOST": settings.npm_db_host,
+                "DB_MYSQL_PORT": str(settings.npm_db_port),
+                "DB_MYSQL_USER": settings.npm_db_user,
+                "DB_MYSQL_PASSWORD": settings.npm_db_password,
+                "DB_MYSQL_NAME": settings.npm_db_name,
+            }
+            source = "NPM_DB_* settings"
+            missing = [k for k in required if not creds.get(k)]
+            if missing:
+                raise RuntimeError(
+                    f"NPM DB credentials unavailable: container missing {missing} and "
+                    "NPM_DB_* settings incomplete (set NPM_DB_USER / NPM_DB_PASSWORD in the environment)"
+                )
 
         # Defaults
         creds.setdefault("DB_MYSQL_PORT", "3306")
 
         self._db_creds = creds
         logger.info(
-            "Loaded DB credentials from NPM container "
+            f"Loaded DB credentials from {source} "
             f"(host={creds['DB_MYSQL_HOST']}, db={creds['DB_MYSQL_NAME']}, user={creds['DB_MYSQL_USER']})"
         )
         return creds

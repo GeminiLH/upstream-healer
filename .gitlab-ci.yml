@@ -1,0 +1,116 @@
+# GitLab CI/CD — Upstream Healer
+#
+# Stages:  test  ->  build  ->  deploy
+#   * unit tests + lint run on every push / MR
+#   * the Docker image is built and pushed to the GitLab container registry
+#     for the default branch only
+#   * deploy is a MANUAL job — click "Play" when you actually want to deploy
+#
+# CI/CD variables (GitLab: Settings -> CI/CD -> Variables):
+#   SSH_PRIVATE_KEY     [File, protected]  private key of the deploy SSH key
+#   DEPLOY_KNOWN_HOSTS  [File, protected]  output of: ssh-keyscan <target-host>
+#   DEPLOY_USER                                e.g. your account on the target
+#   DEPLOY_HOST                                e.g. 192.168.86.x
+#   DEPLOY_PATH                                repo checkout path on the target
+#   NPM_DB_HOST / NPM_DB_PORT / NPM_DB_USER /
+#   NPM_DB_PASSWORD / NPM_DB_NAME    [optional] env-based NPM MySQL settings
+
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  PIP_CACHE_DIR: $CI_PROJECT_DIR/.pip
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+# ───────────────────────────── Test ─────────────────────────────
+
+lint:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - pip install --no-cache-dir "ruff>=0.4"
+  script:
+    - ruff check app/ tests/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+unit_tests:
+  stage: test
+  image: python:3.12-slim
+  before_script:
+    - pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+  script:
+    - pytest tests/ -v --tb=short --junitxml=test-results.xml
+  artifacts:
+    when: always
+    paths:
+      - test-results.xml
+    reports:
+      junit: test-results.xml
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# ───────────────────────────── Build ─────────────────────────────
+
+build_image:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: 1
+    DOCKER_CERT_PATH: /certs/client
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ───────────────────────────── Deploy (manual) ─────────────────────────────
+#
+# Nothing deploys automatically. When a build of the default branch finishes,
+# this job appears as "manual" — press Play to deploy that exact commit.
+# Until DEPLOY_* variables are configured it fails fast with a clear message.
+
+deploy:
+  stage: deploy
+  image: alpine:3.20
+  variables:
+    GIT_STRATEGY: none
+  needs:
+    - unit_tests
+    - build_image
+  script:
+    - apk add --no-cache openssh-client git
+    - |
+      if [ -z "$DEPLOY_USER" ] || [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_PATH" ] \
+         || [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
+        echo "ERROR: cannot deploy — missing CI/CD variables."
+        echo "Set these in GitLab -> Settings -> CI/CD -> Variables:"
+        echo "  DEPLOY_USER, DEPLOY_HOST, DEPLOY_PATH,"
+        echo "  SSH_PRIVATE_KEY (File), DEPLOY_KNOWN_HOSTS (File)"
+        exit 1
+      fi
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - printf "%s\n" "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    - ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST"
+        "set -euo pipefail; cd '$DEPLOY_PATH'; git fetch origin; git checkout '$CI_COMMIT_SHA'; docker compose up -d --build"
+  environment:
+    name: production
+  retry: 1
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual

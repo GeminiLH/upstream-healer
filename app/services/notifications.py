@@ -6,10 +6,8 @@ import logging
 import re
 import aiosmtplib
 from email.message import EmailMessage
-from typing import List, Optional
 import httpx
 import aiosqlite
-from app.config import settings
 from app.config import current_time
 
 logger = logging.getLogger("healer.notifications")

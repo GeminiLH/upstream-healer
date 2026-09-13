@@ -1,13 +1,28 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-venv/
-env/
-.env
 *.egg-info/
 dist/
 build/
-data/
+venv/
+env/
 .venv/
+
+# Environment / runtime data
+.env
+data/
+
+# IDE
+.vscode/
+
+# Test / CI artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+test-results.xml
+
+# Sensitive local notes (contains tokens/credentials)
+upstream healer notes.txt

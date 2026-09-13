@@ -11,6 +11,15 @@ class Settings(BaseSettings):
     # NPM container
     npm_container: str = "nginx-app-1"
     npm_db_path_in_container: str = "/data/database.sqlite"
+    # Fallback NPM MySQL settings — used when the NPM app container does not
+    # expose DB_MYSQL_* in its environment. Values come from the deployment
+    # environment (.env / docker run -e / GitLab CI variables); keep secrets
+    # out of the repository.
+    npm_db_host: str = "nginx-db-1"
+    npm_db_port: int = 3306
+    npm_db_user: str = ""
+    npm_db_password: str = ""
+    npm_db_name: str = "proxy_manager"
 
     # Defaults
     default_grace_minutes: int = 10

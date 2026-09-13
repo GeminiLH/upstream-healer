@@ -7,7 +7,7 @@ from datetime import datetime, time, timedelta, timezone
 import aiosqlite
 from app.config import settings
 from app.config import current_time
-from app.services.scanner import check_host_reachable, find_ip_by_mac, normalize_mac
+from app.services.scanner import check_host_reachable, find_ip_by_mac
 from app.services.npm import NPMClient
 from app.services.notifications import send_event
 
@@ -90,7 +90,6 @@ class Monitor:
         host_id = host["id"]
         name = host["name"]
         current_ip = host["current_ip"] or host["last_ip"]
-        mac = host["mac_address"]
         port = host["port"] or 80
         grace_minutes = host["grace_minutes"] or settings.default_grace_minutes
         status = host["status"] or "unknown"
