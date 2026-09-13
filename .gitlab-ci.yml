@@ -66,12 +66,16 @@ unit_tests:
 build_image:
   stage: build
   image: docker:latest
-  # docker:dind cannot start unprivileged (mount/iptables fail). If the host
-  # refuses privileged containers the job degrades gracefully (skip, exit 0).
-  privileged: true
+  # docker:dind needs a PRIVILEGED runner. Job-level `privileged:` is rejected
+  # by this GitLab (19.x) and fails the whole pipeline, so set it on the runner
+  # instead:  privileged = true   in the gitlab-runner config.toml
+  # (if the runner itself is a container, also set `privileged: true` in its
+  # compose service and restart it). Until that is done, the job below detects
+  # the dead daemon and skips gracefully, keeping the pipeline green — deploys
+  # are unaffected because they build from source on the target box.
   services:
     - name: docker:dind
-      alias: docker
+      # (the runner auto-aliases it as `docker`, which DOCKER_HOST below uses)
       # the gitlab registry is plain HTTP in this deployment; let dind trust it
       command: ["--insecure-registry", "192.168.86.38:5000"]
   variables:
