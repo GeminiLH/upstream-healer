@@ -1,0 +1,118 @@
+# Full dev stack for the GitLab runner box (the deploy_dev / dev_down jobs).
+#
+# NOTHING in this file is used by the remote test/production deploys —
+# they keep using docker-compose.yml (healer only) on their own boxes,
+# where the NPM stack already exists.
+#
+# All services run with host networking (matching the trusted
+# architecture): the healer needs the LAN for ARP scans, and the dev
+# MariaDB is reached via 127.0.0.1, which resolves identically from
+# every host-networked container on the box — so the NPM app and the
+# healer both connect to it without any published ports.
+#
+#   upstream-healer   host :8787        healer web UI
+#   nginx-app-1       host :8181 / :8182  Nginx Proxy Manager UI + edge
+#                     (moved off 80/443, which are usually taken on the box)
+#   nginx-db-1        host :3306        dev MariaDB (proxy_manager schema)
+#   seed              one-shot, runs on every `up` (idempotent)
+#
+# Manual usage from a checkout of this repo:
+#   docker compose -f docker-compose.dev.yml up -d --build
+#   docker compose -f docker-compose.dev.yml down          # teardown
+#
+# Named volumes (healer-data, npm-*) persist across deploys; add `-v`
+# to `down` if you want to wipe the dev data as well.
+
+name: upstream-healer
+
+services:
+  upstream-healer:
+    # Keep this service in sync with docker-compose.yml.
+    build: .
+    container_name: upstream-healer
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - healer-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - TZ=America/New_York
+      # Fallback NPM MySQL settings. The primary path reads DB_MYSQL_*
+      # from the nginx-app-1 environment; in dev everything lives on
+      # this box, so both paths resolve 127.0.0.1.
+      - NPM_DB_HOST=127.0.0.1
+      - NPM_DB_PORT=3306
+      - NPM_DB_USER=${NPM_DEV_DB_USER:-proxymanager}
+      - NPM_DB_PASSWORD=${NPM_DEV_DB_PASSWORD:-devhealer123}
+      - NPM_DB_NAME=proxy_manager
+
+  nginx-app-1:
+    # Nginx Proxy Manager app — the container the healer execs into for
+    # credential discovery and the graceful `nginx -s reload`.
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx-app-1
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - nginx-db-1
+    environment:
+      - DB_MYSQL_HOST=127.0.0.1
+      - DB_MYSQL_PORT=3306
+      - DB_MYSQL_USER=${NPM_DEV_DB_USER:-proxymanager}
+      - DB_MYSQL_PASSWORD=${NPM_DEV_DB_PASSWORD:-devhealer123}
+      - DB_MYSQL_NAME=proxy_manager
+      # Move the NPM web/edge off 80/443 (usually taken on the box).
+      # The deploy_dev job overrides these via DEV_WEB_*_PORT if needed.
+      - WEB_HTTP_PORT=${DEV_WEB_HTTP_PORT:-8181}
+      - WEB_HTTPS_PORT=${DEV_WEB_HTTPS_PORT:-8182}
+      - EDGE_PORT=${DEV_EDGE_PORT:-8182}
+      # Fixed dev admin login (sandbox credentials — never reuse on a real NPM)
+      - WEB_EMAIL=dev@hylla.local
+      - WEB_PASSWORD=${NPM_DEV_WEB_PASSWORD:-devhealer123}
+    volumes:
+      - npm-data:/data
+      - npm-certs:/etc/nginx/certs
+
+  nginx-db-1:
+    # The jc21 MySQL image creates the proxy_manager schema (including
+    # the proxy_host table the healer updates) on first run.
+    image: jc21/nginx-proxy-mysql:latest
+    container_name: nginx-db-1
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - MYSQL_ROOT_PASSWORD=${NPM_DEV_ROOT_PASSWORD:-devhealer123root}
+    volumes:
+      - npm-mysql:/var/lib/mysql
+
+  seed:
+    # One-shot dev data seeder (scripts/seed_dev.py): monitored hosts,
+    # NPM proxy_host rows + links, optional Telegram channel.
+    # Idempotent — it re-runs (harmlessly) on every `up` and always exits
+    # 0 for soft issues (e.g. MariaDB not ready yet).
+    build: .
+    restart: "no"
+    network_mode: host
+    depends_on:
+      - upstream-healer
+      - nginx-app-1
+      - nginx-db-1
+    volumes:
+      - healer-data:/data
+    environment:
+      - NPM_DB_HOST=127.0.0.1
+      - NPM_DB_PORT=3306
+      - NPM_DB_USER=${NPM_DEV_DB_USER:-proxymanager}
+      - NPM_DB_PASSWORD=${NPM_DEV_DB_PASSWORD:-devhealer123}
+      - NPM_DB_NAME=proxy_manager
+      # Optional Telegram bootstrap: set these (CI/CD variables or shell
+      # env) to have a channel created when none exists yet.
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_IDS=${TELEGRAM_CHAT_IDS:-}
+    command: python /app/scripts/seed_dev.py
+
+volumes:
+  healer-data:
+  npm-data:
+  npm-certs:
+  npm-mysql:

@@ -7,12 +7,18 @@
 #     registry is down the build is kept and the push is skipped with a warning
 #   * three MANUAL deploy jobs — test / dev / production. Press Play on the
 #     one you want; each deploys that exact commit. test/production SSH to
-#     their boxes; dev runs locally on the gitlab/runner box itself
+#     their boxes; dev deploys the FULL local stack (healer + Nginx Proxy
+#     Manager pair + dev data seeder) onto the gitlab/runner box itself and
+#     leaves it running — plus a manual dev_down job tears it back down
 #
 # Environments:  test, dev, production   (Settings -> CI/CD -> Environments)
 #
 # CI/CD variables (Settings -> CI/CD -> Variables) — create each one per
-# environment (scope: test or production — deploy_dev needs none):
+# environment (scope: test or production). deploy_dev needs none: the dev
+# NPM pair uses sandbox defaults from docker-compose.dev.yml (override with
+# the DEV_WEB_*_PORT / NPM_DEV_* job variables if the box differs), and
+# optionally TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_IDS to have the seeder
+# create a telegram channel:
 #   SSH_PRIVATE_KEY     [File]  private key of the deploy SSH key
 #   DEPLOY_KNOWN_HOSTS  [File]  output of: ssh-keyscan <target-host>
 #   DEPLOY_USER                     your account on that target
@@ -42,7 +48,7 @@ lint:
   before_script:
     - pip install --no-cache-dir "ruff>=0.4"
   script:
-    - ruff check app/ tests/
+    - ruff check app/ scripts/ tests/
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -191,8 +197,14 @@ deploy_dev:
   # Live dev/staging stack on the gitlab/runner box, left running between
   # deploys. The runner already mounts /var/run/docker.sock into jobs and
   # runs them with host networking, so this job talks to the HOST docker
-  # daemon (DOCKER_HOST below); `docker:latest` ships compose v2. The
-  # default checkout at $CI_COMMIT_SHA is the compose build context.
+  # daemon (DOCKER_HOST below); `docker:latest` ships compose v2.
+  #
+  # docker-compose.dev.yml brings up the complete stack the healer needs
+  # to actually work: the app itself, the Nginx Proxy Manager pair it
+  # talks to (nginx-app-1 / nginx-db-1) and a one-shot dev data seeder
+  # (hosts + proxy_host rows + optional telegram channel). Host-networked
+  # containers publish no ports (empty PORTS column in docker ps) — they
+  # bind host ports directly: 8787 UI, 8181/8182 NPM, 3306 dev MariaDB.
   stage: deploy
   image: docker:latest
   environment:
@@ -202,6 +214,12 @@ deploy_dev:
     - build_image
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
+    # Sandbox credentials for the dev NPM pair (compose reads these for
+    # its ${...:-default} interpolations — plain values, dev box only).
+    NPM_DEV_DB_USER: proxymanager
+    NPM_DEV_DB_PASSWORD: devhealer123
+    NPM_DEV_ROOT_PASSWORD: devhealer123root
+    NPM_DEV_WEB_PASSWORD: devhealer123
   before_script:
     - |
       if ! docker info >/dev/null 2>&1; then
@@ -214,8 +232,76 @@ deploy_dev:
       echo "dev stack will live on: $(docker info --format '{{.Name}}')"
   script:
     - cd "$CI_PROJECT_DIR"
-    - docker compose up -d --build
-    - docker compose ps
+    - |
+      echo "==> Preflight: host ports the dev stack needs"
+      ports="$(docker run --rm --network host alpine:3.20 sh -c '
+        for p in 8787 8181 8182 3306; do
+          if nc -z -w 1 127.0.0.1 "$p" 2>/dev/null; then echo "$p used"; else echo "$p free"; fi
+        done')"
+      echo "$ports"
+      if echo "$ports" | grep -q '^3306 used'; then
+        echo "ERROR: port 3306 is taken on the gitlab box (dev MariaDB needs it)."
+        echo "Stop whatever holds it, then re-run this job."
+        exit 1
+      fi
+      if echo "$ports" | grep -q '^8787 used'; then
+        if docker ps --format '{{.Names}}' | grep -qx 'upstream-healer'; then
+          echo "port 8787 held by the previous upstream-healer — compose will take it back"
+        else
+          echo "ERROR: port 8787 is held by something other than upstream-healer."
+          exit 1
+        fi
+      fi
+    - |
+      # Give the dev NPM web/edge the first free candidate pair; compose
+      # picks them up via ${DEV_WEB_*_PORT} in docker-compose.dev.yml.
+      pick_port() {
+        for candidate in "$@"; do
+          if ! docker run --rm --network host alpine:3.20 nc -z -w 1 127.0.0.1 "$candidate" >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+          fi
+        done
+        return 1
+      }
+      export DEV_WEB_HTTP_PORT=$(pick_port 8181 8191 8281) || {
+        echo "ERROR: no free port for the NPM web UI (tried 8181 8191 8281)"
+        exit 1
+      }
+      export DEV_WEB_HTTPS_PORT=$(pick_port 8182 8192 8282) || {
+        echo "ERROR: no free edge port for NPM (tried 8182 8192 8282)"
+        exit 1
+      }
+      export DEV_EDGE_PORT="$DEV_WEB_HTTPS_PORT"
+      if [ "$DEV_WEB_HTTP_PORT" = "$DEV_WEB_HTTPS_PORT" ]; then
+        echo "ERROR: web and edge landed on the same port ($DEV_WEB_HTTP_PORT)"
+        exit 1
+      fi
+      echo "NPM web UI on :$DEV_WEB_HTTP_PORT, edge on :$DEV_WEB_HTTPS_PORT"
+    - docker compose -f docker-compose.dev.yml up -d --build
+    - docker compose -f docker-compose.dev.yml ps
+    - |
+      # The one-shot seeder runs after the other three containers start;
+      # wait for it to finish (it exits 0 for soft issues, non-zero if it
+      # truly broke) and always show its output.
+      for i in $(seq 1 60); do
+        state=$(docker inspect -f '{{.State.Status}}' upstream-healer-seed-1 2>/dev/null || echo missing)
+        if [ "$state" = "exited" ]; then
+          break
+        fi
+        if [ "$state" = "missing" ]; then
+          echo "ERROR: seeder container never started"
+          docker compose -f docker-compose.dev.yml ps
+          exit 1
+        fi
+        sleep 5
+      done
+      docker logs upstream-healer-seed-1 || true
+      code=$(docker inspect -f '{{.State.ExitCode}}' upstream-healer-seed-1 2>/dev/null || echo 1)
+      if [ "$code" != "0" ]; then
+        echo "ERROR: seeder exited with code $code (see logs above)"
+        exit 1
+      fi
     - |
       ok=""
       for i in 1 2 3 4 5 6; do
@@ -228,7 +314,52 @@ deploy_dev:
         echo "ERROR: dev app is not answering on :8787 — check: docker logs upstream-healer"
         exit 1
       fi
-      echo "dev stack is up: UI at http://<gitlab-box>:8787 (commit $CI_COMMIT_SHORT_SHA)"
+      if ! docker exec upstream-healer curl -sf -o /dev/null "http://127.0.0.1:$DEV_WEB_HTTP_PORT/"; then
+        echo "WARNING: NPM UI not answering on :$DEV_WEB_HTTP_PORT yet — check: docker logs nginx-app-1"
+      fi
+    - docker exec upstream-healer python -m app.cli list-hosts
+    - docker exec upstream-healer python -m app.cli list-telegram
+    - |
+      docker exec nginx-db-1 mysql -u"$NPM_DEV_DB_USER" -p"$NPM_DEV_DB_PASSWORD" proxy_manager \
+        -e "SELECT id, domain_names, forward_host, forward_port FROM proxy_host WHERE is_deleted = 0" \
+        || echo "(NPM MariaDB not queryable yet — the seeder reported above)"
+    - |
+      echo "=============================================================="
+      echo " dev stack is up (commit $CI_COMMIT_SHORT_SHA)"
+      echo "   Healer UI : http://<gitlab-box>:8787"
+      echo "   NPM UI    : http://<gitlab-box>:$DEV_WEB_HTTP_PORT"
+      echo "               login dev@hylla.local / $NPM_DEV_WEB_PASSWORD"
+      echo "   Seeded    : vault, jellyfin, failtest + proxy_host rows"
+      echo "   Teardown  : press Play on dev_down"
+      echo "=============================================================="
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+dev_down:
+  # Tears the dev stack back down. Named volumes are KEPT so the next
+  # deploy_dev finds the previous hosts/notifications/NPM config; to wipe
+  # them instead: docker volume rm upstream-healer_healer-data etc.
+  stage: deploy
+  image: docker:latest
+  environment:
+    name: dev
+  needs:
+    - unit_tests
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  before_script:
+    - |
+      if ! docker info >/dev/null 2>&1; then
+        echo "WARNING: cannot reach the host docker daemon from this job. Skipping teardown."
+        exit 0
+      fi
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - docker compose -f docker-compose.dev.yml down --remove-orphans
+    - |
+      echo "Dev containers removed; volumes kept:"
+      docker volume ls | grep -E 'healer-data|npm-data|npm-certs|npm-mysql' || echo "(no dev volumes left)"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual

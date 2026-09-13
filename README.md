@@ -45,6 +45,42 @@ http://<raspberry-pi-ip>:8787
 
 ## Docker exec administration
 
+## Full dev stack (`docker-compose.dev.yml`)
+
+The `deploy_dev` CI job — or a manual run from any checkout — can bring up
+the *complete* stack the healer needs to do its job: the app, its Nginx
+Proxy Manager pair, and seed data:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d --build   # everything
+docker compose -f docker-compose.dev.yml down           # teardown
+```
+
+| Container         | Host port     | What it is                                   |
+| ----------------- | ------------- | -------------------------------------------- |
+| `upstream-healer` | 8787          | the app (web UI, monitoring, notifications)  |
+| `nginx-app-1`     | 8181 / 8182   | Nginx Proxy Manager (web UI + edge, off 80/443) |
+| `nginx-db-1`      | 3306          | dev MariaDB (`proxy_manager` schema)         |
+| `seed`            | —             | one-shot seeder, runs on every `up`          |
+
+Notes:
+
+- All services use **host networking** (the app needs the LAN for ARP
+  scans), so `docker ps` shows no published ports — the ports above are the
+  host ports they bind directly. The NPM UI login is `dev@hylla.local` /
+  `devhealer123` (sandbox defaults; override with the `NPM_DEV_*` /
+  `DEV_WEB_*_PORT` environment variables).
+- The seeder (`scripts/seed_dev.py`) adds the `vault`, `jellyfin` and
+  `failtest` hosts, creates matching NPM `proxy_host` rows and links them.
+  `failtest` is a dead device on purpose — it exercises the full recovery
+  flow (unreachable → scan → NPM update → nginx reload).
+- If `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_IDS` are set in the environment
+  when the seeder runs, a telegram channel is created (only when none
+  exists yet — UI-configured channels are never touched).
+- Host data lives in named volumes (`healer-data`, `npm-*`) and survives
+  deploys; add `-v` to `down` to wipe it.
+
+
 The same configuration can be managed without the UI from the host running Docker. Run these commands from the project directory or any shell with access to the container. Every command prints JSON on success and an error message with a non-zero exit code on failure.
 
 ### Hosts

@@ -24,7 +24,7 @@ def temp_settings(tmp_path, monkeypatch):
         data_dir=tmp_path / "data",
         db_path=tmp_path / "test.db",
     )
-    for module_name in ("app.config", "app.database", "app.cli"):
+    for module_name in ("app.config", "app.database", "app.cli", "scripts.seed_dev"):
         try:
             module = importlib.import_module(module_name)
         except Exception:
