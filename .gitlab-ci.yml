@@ -1,19 +1,24 @@
 # GitLab CI/CD — Upstream Healer
 #
 # Stages:  test  ->  build  ->  deploy
-#   * unit tests + lint run on every push / MR
-#   * the Docker image is built and pushed to the GitLab container registry
-#     for the default branch only
-#   * deploy is a MANUAL job — click "Play" when you actually want to deploy
+#   * lint + unit tests run on every push / MR
+#   * the image is built on the default branch and pushed to the GitLab
+#     registry when it is reachable (plain HTTP here, no TLS); if the
+#     registry is down the build is kept and the push is skipped with a warning
+#   * three MANUAL deploy jobs — test / dev / production. Press Play on the
+#     one you want; each picks up its own environment-scoped variables
 #
-# CI/CD variables (GitLab: Settings -> CI/CD -> Variables):
-#   SSH_PRIVATE_KEY     [File, protected]  private key of the deploy SSH key
-#   DEPLOY_KNOWN_HOSTS  [File, protected]  output of: ssh-keyscan <target-host>
-#   DEPLOY_USER                                e.g. your account on the target
-#   DEPLOY_HOST                                e.g. 192.168.86.x
-#   DEPLOY_PATH                                repo checkout path on the target
+# Environments:  test, dev, production   (Settings -> CI/CD -> Environments)
+#
+# CI/CD variables (Settings -> CI/CD -> Variables) — for the deploy vars,
+# set the "Environment" scope so each stage gets its own values:
+#   SSH_PRIVATE_KEY     [File]  private key of the deploy SSH key, per environment
+#   DEPLOY_KNOWN_HOSTS  [File]  output of: ssh-keyscan <target-host>, per environment
+#   DEPLOY_USER                                e.g. your account on that target
+#   DEPLOY_HOST                                that target's address
+#   DEPLOY_PATH                                repo checkout path on that target
 #   NPM_DB_HOST / NPM_DB_PORT / NPM_DB_USER /
-#   NPM_DB_PASSWORD / NPM_DB_NAME    [optional] env-based NPM MySQL settings
+#   NPM_DB_PASSWORD / NPM_DB_NAME   [optional] per environment
 
 stages:
   - test
@@ -62,27 +67,44 @@ build_image:
   stage: build
   image: docker:latest
   services:
-    - docker:dind
+    - name: docker:dind
+      alias: docker
+      # the gitlab registry is plain HTTP in this deployment; let dind trust it
+      command: ["--insecure-registry", "192.168.86.38:5000"]
   variables:
-    DOCKER_TLS_CERTDIR: "/certs"
-    DOCKER_TLS_VERIFY: 1
-    DOCKER_CERT_PATH: /certs/client
+    # trusted, isolated job network — plain TCP socket, no TLS certs needed
+    DOCKER_HOST: tcp://docker:2375
   before_script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - export REGISTRY_OK=1
+    - |
+      if ! docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"; then
+        REGISTRY_OK=0
+        echo "WARNING: registry $CI_REGISTRY is not reachable — skipping image push."
+        echo "This is expected until 5000 is published in the gitlab compose."
+        echo "Deploys are unaffected: they build from source on the target."
+      fi
   script:
     - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE:latest" .
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
-    - docker push "$CI_REGISTRY_IMAGE:latest"
+    - |
+      if [ "$REGISTRY_OK" = "1" ]; then
+        docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+        docker push "$CI_REGISTRY_IMAGE:latest"
+      else
+        echo "Skipping push — registry unreachable. Image $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA stays local."
+      fi
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # ───────────────────────────── Deploy (manual) ─────────────────────────────
 #
 # Nothing deploys automatically. When a build of the default branch finishes,
-# this job appears as "manual" — press Play to deploy that exact commit.
-# Until DEPLOY_* variables are configured it fails fast with a clear message.
+# these three jobs appear as "manual" — press Play on the one you want;
+# each deploys that exact commit.
+# Each job is bound to an environment, so environment-scoped CI/CD variables
+# (DEPLOY_USER, DEPLOY_HOST, ...) are injected per stage. Until the variables
+# for a stage exist, that job fails fast with a clear message.
 
-deploy:
+.deploy_base:
   stage: deploy
   image: alpine:3.20
   variables:
@@ -95,8 +117,9 @@ deploy:
     - |
       if [ -z "$DEPLOY_USER" ] || [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_PATH" ] \
          || [ -z "$SSH_PRIVATE_KEY" ] || [ -z "$DEPLOY_KNOWN_HOSTS" ]; then
-        echo "ERROR: cannot deploy — missing CI/CD variables."
-        echo "Set these in GitLab -> Settings -> CI/CD -> Variables:"
+        echo "ERROR: cannot deploy — missing CI/CD variables for this environment."
+        echo "Create environment-scoped variables in Settings -> CI/CD -> Variables"
+        echo "(set the variable's Environment scope to this job's environment)."
         echo "  DEPLOY_USER, DEPLOY_HOST, DEPLOY_PATH,"
         echo "  SSH_PRIVATE_KEY (File), DEPLOY_KNOWN_HOSTS (File)"
         exit 1
@@ -108,9 +131,21 @@ deploy:
     - chmod 644 ~/.ssh/known_hosts
     - ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST"
         "set -euo pipefail; cd '$DEPLOY_PATH'; git fetch origin; git checkout '$CI_COMMIT_SHA'; docker compose up -d --build"
-  environment:
-    name: production
-  retry: 1
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
+
+deploy_test:
+  extends: .deploy_base
+  environment:
+    name: test
+
+deploy_dev:
+  extends: .deploy_base
+  environment:
+    name: dev
+
+deploy_production:
+  extends: .deploy_base
+  environment:
+    name: production
