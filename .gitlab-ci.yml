@@ -6,12 +6,13 @@
 #     registry when it is reachable (plain HTTP here, no TLS); if the
 #     registry is down the build is kept and the push is skipped with a warning
 #   * three MANUAL deploy jobs — test / dev / production. Press Play on the
-#     one you want; each picks up its own environment-scoped variables
+#     one you want; each deploys that exact commit. test/production SSH to
+#     their boxes; dev runs locally on the gitlab/runner box itself
 #
 # Environments:  test, dev, production   (Settings -> CI/CD -> Environments)
 #
 # CI/CD variables (Settings -> CI/CD -> Variables) — create each one per
-# environment (set the variable's Environment scope to test / dev / production):
+# environment (scope: test or production — deploy_dev needs none):
 #   SSH_PRIVATE_KEY     [File]  private key of the deploy SSH key
 #   DEPLOY_KNOWN_HOSTS  [File]  output of: ssh-keyscan <target-host>
 #   DEPLOY_USER                     your account on that target
@@ -122,9 +123,27 @@ build_image:
 # Nothing deploys automatically. When a build of the default branch finishes,
 # these three jobs appear as "manual" — press Play on the one you want;
 # each deploys that exact commit.
-# Each job is bound to an environment, so environment-scoped CI/CD variables
-# (DEPLOY_USER, DEPLOY_HOST, ...) are injected per stage. Until the variables
-# for a stage exist, that job fails fast with a clear message.
+#
+# Two mechanisms, by environment:
+#   deploy_test / deploy_production — SSH to a remote box (.deploy_base).
+#     Need environment-scoped variables (scope: that environment); until they
+#     exist the job fails fast with a clear message.
+#   deploy_dev — runs ON the gitlab/runner box. It is pinned to a dedicated
+#     "devhost" runner whose jobs mount the HOST docker socket, then
+#     compose-ups the stack with the host daemon, so the containers keep
+#     running after the job ends. Needs no variables.
+#     Job-level `volumes:` is NOT an option: this GitLab (19.3) fails the
+#     whole pipeline when that keyword appears, so the socket mount must
+#     live in the runner config instead. ONE-TIME setup in the runner
+#     config.toml (then restart the runner):
+#       [[runners]]
+#         ...your existing settings...
+#         tag_list = devhost
+#         volumes = ["/var/run/docker.sock:/var/run/docker.sock"]
+#     Until that runner exists, a pressed deploy_dev just waits for
+#     "devhost" (harmless — cancel it); if the socket is unreachable the
+#     job skips gracefully. Note: the socket gives the job full control of
+#     the host daemon — same trust level as the runner itself.
 
 .deploy_base:
   stage: deploy
@@ -175,9 +194,52 @@ deploy_test:
     name: test
 
 deploy_dev:
-  extends: .deploy_base
+  # Live dev/staging stack on the gitlab/runner box, left running between
+  # deploys. Runs on the `devhost` runner (config.toml: tag_list = devhost,
+  # volumes = ["/var/run/docker.sock:/var/run/docker.sock"]) so the job
+  # sees the HOST docker daemon; `docker:latest` ships compose v2. The
+  # default checkout at $CI_COMMIT_SHA is the compose build context.
+  stage: deploy
+  image: docker:latest
   environment:
     name: dev
+  tags:
+    - devhost
+  needs:
+    - unit_tests
+    - build_image
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  before_script:
+    - |
+      if ! docker info >/dev/null 2>&1; then
+        echo "WARNING: cannot reach the host docker daemon from this job."
+        echo "The devhost runner's config.toml entry needs:"
+        echo '  volumes = ["/var/run/docker.sock:/var/run/docker.sock"]'
+        echo "Skipping the dev deploy."
+        exit 0
+      fi
+      echo "dev stack will live on: $(docker info --format '{{.Name}}')"
+  script:
+    - cd "$CI_PROJECT_DIR"
+    - docker compose up -d --build
+    - docker compose ps
+    - |
+      ok=""
+      for i in 1 2 3 4 5 6; do
+        if docker exec upstream-healer curl -sf -o /dev/null http://127.0.0.1:8787/; then
+          ok=1; break
+        fi
+        sleep 3
+      done
+      if [ -z "$ok" ]; then
+        echo "ERROR: dev app is not answering on :8787 — check: docker logs upstream-healer"
+        exit 1
+      fi
+      echo "dev stack is up: UI at http://<gitlab-box>:8787 (commit $CI_COMMIT_SHORT_SHA)"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
 
 deploy_production:
   extends: .deploy_base
