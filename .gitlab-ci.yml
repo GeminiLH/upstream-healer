@@ -253,6 +253,14 @@ deploy_dev:
         fi
       fi
     - |
+      # Reclaim the container names from the previous stack: an older
+      # single-service deploy leaves an `upstream-healer` container that
+      # still holds the name (and :8787); compose cannot reuse a name a
+      # foreign project owns. Best-effort — compose will fail loudly if
+      # a name is genuinely still held.
+      docker rm -f upstream-healer nginx-app-1 nginx-db-1 2>/dev/null || true
+      echo "==> previous dev/prod containers cleared"
+    - |
       # Give the dev NPM web/edge the first free candidate pair; compose
       # picks them up via ${DEV_WEB_*_PORT} in docker-compose.dev.yml.
       pick_port() {
