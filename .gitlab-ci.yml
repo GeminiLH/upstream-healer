@@ -10,15 +10,18 @@
 #
 # Environments:  test, dev, production   (Settings -> CI/CD -> Environments)
 #
-# CI/CD variables (Settings -> CI/CD -> Variables) — for the deploy vars,
-# set the "Environment" scope so each stage gets its own values:
-#   SSH_PRIVATE_KEY     [File]  private key of the deploy SSH key, per environment
-#   DEPLOY_KNOWN_HOSTS  [File]  output of: ssh-keyscan <target-host>, per environment
-#   DEPLOY_USER                                e.g. your account on that target
-#   DEPLOY_HOST                                that target's address
-#   DEPLOY_PATH                                repo checkout path on that target
-#   NPM_DB_HOST / NPM_DB_PORT / NPM_DB_USER /
-#   NPM_DB_PASSWORD / NPM_DB_NAME   [optional] per environment
+# CI/CD variables (Settings -> CI/CD -> Variables) — create each one per
+# environment (set the variable's Environment scope to test / dev / production):
+#   SSH_PRIVATE_KEY     [File]  private key of the deploy SSH key
+#   DEPLOY_KNOWN_HOSTS  [File]  output of: ssh-keyscan <target-host>
+#   DEPLOY_USER                     your account on that target
+#   DEPLOY_HOST                     that target's address
+#   DEPLOY_PATH                     repo checkout path on that target
+#
+# No database variables are needed by the pipeline: the unit tests are fully
+# hermetic (mocked Docker client, throwaway SQLite). On a deploy target the
+# app discovers the NPM MySQL itself via docker exec into the sibling
+# container, so NPM_DB_* is never consulted there.
 
 stages:
   - test
