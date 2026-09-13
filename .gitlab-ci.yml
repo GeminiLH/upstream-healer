@@ -147,9 +147,21 @@ build_image:
         exit 1
       fi
     - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    # [File] variables expose a PATH to the decrypted file; plain variables
+    # expose the content itself — handle both
+    - |
+      if [ -f "$SSH_PRIVATE_KEY" ]; then
+        tr -d '\r' < "$SSH_PRIVATE_KEY" | ssh-add -
+      else
+        printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+      fi
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    - printf "%s\n" "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+    - |
+      if [ -f "$DEPLOY_KNOWN_HOSTS" ]; then
+        tr -d '\r' < "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      else
+        printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
+      fi
     - chmod 644 ~/.ssh/known_hosts
     - ssh -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST"
         "set -euo pipefail; cd '$DEPLOY_PATH'; git fetch origin; git checkout '$CI_COMMIT_SHA'; docker compose up -d --build"
