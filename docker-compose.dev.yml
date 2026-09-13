@@ -74,14 +74,22 @@ services:
       - npm-certs:/etc/nginx/certs
 
   nginx-db-1:
-    # The jc21 MySQL image creates the proxy_manager schema (including
-    # the proxy_host table the healer updates) on first run.
-    image: jc21/nginx-proxy-mysql:latest
+    # Dev MariaDB for NPM (proxy_manager schema, incl. the proxy_host
+    # table the healer updates). The old jc21/nginx-proxy-mysql wrapper
+    # was retired from Docker Hub — jc21/mariadb-aria is the successor
+    # (and what the target stack runs). The standard MariaDB entrypoint
+    # creates the database + app user on first boot.
+    image: jc21/mariadb-aria:latest
     container_name: nginx-db-1
     restart: unless-stopped
     network_mode: host
+    command: --transaction-isolation=READ-COMMITTED --binlog-expire-seconds=604800
     environment:
       - MYSQL_ROOT_PASSWORD=${NPM_DEV_ROOT_PASSWORD:-devhealer123root}
+      - MYSQL_DATABASE=proxy_manager
+      - MYSQL_USER=${NPM_DEV_DB_USER:-proxymanager}
+      - MYSQL_PASSWORD=${NPM_DEV_DB_PASSWORD:-devhealer123}
+      - MYSQL_HOST=%
     volumes:
       - npm-mysql:/var/lib/mysql
 
