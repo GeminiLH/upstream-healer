@@ -391,8 +391,9 @@ def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
         with conn.cursor() as cursor:
             cursor.execute(
                 """INSERT INTO proxy_host
-                   (domain_names, forward_scheme, forward_host, forward_port, is_deleted)
-                   VALUES (%s, 'http', %s, %s, 0)""",
+                   (domain_names, forward_scheme, forward_host, forward_port, is_deleted,
+                    created_on, modified_on)
+                   VALUES (%s, 'http', %s, %s, 0, NOW(), NOW())""",
                 (domain, spec.get("ip") or "127.0.0.1", str(spec.get("port") or 80)),
             )
             proxy_host_id = cursor.lastrowid
