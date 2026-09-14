@@ -29,8 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list-hosts", help="List monitored hosts")
 
-    list_npm = subparsers.add_parser("list-npm-hosts",
-                                     help="List available Nginx Proxy Manager proxy hosts")
+    subparsers.add_parser("list-npm-hosts",
+                         help="List available Nginx Proxy Manager proxy hosts")
 
     edit_host = subparsers.add_parser("edit-host", help="Edit an existing host's properties")
     edit_host.add_argument("host_id", type=int, help="Host ID to edit")
@@ -214,8 +214,6 @@ async def edit_host(host_id: int, args: argparse.Namespace, db: aiosqlite.Connec
         row = await cursor.fetchone()
         if not row:
             raise ValueError(f"Host {host_id} was not found")
-
-        host = dict(row)
 
     # Validate port if provided
     if args.port is not None and not (1 <= args.port <= 65535):
