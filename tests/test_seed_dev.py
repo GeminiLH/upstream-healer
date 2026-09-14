@@ -185,6 +185,58 @@ class TestNpmLinks:
         finally:
             await db.close()
 
+    async def test_retries_while_schema_still_migrating(self, temp_settings, monkeypatch):
+        import pymysql
+
+        # The NPM app and the seeder both start on `up`: the first attempt
+        # can hit proxy_host mid-migration (missing column) and must retry
+        # until the app's migrations finish, not skip.
+        monkeypatch.setattr(seed, "_wait_for_mysql", lambda timeout: True)
+        monkeypatch.setattr(seed, "MYSQL_POLL_SECONDS", 0.1)
+
+        calls = {"n": 0}
+
+        class _MigratingCursor:
+            def __init__(self):
+                self.lastrowid = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, sql, *args):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise pymysql.err.ProgrammingError(
+                        1054, "Unknown column 'forward_scheme' in 'field list'"
+                    )
+                if "INSERT" in str(sql).upper():
+                    self.lastrowid = 20
+
+            def fetchall(self):
+                return []
+
+        class _MigratingConn:
+            def cursor(self):
+                return _MigratingCursor()
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(seed, "_mysql_connect", lambda: _MigratingConn())
+
+        links = seed.ensure_proxy_hosts()
+        assert calls["n"] > 1  # the first attempt failed and was retried
+        assert links == {
+            "vault.hylla.us": 20,
+            "jelly.hylla.us": 20,
+            "none.hylla.us": 20,
+        }
 
 class TestTelegram:
     async def test_skipped_without_env(self, temp_settings, monkeypatch):

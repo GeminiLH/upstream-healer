@@ -75,6 +75,13 @@ SEED_HOSTS: List[Dict[str, Any]] = [
 # image takes a while to initialize the proxy_manager schema.
 MYSQL_WAIT_SECONDS = 180
 MYSQL_POLL_SECONDS = 3
+# Schema errors meaning "the NPM app is still migrating proxy_host —
+# wait a bit and retry" (1054: unknown column, 1146: table doesn't
+# exist yet). NPM's migrations alter that table across several steps.
+_MIGRATING_ERRNOS = {1054, 1146}
+# How many times to retry the seeding attempt on a still-migrating
+# schema before giving up (3s apart -> ~30s of migration headroom).
+_SEED_RETRIES = 10
 
 
 # ───────────────────────────── Healer SQLite ─────────────────────────────
@@ -328,45 +335,74 @@ def ensure_proxy_hosts() -> Dict[str, int]:
         logger.warning(f"proxy_host seeding skipped — could not reach MariaDB: {exc}")
         return links
 
-    try:
-        conn = _mysql_connect()
+    # The database can be reachable while the NPM app is still running its
+    # migrations (the seeder and the app both start on `up`), so a schema
+    # error on the first attempt is "not finished yet", not "broken" —
+    # retry for a while instead of skipping.
+    last_error = ""
+    for attempt in range(1, _SEED_RETRIES + 1):
         try:
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, domain_names FROM proxy_host WHERE is_deleted = 0"
-                )
-                existing = {
-                    str(row["domain_names"]).strip(): row["id"]
-                    for row in cursor.fetchall()
-                    if row.get("domain_names")
-                }
-
-            for spec in SEED_HOSTS:
-                domain = spec.get("domain")
-                if not domain:
-                    continue
-                if domain in existing:
-                    links[domain] = existing[domain]
-                    continue
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        """INSERT INTO proxy_host
-                           (domain_names, forward_scheme, forward_host, forward_port, is_deleted)
-                           VALUES (%s, 'http', %s, %s, 0)""",
-                        (domain, spec.get("ip") or "127.0.0.1", str(spec.get("port") or 80)),
-                    )
-                    proxy_host_id = cursor.lastrowid
-                conn.commit()
-                existing[domain] = proxy_host_id
-                links[domain] = proxy_host_id
+            conn = _mysql_connect()
+            try:
+                return _seed_proxy_host_once(conn)
+            finally:
+                conn.close()
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            err_no = exc.args[0] if exc.args else None
+            if err_no in _MIGRATING_ERRNOS and attempt < _SEED_RETRIES:
                 logger.info(
-                    f"Created NPM proxy_host #{proxy_host_id} for {domain} "
-                    f"-> {spec.get('ip')}:{spec.get('port') or 80}"
+                    f"NPM schema still migrating (attempt {attempt}, err {err_no}) — "
+                    "retrying proxy_host seeding in a moment"
                 )
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"proxy_host seeding skipped — {exc}")
+                time.sleep(MYSQL_POLL_SECONDS)
+                continue
+            break
+    logger.warning(
+        f"proxy_host seeding skipped — {last_error or 'MariaDB not ready'} "
+        "(the healer runs fine without NPM; re-run the seeder later to link)"
+    )
+    return links
+
+
+def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
+    """One seeding pass: record existing rows, create the missing ones.
+
+    Returns {domain: proxy_host_id} for every seeded host that now has a
+    row. May raise a schema error (caller retries) — rows are committed
+    one at a time, so a retried pass only creates what is still missing.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id, domain_names FROM proxy_host WHERE is_deleted = 0")
+        existing = {
+            str(row["domain_names"]).strip(): row["id"]
+            for row in cursor.fetchall()
+            if row.get("domain_names")
+        }
+
+    links: Dict[str, int] = {}
+    for spec in SEED_HOSTS:
+        domain = spec.get("domain")
+        if not domain:
+            continue
+        if domain in existing:
+            links[domain] = existing[domain]
+            continue
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """INSERT INTO proxy_host
+                   (domain_names, forward_scheme, forward_host, forward_port, is_deleted)
+                   VALUES (%s, 'http', %s, %s, 0)""",
+                (domain, spec.get("ip") or "127.0.0.1", str(spec.get("port") or 80)),
+            )
+            proxy_host_id = cursor.lastrowid
+        conn.commit()
+        existing[domain] = proxy_host_id
+        links[domain] = proxy_host_id
+        logger.info(
+            f"Created NPM proxy_host #{proxy_host_id} for {domain} "
+            f"-> {spec.get('ip')}:{spec.get('port') or 80}"
+        )
     return links
 
 

@@ -328,7 +328,8 @@ deploy_dev:
     - docker exec upstream-healer python -m app.cli list-hosts
     - docker exec upstream-healer python -m app.cli list-telegram
     - |
-      docker exec nginx-db-1 mysql -u"$NPM_DEV_DB_USER" -p"$NPM_DEV_DB_PASSWORD" proxy_manager \
+      docker exec -e MYSQL_HOST=127.0.0.1 nginx-db-1 mysql -h127.0.0.1 \
+        -u"$NPM_DEV_DB_USER" -p"$NPM_DEV_DB_PASSWORD" proxy_manager \
         -e "SELECT id, domain_names, forward_host, forward_port FROM proxy_host WHERE is_deleted = 0" \
         || echo "(NPM MariaDB not queryable yet — the seeder reported above)"
     - |
