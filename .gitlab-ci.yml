@@ -376,3 +376,39 @@ deploy_production:
   extends: .deploy_base
   environment:
     name: production
+dev_debug:
+  # Manual diagnostic for the dev stack: container states (restart counts,
+  # OOM flags, exit codes) plus a tail of each container log. Use when the
+  # stack misbehaves but the deploy job itself passed.
+  stage: deploy
+  image: docker:latest
+  environment:
+    name: dev
+  needs:
+    - unit_tests
+  variables:
+    DOCKER_HOST: unix:///var/run/docker.sock
+  before_script:
+    - |
+      if ! docker info >/dev/null 2>&1; then
+        echo "WARNING: cannot reach the host docker daemon from this job. Skipping debug."
+        exit 0
+      fi
+  script:
+    - |
+      echo "==> container states"
+      docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | head -25
+      echo
+      echo "==> restart / OOM / exit detail"
+      for c in upstream-healer nginx-app-1 nginx-db-1; do
+        docker inspect --format '{{.Name}} restarts={{.RestartCount}} oomkilled={{.State.OOMKilled}} exitcode={{.State.ExitCode}}' "$c" 2>/dev/null || echo "$c not found"
+      done
+    - |
+      for c in nginx-db-1 nginx-app-1 upstream-healer; do
+        echo
+        echo "===== logs: $c (tail 80) ====="
+        docker logs --tail 80 "$c" 2>&1 | tail -80
+      done
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
