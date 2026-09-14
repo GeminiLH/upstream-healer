@@ -406,7 +406,7 @@ dev_debug:
       for c in nginx-db-1 nginx-app-1 upstream-healer; do
         echo
         echo "===== logs: $c (tail 80) ====="
-        docker logs --tail 80 "$c" 2>&1 | tail -80
+        docker logs --tail 80 "$c" 2>&1 | tail -80 || true
       done
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
