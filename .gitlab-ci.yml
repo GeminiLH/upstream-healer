@@ -233,6 +233,17 @@ deploy_dev:
   script:
     - cd "$CI_PROJECT_DIR"
     - |
+      # Reclaim container names/ports from the previous stack FIRST: a
+      # still-running dev stack (left up by the last deploy) or the old
+      # single-service `upstream-healer` container holds 8787/8181/8182/3306,
+      # so preflight below would otherwise refuse to run while our own
+      # previous deploy is up. Best-effort: compose fails loudly if a
+      # name is genuinely still held by something we don't own.
+      docker rm -f upstream-healer nginx-app-1 nginx-db-1 2>/dev/null || true
+      echo "==> previous dev/prod containers cleared"
+    - |
+      # Preflight now sees the box as it will be during `up`: any port
+      # still occupied belongs to a foreign service, not to us.
       echo "==> Preflight: host ports the dev stack needs"
       ports="$(docker run --rm --network host alpine:3.20 sh -c '
         for p in 8787 8181 8182 3306; do
@@ -245,22 +256,9 @@ deploy_dev:
         exit 1
       fi
       if echo "$ports" | grep -q '^8787 used'; then
-        if docker ps --format '{{.Names}}' | grep -qx 'upstream-healer'; then
-          echo "port 8787 held by the previous upstream-healer — compose will take it back"
-        else
-          echo "ERROR: port 8787 is held by something other than upstream-healer."
-          exit 1
-        fi
+        echo "ERROR: port 8787 is still held after reclaiming our containers."
+        exit 1
       fi
-    - |
-      # Reclaim the container names from the previous stack: an older
-      # single-service deploy leaves an `upstream-healer` container that
-      # still holds the name (and :8787); compose cannot reuse a name a
-      # foreign project owns. Best-effort — compose will fail loudly if
-      # a name is genuinely still held.
-      docker rm -f upstream-healer nginx-app-1 nginx-db-1 2>/dev/null || true
-      echo "==> previous dev/prod containers cleared"
-    - |
       # Give the dev NPM web/edge the first free candidate pair; compose
       # picks them up via ${DEV_WEB_*_PORT} in docker-compose.dev.yml.
       pick_port() {
