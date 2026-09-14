@@ -68,6 +68,30 @@ SEED_HOSTS: List[Dict[str, Any]] = [
         "port": 11000,
         "grace_minutes": 5,
     },
+    {
+        "name": "plex",
+        "mac": "11:22:33:44:55:66",
+        "ip": "192.168.86.30",
+        "domain": "plex.hylla.us",
+        "port": 32400,
+        "grace_minutes": 10,
+    },
+    {
+        "name": "homeassistant",
+        "mac": "77:88:99:aa:bb:cc",
+        "ip": "192.168.86.20",
+        "domain": "ha.hylla.us",
+        "port": 8123,
+        "grace_minutes": 10,
+    },
+    {
+        "name": "portainer",
+        "mac": "de:ad:be:ef:00:01",
+        "ip": "192.168.86.10",
+        "domain": "portainer.hylla.us",
+        "port": 9443,
+        "grace_minutes": 10,
+    },
 ]
 
 # How long to wait for the dev MariaDB (proxy_host table) to appear
