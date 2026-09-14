@@ -72,6 +72,9 @@ services:
     volumes:
       - npm-data:/data
       - npm-certs:/etc/nginx/certs
+      # Required by the current image: its s6 "prepare" check aborts
+      # unless /etc/letsencrypt is a real mount (letsencrypt certs dir).
+      - npm-letsencrypt:/etc/letsencrypt
 
   nginx-db-1:
     # Dev MariaDB for NPM (proxy_manager schema, incl. the proxy_host
@@ -83,7 +86,10 @@ services:
     container_name: nginx-db-1
     restart: unless-stopped
     network_mode: host
-    command: --transaction-isolation=READ-COMMITTED --binlog-expire-seconds=604800
+    # NOTE: no --binlog-expire-seconds here — it was removed in MariaDB
+    # 10.5+ and the mariadb-aria 10.11 base rejects it (mysqld aborts on
+    # start; the container crash-looped on it in pipeline 93).
+    command: --transaction-isolation=READ-COMMITTED
     environment:
       - MYSQL_ROOT_PASSWORD=${NPM_DEV_ROOT_PASSWORD:-devhealer123root}
       - MYSQL_DATABASE=proxy_manager
@@ -117,6 +123,11 @@ services:
       # env) to have a channel created when none exists yet.
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_CHAT_IDS=${TELEGRAM_CHAT_IDS:-}
+      # Root access lets the seeder bootstrap the proxy_manager database
+      # + app user if the DB volume was ever initialized before those
+      # env vars were set (soft-fails if root is unreachable).
+      - NPM_DB_ROOT_USER=${NPM_DEV_DB_ROOT_USER:-root}
+      - NPM_DB_ROOT_PASSWORD=${NPM_DEV_DB_ROOT_PASSWORD:-devhealer123root}
     command: python /app/scripts/seed_dev.py
 
 volumes:
@@ -124,3 +135,4 @@ volumes:
   npm-data:
   npm-certs:
   npm-mysql:
+  npm-letsencrypt:

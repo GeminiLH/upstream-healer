@@ -27,6 +27,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List
 
@@ -192,6 +193,76 @@ async def seed_telegram_if_requested(db: aiosqlite.Connection) -> bool:
 # ───────────────────────────── NPM MariaDB ─────────────────────────────
 
 
+def _bootstrap_npm_schema() -> None:
+    """Ensure the proxy_manager database and app user exist, as MariaDB
+    root.
+
+    The standard MariaDB entrypoint only applies its MYSQL_DATABASE /
+    MYSQL_USER env vars when the data directory is completely empty. A
+    volume that was initialized before those vars were set (e.g. by an
+    earlier crashed run) therefore keeps working for root but has no app
+    database/user — the NPM app can never log in. This makes that edge
+    case self-healing.
+
+    Only runs when NPM_DB_ROOT_USER / NPM_DB_ROOT_PASSWORD are provided;
+    otherwise a no-op. Soft-fails: any error is logged, never raised.
+    """
+    root_user = os.environ.get("NPM_DB_ROOT_USER", "").strip()
+    root_password = os.environ.get("NPM_DB_ROOT_PASSWORD", "")
+    if not root_user or not root_password:
+        return
+
+    db_name = settings.npm_db_name
+    app_user = settings.npm_db_user
+    if not db_name or not app_user:
+        return  # NPM integration disabled — nothing to bootstrap
+    # These come from compose env vars, not user input — but a GRANT can
+    # only take literal identifiers, so refuse anything that isn't a
+    # plain SQL-safe identifier before it lands in a statement.
+    if not re.fullmatch(r"[A-Za-z0-9_]+", db_name) or not re.fullmatch(
+        r"[A-Za-z0-9_]+", app_user
+    ):
+        logger.warning("NPM schema bootstrap skipped (unsafe identifier in env)")
+        return
+
+    import pymysql
+
+    try:
+        conn = pymysql.connect(
+            host=settings.npm_db_host,
+            port=int(settings.npm_db_port),
+            user=root_user,
+            password=root_password,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=5,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"NPM schema bootstrap skipped (root login failed): {exc}")
+        return
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"CREATE DATABASE IF NOT EXISTS `{db_name}` "
+                "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+            )
+            cursor.execute(
+                "CREATE USER IF NOT EXISTS %s@'%%' IDENTIFIED BY %s",
+                (app_user, settings.npm_db_password),
+            )
+            cursor.execute(
+                f"GRANT ALL PRIVILEGES ON `{db_name}`.* TO '{app_user}'@'%'"
+            )
+            cursor.execute("FLUSH PRIVILEGES")
+        conn.commit()
+        logger.info(f"NPM schema bootstrap ok (database `{db_name}`, user '{app_user}')")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"NPM schema bootstrap failed (continuing): {exc}")
+    finally:
+        conn.close()
+
+
 def _mysql_connect():
     import pymysql
 
@@ -242,6 +313,8 @@ def ensure_proxy_hosts() -> Dict[str, int]:
     domains = [spec["domain"] for spec in SEED_HOSTS if spec.get("domain")]
     if not domains:
         return links
+
+    _bootstrap_npm_schema()
 
     try:
         if not _wait_for_mysql(MYSQL_WAIT_SECONDS):

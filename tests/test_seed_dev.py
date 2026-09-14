@@ -53,6 +53,38 @@ class _FakeConn:
         self.closed = True
 
 
+class _RecordingCursor:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, *args):
+        self._conn.statements.append((str(sql).strip(), args))
+
+    def fetchall(self):
+        return []
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.statements = []
+        self.closed = False
+
+    def cursor(self):
+        return _RecordingCursor(self)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
 async def _connect(settings):
     db = await aiosqlite.connect(settings.db_path)
     db.row_factory = aiosqlite.Row
@@ -185,3 +217,46 @@ class TestTelegram:
                 assert (await cursor.fetchone())[0] == len(seed.EVENT_TYPES)
         finally:
             await db.close()
+
+
+class TestBootstrap:
+    def test_noop_without_root_env(self, temp_settings, monkeypatch):
+        import pymysql
+
+        monkeypatch.delenv("NPM_DB_ROOT_USER", raising=False)
+        monkeypatch.delenv("NPM_DB_ROOT_PASSWORD", raising=False)
+        called = []
+        monkeypatch.setattr(pymysql, "connect", lambda **kw: called.append(kw))
+        seed._bootstrap_npm_schema()
+        assert called == []
+
+    def test_creates_database_user_and_grants(self, temp_settings, monkeypatch):
+        import pymysql
+
+        monkeypatch.setenv("NPM_DB_ROOT_USER", "root")
+        monkeypatch.setenv("NPM_DB_ROOT_PASSWORD", "secret")
+        monkeypatch.setattr(seed.settings, "npm_db_user", "proxymanager")
+        monkeypatch.setattr(seed.settings, "npm_db_password", "s3cret")
+        monkeypatch.setattr(seed.settings, "npm_db_name", "proxy_manager")
+        conn = _RecordingConn()
+        monkeypatch.setattr(pymysql, "connect", lambda **kw: conn)
+
+        seed._bootstrap_npm_schema()
+
+        sql = " | ".join(s.upper() for s, _ in conn.statements)
+        assert "CREATE DATABASE IF NOT EXISTS" in sql
+        assert "CREATE USER IF NOT EXISTS" in sql
+        assert "GRANT ALL PRIVILEGES" in sql
+        assert "FLUSH PRIVILEGES" in sql
+        assert conn.closed
+
+    def test_soft_fails_when_root_unreachable(self, temp_settings, monkeypatch):
+        import pymysql
+
+        def _raise(**kw):
+            raise ConnectionError("root login refused")
+
+        monkeypatch.setenv("NPM_DB_ROOT_USER", "root")
+        monkeypatch.setenv("NPM_DB_ROOT_PASSWORD", "wrong")
+        monkeypatch.setattr(pymysql, "connect", _raise)
+        seed._bootstrap_npm_schema()  # must not raise
