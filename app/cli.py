@@ -29,6 +29,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("list-hosts", help="List monitored hosts")
 
+    list_npm = subparsers.add_parser("list-npm-hosts",
+                                     help="List available Nginx Proxy Manager proxy hosts")
+
+    edit_host = subparsers.add_parser("edit-host", help="Edit an existing host's properties")
+    edit_host.add_argument("host_id", type=int, help="Host ID to edit")
+    edit_host.add_argument("--name", default=None)
+    edit_host.add_argument("--mac", default=None)
+    edit_host.add_argument("--ip", default=None)
+    edit_host.add_argument("--domain", default=None)
+    edit_host.add_argument("--port", type=int, default=None, help="Port to monitor")
+    edit_host.add_argument("--npm-proxy-host-id", type=int, default=None,
+                           help="Optional Nginx Proxy Manager proxy host ID (use --list-npm-hosts to see available)")
+    edit_host.add_argument("--grace-minutes", type=int, default=None)
+    edit_host.add_argument("--enable", action="store_true", help="Enable monitoring for this host")
+    edit_host.add_argument("--disable", action="store_true", help="Disable monitoring for this host")
+    edit_host.add_argument("--notes", default=None)
+
     list_events = subparsers.add_parser("list-events", help="List recent events")
     list_events.add_argument("--host-id", type=int, default=None)
     list_events.add_argument("--limit", type=int, default=10, help="Maximum events to return")
@@ -173,6 +190,113 @@ async def disable_telegram(channel_id: int, db: aiosqlite.Connection) -> None:
     print(json.dumps({"id": channel_id, "enabled": False}))
 
 
+async def list_npm_hosts(db: aiosqlite.Connection) -> None:
+    """List available Nginx Proxy Manager proxy hosts."""
+    from app.services.npm import NPMClient
+
+    npm = NPMClient()
+    if not npm.available:
+        print(json.dumps([]))
+        return
+
+    proxy_hosts = npm.list_proxy_hosts()
+    print(json.dumps(proxy_hosts))
+
+
+async def edit_host(host_id: int, args: argparse.Namespace, db: aiosqlite.Connection) -> None:
+    """Edit an existing host's properties."""
+    # Fetch the existing host
+    async with db.execute(
+        "SELECT id, name, domain, mac_address, current_ip, npm_proxy_host_id, "
+        "port, grace_minutes, enabled, notes, updated_at FROM hosts WHERE id = ?",
+        (host_id,),
+    ) as cursor:
+        row = await cursor.fetchone()
+        if not row:
+            raise ValueError(f"Host {host_id} was not found")
+
+        host = dict(row)
+
+    # Validate port if provided
+    if args.port is not None and not (1 <= args.port <= 65535):
+        raise ValueError("--port must be between 1 and 65535")
+
+    # Validate grace minutes if provided
+    if args.grace_minutes is not None and args.grace_minutes < 0:
+        raise ValueError("--grace-minutes must be zero or greater")
+
+    # Build update fields
+    updates = []
+    values = []
+
+    if args.name is not None:
+        updates.append("name = ?")
+        values.append(args.name)
+
+    if args.mac is not None:
+        updates.append("mac_address = ?")
+        values.append(normalize_mac(args.mac))
+
+    if args.ip is not None:
+        updates.append("current_ip = ?")
+        values.append(args.ip)
+
+    if args.domain is not None:
+        updates.append("domain = ?")
+        values.append(args.domain)
+
+    if args.npm_proxy_host_id is not None:
+        updates.append("npm_proxy_host_id = ?")
+        values.append(args.npm_proxy_host_id)
+
+    if args.port is not None:
+        updates.append("port = ?")
+        values.append(args.port)
+
+    if args.grace_minutes is not None:
+        updates.append("grace_minutes = ?")
+        values.append(args.grace_minutes)
+
+    if args.enable:
+        updates.append("enabled = 1")
+
+    if args.disable:
+        updates.append("enabled = 0")
+
+    if args.notes is not None:
+        updates.append("notes = ?")
+        values.append(args.notes)
+
+    if not updates:
+        print("No changes specified. Use --help for available options.")
+        return
+
+    now = current_time().isoformat()
+    updates.append("updated_at = ?")
+    values.append(now)
+    values.append(host_id)
+
+    await db.execute(
+        f"UPDATE hosts SET {', '.join(updates)} WHERE id = ?",
+        values,
+    )
+    await db.commit()
+
+    # Update host_state last_ip if IP changed
+    if args.ip is not None:
+        await db.execute(
+            "UPDATE host_state SET last_ip = ? WHERE host_id = ?",
+            (args.ip, host_id),
+        )
+        await db.commit()
+
+    print(json.dumps({
+        "id": host_id,
+        "updated": True,
+        "fields": updates[:-1],  # exclude updated_at
+    }))
+
+
 async def run(args: argparse.Namespace) -> None:
     await init_db()
     async with aiosqlite.connect(settings.db_path) as db:
@@ -180,10 +304,14 @@ async def run(args: argparse.Namespace) -> None:
             await add_host(args, db)
         elif args.command == "list-hosts":
             await list_hosts(db)
+        elif args.command == "list-npm-hosts":
+            await list_npm_hosts(db)
         elif args.command == "list-events":
             await list_events(args, db)
         elif args.command == "disable-host":
             await disable_host(args.host_id, db)
+        elif args.command == "edit-host":
+            await edit_host(args.host_id, args, db)
         elif args.command == "add-telegram":
             await add_telegram(args, db)
         elif args.command == "list-telegram":

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
 import aiosqlite
 import pytest
@@ -14,6 +15,7 @@ from app.cli import (
     build_parser,
     disable_host,
     disable_telegram,
+    edit_host,
     list_events,
     list_hosts,
     list_telegram,
@@ -151,6 +153,202 @@ class TestTelegramCommands:
     async def test_disable_unknown_channel_raises(self, cli_db):
         with pytest.raises(ValueError, match="not found"):
             await disable_telegram(999, cli_db)
+
+
+class TestEditHost:
+    async def test_edit_host_updates_name(self, cli_db, capsys):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80)"
+        )
+        await cli_db.execute(
+            "INSERT INTO host_state (host_id, status) VALUES (1, 'unknown')"
+        )
+        await cli_db.commit()
+
+        args = build_parser().parse_args(["edit-host", "1", "--name", "UpdatedVault"])
+        await edit_host(1, args, cli_db)
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["id"] == 1
+        assert out["updated"] is True
+
+    async def test_edit_host_updates_npm_proxy_host_id(self, cli_db, capsys):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80)"
+        )
+        await cli_db.execute(
+            "INSERT INTO host_state (host_id, status) VALUES (1, 'unknown')"
+        )
+        await cli_db.commit()
+
+        args = build_parser().parse_args(["edit-host", "1", "--npm-proxy-host-id", "42"])
+        await edit_host(1, args, cli_db)
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["id"] == 1
+        assert out["updated"] is True
+        async with cli_db.execute(
+            "SELECT npm_proxy_host_id FROM hosts WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row["npm_proxy_host_id"] == 42
+
+    async def test_edit_host_updates_port(self, cli_db, capsys):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80)"
+        )
+        await cli_db.execute(
+            "INSERT INTO host_state (host_id, status) VALUES (1, 'unknown')"
+        )
+        await cli_db.commit()
+
+        args = build_parser().parse_args(["edit-host", "1", "--port", "443"])
+        await edit_host(1, args, cli_db)
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["id"] == 1
+        async with cli_db.execute(
+            "SELECT port FROM hosts WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row["port"] == 443
+
+    async def test_edit_host_updates_ip_and_state(self, cli_db, capsys):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port, current_ip) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80, '10.0.0.1')"
+        )
+        await cli_db.execute(
+            "INSERT INTO host_state (host_id, status, last_ip) VALUES (1, 'unknown', '10.0.0.1')"
+        )
+        await cli_db.commit()
+
+        args = build_parser().parse_args(["edit-host", "1", "--ip", "10.0.0.99"])
+        await edit_host(1, args, cli_db)
+
+        out = json.loads(capsys.readouterr().out)
+        assert out["id"] == 1
+        async with cli_db.execute(
+            "SELECT current_ip FROM hosts WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row["current_ip"] == "10.0.0.99"
+        async with cli_db.execute(
+            "SELECT last_ip FROM host_state WHERE host_id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row["last_ip"] == "10.0.0.99"
+
+    async def test_edit_host_enable_disable(self, cli_db, capsys):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port, enabled) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80, 1)"
+        )
+        await cli_db.execute(
+            "INSERT INTO host_state (host_id, status) VALUES (1, 'unknown')"
+        )
+        await cli_db.commit()
+
+        # Disable
+        args = build_parser().parse_args(["edit-host", "1", "--disable"])
+        await edit_host(1, args, cli_db)
+        async with cli_db.execute(
+            "SELECT enabled FROM hosts WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row["enabled"] == 0
+
+        # Enable
+        args = build_parser().parse_args(["edit-host", "1", "--enable"])
+        await edit_host(1, args, cli_db)
+        async with cli_db.execute(
+            "SELECT enabled FROM hosts WHERE id = 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row["enabled"] == 1
+
+    async def test_edit_host_no_changes(self, cli_db, capsys):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80)"
+        )
+        await cli_db.execute(
+            "INSERT INTO host_state (host_id, status) VALUES (1, 'unknown')"
+        )
+        await cli_db.commit()
+
+        args = build_parser().parse_args(["edit-host", "1"])
+        await edit_host(1, args, cli_db)
+
+        out = capsys.readouterr().out
+        assert "No changes specified" in out
+
+    async def test_edit_host_not_found(self, cli_db):
+        args = build_parser().parse_args(["edit-host", "999", "--name", "Ghost"])
+        with pytest.raises(ValueError, match="not found"):
+            await edit_host(999, args, cli_db)
+
+    async def test_edit_host_invalid_port(self, cli_db):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80)"
+        )
+        await cli_db.commit()
+
+        args = build_parser().parse_args(["edit-host", "1", "--port", "0"])
+        with pytest.raises(ValueError, match="port"):
+            await edit_host(1, args, cli_db)
+
+    async def test_edit_host_negative_grace(self, cli_db):
+        await cli_db.execute(
+            "INSERT INTO hosts (name, mac_address, port) VALUES ('Vault', 'AA:BB:CC:DD:EE:FF', 80)"
+        )
+        await cli_db.commit()
+
+        args = build_parser().parse_args(["edit-host", "1", "--grace-minutes", "-1"])
+        with pytest.raises(ValueError, match="grace-minutes"):
+            await edit_host(1, args, cli_db)
+
+
+class TestListNpmHosts:
+    @patch("app.services.npm.NPMClient")
+    async def test_list_npm_hosts_returns_hosts(self, mock_npm, cli_db, capsys):
+        mock_instance = MagicMock()
+        mock_instance.available = True
+        mock_instance.list_proxy_hosts.return_value = [
+            {"id": 1, "domain_names": ["vault.hylla.us"], "forward_host": "10.0.0.1", "forward_port": 80},
+            {"id": 2, "domain_names": ["jelly.hylla.us"], "forward_host": "10.0.0.2", "forward_port": 7878},
+        ]
+        mock_npm.return_value = mock_instance
+
+        from app.cli import list_npm_hosts
+        await list_npm_hosts(cli_db)
+
+        out = json.loads(capsys.readouterr().out)
+        assert len(out) == 2
+        assert out[0]["id"] == 1
+        assert out[1]["id"] == 2
+
+    @patch("app.services.npm.NPMClient")
+    async def test_list_npm_hosts_unavailable(self, mock_npm, cli_db, capsys):
+        mock_instance = MagicMock()
+        mock_instance.available = False
+        mock_npm.return_value = mock_instance
+
+        from app.cli import list_npm_hosts
+        await list_npm_hosts(cli_db)
+
+        out = json.loads(capsys.readouterr().out)
+        assert out == []
+
+    @patch("app.services.npm.NPMClient")
+    async def test_list_npm_hosts_empty(self, mock_npm, cli_db, capsys):
+        mock_instance = MagicMock()
+        mock_instance.available = True
+        mock_instance.list_proxy_hosts.return_value = []
+        mock_npm.return_value = mock_instance
+
+        from app.cli import list_npm_hosts
+        await list_npm_hosts(cli_db)
+
+        out = json.loads(capsys.readouterr().out)
+        assert out == []
 
 
 class TestListEvents:
