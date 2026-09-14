@@ -239,3 +239,31 @@ class NPMClient:
         self.exec("nginx -s reload")
         logger.info("nginx gracefully reloaded")
         return True
+
+    def get_all_hosts(self) -> List[Dict[str, Any]]:
+        """Return every non-deleted host row from the NPM database."""
+        if not self.available:
+            return []
+        try:
+            with self._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, domain_names, forward_host, forward_port,
+                               protocol, ssl_removed, ssl_forced,
+                               http2_support, client_body_buffer,
+                               proxy_buffer_size, advanced_config
+                        FROM proxy_host
+                        WHERE is_deleted = 0
+                        ORDER BY id
+                        """
+                    )
+                    return [dict(row) for row in cur.fetchall()]
+        except Exception as e:
+            logger.warning(f"get_all_hosts failed: {e}")
+            return []
+
+    @staticmethod
+    def scan_types() -> List[str]:
+        """Return the list of scanner types the system can use."""
+        return ["arp-scan", "scapy"]

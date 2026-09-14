@@ -529,6 +529,37 @@ async def save_settings(
     return RedirectResponse("/settings", status_code=303)
 
 
+# ───────────────────────────── Diagnostic ─────────────────────────────
+
+@app.get("/diagnostic", response_class=HTMLResponse)
+async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
+    npm = NPMClient()
+    npm_hosts = npm.get_all_hosts()
+
+    scan_types = NPMClient.scan_types()
+
+    return templates.TemplateResponse(
+        "diagnostic.html",
+        {
+            "request": request,
+            "npm_hosts": npm_hosts,
+            "npm_available": npm.available,
+            "scan_types": scan_types,
+        },
+    )
+
+
+@app.get("/api/diagnostic")
+async def diagnostic_api():
+    npm = NPMClient()
+    npm_hosts = npm.get_all_hosts()
+    return {
+        "npm_hosts": npm_hosts,
+        "npm_available": npm.available,
+        "scan_types": NPMClient.scan_types(),
+    }
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "upstream-healer"}
