@@ -1,6 +1,6 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-07-09.
+> Last updated: 2026-09-15.
 
 ## Design decisions
 
@@ -41,8 +41,15 @@
 - **GitHub (`origin` → `git@github.com:GeminiLH/upstream-healer.git`) is
   legacy and can be ignored** in all workflows — but do **NOT** remove the
   remote, the GitHub repo, or any legacy GitHub-related files.
+- **NPM is interacted with via `docker exec` — never via the web UI** (user
+  directive, 2026-09-15). Relevant containers on the batcave box:
+  `nginx-app-1` (NPM app: exec e.g. `printenv | grep DB_MYSQL_`, `nginx -t`,
+  `nginx -s reload`) and `nginx-db-1` (MariaDB: exec `mysql proxy_manager`).
+  The NPM web UI (`:8181`) is not reachable from this workstation, so from
+  here the equivalents are direct MariaDB SQL over `:3306` and the manual
+  `dev_debug` CI job for container state/log inspection.
 
-## CI / pipeline verification (VERIFIED WORKING — 2026-07-09)
+## CI / pipeline verification (VERIFIED WORKING — 2026-07-09, re-verified 2026-09-15)
 
 Access is in the repo-root **`.env.local`** file (git-ignored; loaded with
 `set -a; . ./.env.local; set +a`). **Never commit it**, never print its values
@@ -66,14 +73,20 @@ collection with `ValidationError: extra_forbidden`.
   - `GET  /api/v4/projects/4/pipelines/:id/jobs` — job statuses
   - `GET  /api/v4/projects/4/jobs/:id/trace` — job log output
   - `POST /api/v4/projects/4/pipelines/:id/retry` — re-run pipeline
-- Pipeline stages (from pipeline #119 on HEAD `cb09b16`): `lint`,
-  `unit_tests`, `build_image` → `deploy_dev` → `dev_down` (all success);
-  manual jobs: `deploy_test`, `deploy_production`, `dev_debug`.
+- Pipeline stages (pipeline #36 on HEAD `0311e56e`, verified 2026-09-15):
+  `lint`, `unit_tests`, `build_image` → `deploy_dev` → `dev_down` (all
+  success); manual jobs: `deploy_test`, `deploy_production`, `dev_debug`.
 - **Post-commit workflow**: push to `gitlab/main` → poll
   `GET /api/v4/projects/4/pipelines?ref=main&per_page=1` until `status` is a
   finished state (success/failed/canceled) → list jobs, report failures with
   `trace` → manual deploy jobs require explicit user confirmation before
   triggering.
+- **Manual jobs can be triggered with the pipeline token** (verified
+  2026-09-15, `dev_debug` job 638 → success):
+  `POST /api/v4/projects/4/jobs/:id/play` with `GITLAB_PIPELINE_TOKEN`.
+  Use `dev_debug` any time the dev stack misbehaves — it prints container
+  states, restart/OOM/exit details, and 80-line log tails of `nginx-db-1`,
+  `nginx-app-1`, `upstream-healer`.
 
 ## Gotchas
 
@@ -92,3 +105,29 @@ collection with `ValidationError: extra_forbidden`.
   UI-configured channels are never touched.
 - GitLab CI deploy jobs need `needs:optional` syntax for `unit_tests`
   (fixed in commits 4bbdfd7 / bbddb45) — preserve if editing CI.
+
+## KNOWN BUGS — verified live in dev 2026-09-15 (via `dev_debug` job 638)
+
+1. **`app/services/npm.py:256` — `get_all_hosts` SELECT is broken on the
+   current NPM schema.** It selects `protocol`, `ssl_removed`,
+   `client_body_buffer`, `proxy_buffer_size` — none of which exist. Error
+   1054 (`"Unknown column 'protocol' in 'field list'"`), logged by the
+   deployed healer. Real `proxy_host` columns (SHOW COLUMNS, MariaDB
+   10.11): `id, created_on, modified_on, owner_user_id, is_deleted,
+   domain_names, forward_host, forward_port, access_list_id, certificate_id,
+   ssl_forced, caching_enabled, block_exploits, advanced_config, meta,
+   allow_websocket_upgrade, http2_support, forward_scheme, enabled,
+   locations, hsts_enabled, hsts_subdomains, trust_forwarded_proto`.
+   Consequence: the healer's NPM host sync silently returns `[]`.
+2. **`scripts/seed_dev.py:432` — the `proxy_host` INSERT omits
+   `owner_user_id`, `access_list_id`, `certificate_id`** (all NOT NULL, no
+   defaults) → seeding fails on a fresh NPM DB with "cannot be null", yet
+   the seed container exits 0, so the DB is left with 0 proxy_host rows.
+   Must supply these values (owner = a real `user` row).
+3. **Dev sandbox NPM DB state** (`nginx-db-1`): schema migrated to
+   20260131163528, but `user`, `access_list`, and `certificate` tables are
+   **empty** — the NPM setup wizard was never completed on the dev box.
+   Until then the NPM web UI shows the setup wizard, and seeder fixes must
+   either bootstrap a dev admin row or tolerate this state. Direct SQL from
+   this workstation works: `pymysql` → `192.168.86.38:3306`
+   (user `proxymanager`, sandbox password — see compose defaults).

@@ -1,19 +1,25 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-07-09 (updated after ruff fix + memory-bank commit).
+> Snapshot: 2026-09-15 (after live dev-stack verification via the `dev_debug`
+> CI job — found 2 real bugs, see decisions.md "KNOWN BUGS").
 > **Verify before acting**: `git status`, `git log -5`,
 > then run `python3 -m pytest tests/ -q`.
 
 ## Current state
 
 - Branch: `main` (tracking `gitlab/main`; also pushed to `origin`/GitHub).
-- HEAD: `cb09b16 fix(tests): update plex/homeassistant/portainer expected npm_proxy_host_id values`
-  (superseded locally by the memory-bank commit — see git log)
+- HEAD: `0311e56e` (memory-bank commit; pipeline #36 on gitlab/main —
+  lint / unit_tests / build_image / deploy_dev / dev_down all **success**,
+  verified 2026-09-15). Prior: `cb09b16` tests fix.
 - Health (verified this snapshot): **105 tests pass**; **ruff clean**
   (`python3 -m ruff check app/ scripts/ tests/` → all checks passed).
   The F541 at `app/cli.py:243` (stray `f` prefix in `check-npm-db`) was
   fixed with `ruff check --fix` — the fix lives inside the uncommitted
   `app/cli.py` WIP.
+- Dev stack on batcave (verified via `dev_debug` job 638): all containers
+  up, 0 restarts, no OOM. **But see KNOWN BUGS below** — the deployed
+  healer's NPM sync and the dev seeder are both broken on the current
+  schema.
 - Working tree has **uncommitted WIP** (4 files, +546/−334):
 
 ```
@@ -62,11 +68,36 @@ were updated to match.
 ## Immediate next steps
 
 1. ~~Ruff F541~~ — done 2026-07-09 (`ruff check --fix app/cli.py`); lint is clean.
-2. Review/trim the WIP diagnostic logging — some of it (per-row host logs)
+2. **Fix the two KNOWN BUGS** (decisions.md):
+   a. `app/services/npm.py:256` — rewrite the `get_all_hosts` SELECT to real
+      columns (`forward_scheme`, `ssl_forced`, `http2_support`,
+      `advanced_config`, …); update any tests asserting the old column names.
+   b. `scripts/seed_dev.py:432` — the `proxy_host` INSERT must supply
+      `owner_user_id`, `access_list_id`, `certificate_id` (resolve from the
+      NPM `user`/`access_list`/`certificate` tables, or bootstrap the dev
+      admin row first — those tables are empty in the sandbox because the
+      NPM setup wizard was never completed there).
+3. After the fixes: push to `gitlab/main`, let `deploy_dev` run, then
+   re-trigger `dev_debug` and confirm the healer logs show real proxy_host
+   rows instead of the 1054 error.
+4. Review/trim the WIP diagnostic logging — some of it (per-row host logs)
    is noisy for production; consider demoting to debug.
-3. Commit the WIP in logical pieces (CLI commands; diagnostic logging) once
+5. Commit the WIP in logical pieces (CLI commands; diagnostic logging) once
    verified, then push to `gitlab/main`.
-4. Optional: document `check-npm-db` in README under "Docker exec administration".
+6. Optional: document `check-npm-db` in README under "Docker exec administration".
+
+## Live-verification recipe (no docker/SSH from this workstation)
+
+- Dev stack status/logs: trigger the manual **`dev_debug`** job
+  (`POST /api/v4/projects/4/jobs/<job_id>/play` with `GITLAB_PIPELINE_TOKEN`,
+  find `<job_id>` from `GET /api/v4/projects/4/pipelines/<latest>/jobs`),
+  then read its `trace` — it prints container states, restart/OOM/exit
+  details, and 80-line log tails of `nginx-db-1`, `nginx-app-1`,
+  `upstream-healer`.
+- Direct DB checks: `pymysql` → `192.168.86.38:3306` (dev MariaDB
+  `proxy_manager`; sandbox creds in `docker-compose.dev.yml` defaults).
+- NPM interaction rule: `docker exec` on the batcave box — never the web UI
+  (ports 8181/8182 are not reachable from the LAN).
 
 ## Conventions (keep these when editing)
 

@@ -1,6 +1,6 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-07-09. Re-verify with `git status` and `progress.md` before relying on this.
+> Last updated: 2026-09-15. Re-verify with `git status` and `progress.md` before relying on this.
 
 ## What it is
 
@@ -48,21 +48,35 @@ must never be copied into code, tests, or the memory bank.
 - `upstream healer notes.txt` contains live secrets and is in `.gitignore` —
   **never commit it** (hard rule, see decisions.md).
 
-## Ports (host networking — no published ports shown by `docker ps`)
+## Ports (host networking on the batcave box — no published ports in `docker ps`)
 
-| Port | Service | Where |
+| Port | Service | Reachable from this workstation (192.168.86.24)? |
 |---|---|---|
-| **8787** | Healer web UI + JSON API | dev + prod |
-| **8181** | NPM web UI (HTTP) | dev (`WEB_HTTP_PORT`, override `DEV_WEB_HTTP_PORT`) |
-| **8182** | NPM edge + web HTTPS | dev (`WEB_HTTPS_PORT` / `EDGE_PORT`, overrides `DEV_WEB_*_PORT`) |
-| **3306** | Dev MariaDB (`proxy_manager` schema, container `nginx-db-1`) | dev |
-| 80 / 443 | NPM edge | prod (dev deliberately moves off these) |
+| **8787** | Healer web UI + JSON API (dev+prod) | yes |
+| **8181 / 8182** | NPM web UI + edge (dev; `DEV_WEB_*_PORT` overrides) | **NO — connection refused** (on-box only) |
+| **3306** | Dev MariaDB, `proxy_manager` schema (container `nginx-db-1`) | **yes — open on 0.0.0.0** (use direct SQL from here) |
+| 80 / 443 | NPM edge in prod | dev deliberately moves NPM off these; on batcave `:80` answers with HTTP 200 for some **other** service (not NPM), `:443` socket open but TLS fails |
 
 GitLab instance: SSH `192.168.86.38:32768`; Web/API **`http://192.168.86.38:32769`**
-(port map 32768→ssh, 32769→80, 32770→443). Project id 4. Pipeline tokens live
-in the git-ignored `.env.local` at repo root (see decisions.md — do not name it
-`.env`, the app loads that file via pydantic-settings).
+(port map 32768→git-ssh, 32769→web-80, 32770→web-443 — 443 not reachable from
+here, use 32769). Project id 4. Pipeline tokens live in the git-ignored
+`.env.local` at repo root (see decisions.md — do not name it `.env`, the app
+loads that file via pydantic-settings).
 Dev NPM UI login: `dev@hylla.local` / `devhealer123` (sandbox defaults).
+
+## Dev stack on the batcave box (192.168.86.38)
+
+Verified via the manual `dev_debug` CI job (2026-09-15): containers
+`nginx-app-1` (NPM, `jc21/nginx-proxy-manager:latest`), `nginx-db-1`
+(MariaDB 10.11, `jc21/mariadb-aria`), `upstream-healer`, plus one-shot
+`upstream-healer-seed-1` (exits 0). All on host networking; named volumes
+(`healer-data`, `npm-*`) persist across deploys.
+
+**Interact with NPM via `docker exec` — never via the web UI** (user
+directive). There is no docker CLI or SSH from this workstation, so from here
+the equivalent is: direct MariaDB over `:3306`, or triggering the manual
+`dev_debug` CI job (job dumps container states + log tails; see decisions.md
+for the trigger recipe).
 
 ## Key commands
 
