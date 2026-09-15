@@ -112,7 +112,7 @@ class TestSeedHosts:
             assert hosts[1]["port"] == 11000
             async with db.execute("SELECT host_id, status FROM host_state ORDER BY host_id") as cursor:
                 states = [dict(r) for r in await cursor.fetchall()]
-            assert len(states) == 3
+            assert len(states) == 6
             assert all(s["status"] == "unknown" for s in states)
         finally:
             await db.close()
@@ -147,7 +147,7 @@ class TestNpmLinks:
         monkeypatch.setattr(seed, "_wait_for_mysql", lambda timeout: True)
         # vault's domain already exists in NPM; the others must be created.
         existing = [{"id": 11, "domain_names": "vault.hylla.us"}]
-        insert_ids = [12, 13]
+        insert_ids = [12, 13, 14, 15, 16]
         conn = _FakeConn(existing, insert_ids)
         monkeypatch.setattr(seed, "_mysql_connect", lambda: conn)
 
