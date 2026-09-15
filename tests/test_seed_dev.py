@@ -246,7 +246,6 @@ class TestNpmLinks:
             "ha.hylla.us": 20,
             "portainer.hylla.us": 20,
             "jelly.hylla.us": 20,
-            "none.hylla.us": 20,
         }
 
 class TestTelegram:
