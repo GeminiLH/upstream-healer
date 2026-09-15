@@ -151,7 +151,8 @@ build_image:
   variables:
     GIT_STRATEGY: none
   needs:
-    - optional: unit_tests
+    - job: unit_tests
+      optional: true
     - build_image
   script:
     - apk add --no-cache openssh-client git
@@ -210,7 +211,8 @@ deploy_dev:
   environment:
     name: dev
   needs:
-    - optional: unit_tests
+    - job: unit_tests
+      optional: true
     - build_image
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
@@ -352,7 +354,8 @@ dev_down:
   environment:
     name: dev
   needs:
-    - optional: unit_tests
+    - job: unit_tests
+      optional: true
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
   before_script:
@@ -384,7 +387,8 @@ dev_debug:
   environment:
     name: dev
   needs:
-    - optional: unit_tests
+    - job: unit_tests
+      optional: true
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
   before_script:
