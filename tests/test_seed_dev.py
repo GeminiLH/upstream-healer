@@ -130,8 +130,6 @@ class TestSeedHosts:
             assert len(added1) == 6
         finally:
             await db.close()
-        finally:
-            await db.close()
 
 
 class TestNpmLinks:
