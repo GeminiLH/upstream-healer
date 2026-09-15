@@ -177,9 +177,9 @@ class TestNpmLinks:
             assert hosts["vault"]["npm_proxy_host_id"] == 99
             assert hosts["jellyfin"]["npm_proxy_host_id"] == 12
             assert hosts["failtest"]["npm_proxy_host_id"] == 13
-            assert hosts["plex"]["npm_proxy_host_id"] is None
-            assert hosts["homeassistant"]["npm_proxy_host_id"] is None
-            assert hosts["portainer"]["npm_proxy_host_id"] is None
+            assert hosts["plex"]["npm_proxy_host_id"] == 14
+            assert hosts["homeassistant"]["npm_proxy_host_id"] == 15
+            assert hosts["portainer"]["npm_proxy_host_id"] == 16
             # a second pass must not touch the already-linked rows
             async with db.execute(
                 "UPDATE hosts SET npm_proxy_host_id = 500 WHERE name = 'jellyfin'"
