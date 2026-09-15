@@ -105,9 +105,9 @@ class TestSeedHosts:
         db = await _connect(seed.settings)
         try:
             added = await seed.seed_hosts(db)
-            assert added == ["vault", "jellyfin", "failtest"]
+            assert set(added) == {"vault", "jellyfin", "failtest", "plex", "homeassistant", "portainer"}
             hosts = await _host_rows(db)
-            assert [h["name"] for h in hosts] == ["vault", "jellyfin", "failtest"]
+            assert set(h["name"] for h in hosts) == {"vault", "jellyfin", "failtest", "plex", "homeassistant", "portainer"}
             assert hosts[0]["mac_address"] == "46:dc:21:61:26:93"
             assert hosts[1]["port"] == 11000
             async with db.execute("SELECT host_id, status FROM host_state ORDER BY host_id") as cursor:
@@ -117,16 +117,19 @@ class TestSeedHosts:
         finally:
             await db.close()
 
+
     async def test_idempotent_on_second_run(self, temp_settings):
         await seed.init_db()
         db = await _connect(seed.settings)
         try:
-            first = await seed.seed_hosts(db)
-            second = await seed.seed_hosts(db)
-            assert len(first) == 3
-            assert second == []
+            added1 = await seed.seed_hosts(db)
+            added2 = await seed.seed_hosts(db)
+            assert added2 == []
             hosts = await _host_rows(db)
-            assert len(hosts) == 3
+            assert len(hosts) == 6
+            assert len(added1) == 6
+        finally:
+            await db.close()
         finally:
             await db.close()
 
@@ -155,6 +158,9 @@ class TestNpmLinks:
             "vault.hylla.us": 11,
             "jelly.hylla.us": 12,
             "none.hylla.us": 13,
+            "plex.hylla.us": 14,
+            "ha.hylla.us": 15,
+            "portainer.hylla.us": 16,
         }
 
         # ...and the sqlite side only links rows whose link is still NULL.
@@ -173,6 +179,9 @@ class TestNpmLinks:
             assert hosts["vault"]["npm_proxy_host_id"] == 99
             assert hosts["jellyfin"]["npm_proxy_host_id"] == 12
             assert hosts["failtest"]["npm_proxy_host_id"] == 13
+            assert hosts["plex"]["npm_proxy_host_id"] is None
+            assert hosts["homeassistant"]["npm_proxy_host_id"] is None
+            assert hosts["portainer"]["npm_proxy_host_id"] is None
             # a second pass must not touch the already-linked rows
             async with db.execute(
                 "UPDATE hosts SET npm_proxy_host_id = 500 WHERE name = 'jellyfin'"
@@ -234,6 +243,10 @@ class TestNpmLinks:
         assert calls["n"] > 1  # the first attempt failed and was retried
         assert links == {
             "vault.hylla.us": 20,
+            "none.hylla.us": 20,
+            "plex.hylla.us": 20,
+            "ha.hylla.us": 20,
+            "portainer.hylla.us": 20,
             "jelly.hylla.us": 20,
             "none.hylla.us": 20,
         }
