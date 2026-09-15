@@ -172,7 +172,7 @@ class TestNpmLinks:
                 pass
             await db.commit()
             linked = await seed.apply_npm_links(db, links)
-            assert linked == 2  # vault was pre-linked to 99, left untouched
+            assert linked == 5  # vault was pre-linked to 99, left untouched; 5 others linked
             hosts = {h["name"]: h for h in await _host_rows(db)}
             assert hosts["vault"]["npm_proxy_host_id"] == 99
             assert hosts["jellyfin"]["npm_proxy_host_id"] == 12
