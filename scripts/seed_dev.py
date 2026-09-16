@@ -425,9 +425,9 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
     which a stock dev stack never completed. So:
 
     * owner: reuse an existing ``user`` row (the wizard must have run);
-      otherwise create one with the default password *directly in the
-      database* (``CREATE USER`` with the bcrypt list, i.e. the "allow
-      with a password" option — no wizard completion required).
+      otherwise create one with a valid bcrypt password hash *directly in the
+      ``user`` table* (the "allow with a password" login path — no wizard
+      completion required).
     * access list: always a fresh dev allowlist (pass_auth: no login for
       the lab's own requests) — idempotent enough for a throwaway env.
     * certificate: reuse id 0 (NPM's built-in "none" cert), else create.
@@ -499,24 +499,6 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
                 params_for(values, timestamps=True),
             )
             owner_user_id = cursor.lastrowid
-            try:
-                import bcrypt
-
-                hashed = bcrypt.hashpw(
-                    password.encode("utf-8"), bcrypt.gensalt(12)
-                ).decode("ascii")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    f"Could not hash the NPM default password ({exc}) — the "
-                    "owner user exists but has no password login"
-                )
-                hashed = ""
-            cursor.execute(
-                # CREATE USER with a password list = the wizard's "allow with a
-                # password" step, done in the DB so the wizard is never needed.
-                "CREATE USER (email = %s, password = %s, realm = %s)",
-                ("healer@example.com", hashed, "proxyManager"),
-            )
             conn.commit()
             logger.info(
                 f"NPM owner: created user #{owner_user_id} "
