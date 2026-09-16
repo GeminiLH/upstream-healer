@@ -85,6 +85,84 @@ class _RecordingConn:
         self.closed = True
 
 
+class _ClosingCursor:
+    """Fidelity-only cursor: raises ``Cursor closed`` if a statement runs
+    after the surrounding ``with`` block has closed it (exactly what a real
+    pymysql cursor does), and plays back scripted results.
+
+    ``script`` is a list of ``(sql_prefix, result)`` pairs, matched in order
+    by substring (case-insensitive) against the most recent ``execute``.
+    ``fetchall`` returns ``list(result)`` (so a single-row script entry works
+    for both SELECTs); ``fetchone`` returns the first row. A result of
+    ``None`` means "no rows". Recording executed statements lets a regression
+    assert that a statement no longer runs *after* its cursor closes.
+    """
+
+    def __init__(self, script):
+        self.script = script
+        self._open = False
+        self._last_sql = ""
+        self.executed = []
+        self.lastrowid = None
+
+    def __enter__(self):
+        self._open = True
+        return self
+
+    def __exit__(self, *exc):
+        self._open = False
+        return False
+
+    def _match(self, sql):
+        s = str(sql).lower()
+        for prefix, result in self.script:
+            if prefix.lower() in s:
+                return result
+        return None
+
+    def execute(self, sql, *args):
+        if not self._open:
+            raise RuntimeError("Cursor closed")
+        self._last_sql = str(sql)
+        self.executed.append(str(sql).strip())
+        if "insert" in str(sql).lower():
+            self.lastrowid = (self.lastrowid or 0) + 1
+        return self._match(self._last_sql)
+
+    def fetchone(self):
+        if not self._open:
+            raise RuntimeError("Cursor closed")
+        result = self._match(self._last_sql)
+        return result[0] if result else None
+
+    def fetchall(self):
+        if not self._open:
+            raise RuntimeError("Cursor closed")
+        result = self._match(self._last_sql)
+        return list(result) if result is not None else []
+
+
+class _ClosingConn:
+    """Connection handout for the fidelity cursor: a fresh ``_ClosingCursor``
+    per ``cursor()`` call, sharing one script so every block sees the same
+    scripted results. Also records every cursor it hands out."""
+
+    def __init__(self, script):
+        self.script = script
+        self.cursors = []
+
+    def cursor(self):
+        cur = _ClosingCursor(self.script)
+        self.cursors.append(cur)
+        return cur
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
 async def _connect(settings):
     db = await aiosqlite.connect(settings.db_path)
     db.row_factory = aiosqlite.Row
@@ -259,6 +337,44 @@ class TestNpmLinks:
             "portainer.hylla.us": 20,
             "jelly.hylla.us": 20,
         }
+
+
+class TestCursorLifecycle:
+    """The "Cursor closed" regression.
+
+    ``_ensure_npm_defaults`` hands out a cursor per ``with`` block. pymysql
+    closes the cursor at the end of each block and raises "Cursor closed" if a
+    statement runs afterwards. In the buggy revision the owner ``INSERT INTO
+    user`` ran *after* the ``SELECT user`` block had closed its cursor — so a
+    pristine dev NPM (``user`` table empty, the stock sandbox's exact state)
+    failed the moment the INSERT fired, the retry loop saw a non-schema error
+    and gave up, and the seeder linked **zero** proxy_host rows.
+    """
+
+    def test_defaults_no_cursor_use_after_close(self, temp_settings, monkeypatch):
+        monkeypatch.setenv("NPM_DEFAULT_PASSWORD", "dev-healer")
+        # A pristine sandbox: no wizard user, no built-in certificate row.
+        conn = _ClosingConn([("SELECT id FROM user", []), ("SELECT id FROM certificate", None)])
+        owner_id, access_id, cert_id = seed._ensure_npm_defaults(conn)
+        assert owner_id is not None  # the seeded owner row was created
+        assert access_id is not None  # the dev allowlist was created
+        assert cert_id == 1  # no built-in cert, so a new one was created
+
+    def test_full_seed_with_closed_cursor_links_all(self, temp_settings, monkeypatch):
+        """End-to-end: with a faithful cursor that closes per block and an
+        empty ``user`` table, the whole seeding pass still succeeds and links
+        every host — it never trips on the closed-cursor error. (A regression
+        here is exactly the bug that left the diagnostics page empty.)"""
+        monkeypatch.setenv("NPM_DEFAULT_PASSWORD", "dev-healer")
+        monkeypatch.setattr(seed, "_wait_for_mysql", lambda timeout: True)
+        # No existing proxy_host rows; scripted INSERT ids come from lastrowid.
+        conn = _ClosingConn([("SELECT id, domain_names FROM proxy_host", [])])
+        monkeypatch.setattr(seed, "_mysql_connect", lambda: conn)
+
+        links = seed.ensure_proxy_hosts()
+        assert set(links) == {spec["domain"] for spec in seed.SEED_HOSTS}
+        assert all(isinstance(v, int) for v in links.values())
+
 
 class TestTelegram:
     async def test_skipped_without_env(self, temp_settings, monkeypatch):

@@ -323,53 +323,64 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
     statement here errors and the caller's retry loop skips seeding (the
     healer runs fine without NPM). No DDL, no schema inspection needed.
     """
+    # NOTE: every statement must run inside its ``with conn.cursor()`` block.
+    # The earlier revision ran the owner INSERT (below) after the SELECT block
+    # had closed the cursor, so a pristine dev NPM (``user`` table empty — the
+    # exact case a stock sandbox is) hit pymysql's "Cursor closed" error.
+    # pymysql raises that as a str-args OperationalError, which the seeding
+    # retry loop did not recognise as transient, so it gave up immediately
+    # and seeded zero proxy_host rows. Keeping statements inside the block is
+    # the fix; the retry loop additionally treats closed-cursor errors as
+    # transient (see ensure_proxy_hosts).
     password = _npm_default_password()
 
     with conn.cursor() as cursor:
         cursor.execute("SELECT id FROM user WHERE is_deleted = 0 ORDER BY id")
         rows = cursor.fetchall()
-    if rows:
-        owner_user_id = rows[0]["id"]
-        logger.info(
-            f"NPM owner: reusing existing user #{owner_user_id} — log in "
-            "with the default NPM password to complete the wizard (dev only)"
-        )
-    else:
-        if not password:
-            password = "dev-healer"
-            logger.warning(
-                "NPM_DEFAULT_PASSWORD not set — using 'dev-healer' for the "
-                "seeded owner (set the env var to pick your own)"
+        if rows:
+            owner_user_id = rows[0]["id"]
+            logger.info(
+                f"NPM owner: reusing existing user #{owner_user_id} — log in "
+                "with the default NPM password to complete the wizard (dev only)"
             )
-        cursor.execute(
-            """INSERT INTO user
-               (created_on, modified_on, is_deleted, is_disabled, email,
-                name, nickname, roles)
-               VALUES (NOW(), NOW(), 0, 0, %s, %s, %s, %s)""",
-            ("healer@example.com", "Healer (seeded)", "healer", '["admin"]'),
-        )
-        owner_user_id = cursor.lastrowid
-        try:
-            import bcrypt
+        else:
+            if not password:
+                password = "dev-healer"
+                logger.warning(
+                    "NPM_DEFAULT_PASSWORD not set — using 'dev-healer' for the "
+                    "seeded owner (set the env var to pick your own)"
+                )
+            cursor.execute(
+                """INSERT INTO user
+                   (created_on, modified_on, is_deleted, is_disabled, email,
+                    name, nickname, roles)
+                   VALUES (NOW(), NOW(), 0, 0, %s, %s, %s, %s)""",
+                ("healer@example.com", "Healer (seeded)", "healer", '["admin"]'),
+            )
+            owner_user_id = cursor.lastrowid
+            try:
+                import bcrypt
 
-            hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(12)).decode("ascii")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                f"Could not hash the NPM default password ({exc}) — the "
-                "owner user exists but has no password login"
+                hashed = bcrypt.hashpw(
+                    password.encode("utf-8"), bcrypt.gensalt(12)
+                ).decode("ascii")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"Could not hash the NPM default password ({exc}) — the "
+                    "owner user exists but has no password login"
+                )
+                hashed = ""
+            cursor.execute(
+                # CREATE USER with a password list = the wizard's "allow with a
+                # password" step, done in the DB so the wizard is never needed.
+                "CREATE USER (email = %s, password = %s, realm = %s)",
+                ("healer@example.com", hashed, "proxyManager"),
             )
-            hashed = ""
-        cursor.execute(
-            # CREATE USER with a password list = the wizard's "allow with a
-            # password" step, done in the DB so the wizard is never needed.
-            "CREATE USER (email = %s, password = %s, realm = %s)",
-            ("healer@example.com", hashed, "proxyManager"),
-        )
-        conn.commit()
-        logger.info(
-            f"NPM owner: created user #{owner_user_id} "
-            "(wizard login: he**@example.com / NPM_DEFAULT_PASSWORD)"
-        )
+            conn.commit()
+            logger.info(
+                f"NPM owner: created user #{owner_user_id} "
+                "(wizard login: he**@example.com / NPM_DEFAULT_PASSWORD)"
+            )
 
     with conn.cursor() as cursor:
         cursor.execute("SELECT id FROM certificate WHERE id = 0")
@@ -481,6 +492,14 @@ def ensure_proxy_hosts() -> Dict[str, int]:
     # migrations (the seeder and the app both start on `up`), so a schema
     # error on the first attempt is "not finished yet", not "broken" —
     # retry for a while instead of skipping.
+    #
+    # pymysql raises a closed-cursor misuse as a *str*-args OperationalError
+    # ("Cursor closed" / "Not yet connected") rather than the err-no carried
+    # by schema errors, so retry those too: if a statement lands outside its
+    # cursor's ``with`` block, the whole pass is aborted *before* any INSERT,
+    # leaving zero proxy_host rows, and it should be retried rather than
+    # silently skipped.
+    _TRANSIENT_MARKERS = ("closed", "not yet connected", "not connected")
     last_error = ""
     logger.info(f"proxy_host seeding: starting {len(SEED_HOSTS)} seed hosts, {_SEED_RETRIES} retries max")
     for attempt in range(1, _SEED_RETRIES + 1):
@@ -497,7 +516,11 @@ def ensure_proxy_hosts() -> Dict[str, int]:
             last_error = str(exc)
             err_no = exc.args[0] if exc.args else None
             logger.warning(f"proxy_host seeding attempt {attempt} failed: {exc}")
-            if err_no in _MIGRATING_ERRNOS and attempt < _SEED_RETRIES:
+            retryable = (
+                err_no in _MIGRATING_ERRNOS
+                or any(m in str(exc).lower() for m in _TRANSIENT_MARKERS)
+            )
+            if retryable and attempt < _SEED_RETRIES:
                 logger.info(
                     f"NPM schema still migrating (attempt {attempt}, err {err_no}) — "
                     "retrying proxy_host seeding in a moment"
