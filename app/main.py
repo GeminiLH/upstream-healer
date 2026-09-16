@@ -13,7 +13,13 @@ from app.database import init_db
 from app.services.monitor import monitor
 from app.services.npm import NPMClient
 from app.services.notifications import send_event
-from app.services.scanner import check_host_reachable, find_ip_by_mac, normalize_mac, run_scan
+from app.services.scanner import (
+    check_host_reachable,
+    find_ip_by_mac,
+    list_subnets,
+    normalize_mac,
+    run_scan,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,15 +127,23 @@ async def clear_events(db: aiosqlite.Connection = Depends(get_db)):
 # ───────────────────────────── Hosts ─────────────────────────────
 
 @app.get("/hosts/add", response_class=HTMLResponse)
-async def add_host_form(request: Request):
+async def add_host_form(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     npm = NPMClient()
     try:
         proxy_hosts = npm.list_proxy_hosts()
     except Exception:
         proxy_hosts = []
+    async with db.execute("SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1 ORDER BY name") as cur:
+        subnets = [dict(r) for r in await cur.fetchall()]
     return templates.TemplateResponse(
         "host_form.html",
-        {"request": request, "host": None, "proxy_hosts": proxy_hosts, "title": "Add Host"},
+        {
+            "request": request,
+            "host": None,
+            "proxy_hosts": proxy_hosts,
+            "subnets": subnets,
+            "title": "Add Host",
+        },
     )
 
 
@@ -146,22 +160,24 @@ async def add_host(
     current_ip: str = Form(""),
     port: int = Form(80),
     npm_proxy_host_id: str = Form(""),
+    subnet_id: str = Form(""),
     grace_minutes: int = Form(10),
     notes: str = Form(""),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     mac = normalize_mac(mac_address)
     npm_id = int(npm_proxy_host_id) if npm_proxy_host_id.strip() else None
+    subnet = int(subnet_id) if subnet_id.strip() else None
     if not 1 <= port <= 65535:
         raise HTTPException(400, "Port must be between 1 and 65535")
 
     await db.execute(
             """INSERT INTO hosts (name, local_device_name, quiet_enabled, quiet_start, quiet_end, quiet_mode,
-                domain, mac_address, current_ip, npm_proxy_host_id, port, grace_minutes, notes, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                domain, mac_address, current_ip, npm_proxy_host_id, subnet_id, port, grace_minutes, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (name, local_device_name or None, quiet_enabled == "on", quiet_start or None, quiet_end or None,
              quiet_mode if quiet_mode in ("suppress", "delete") else "suppress", domain, mac, current_ip or None,
-             npm_id, port, grace_minutes, notes,
+             npm_id, subnet, port, grace_minutes, notes,
             current_time().isoformat(), current_time().isoformat()),
     )
     await db.commit()
@@ -189,9 +205,17 @@ async def edit_host_form(host_id: int, request: Request, db: aiosqlite.Connectio
         proxy_hosts = npm.list_proxy_hosts()
     except Exception:
         proxy_hosts = []
+    async with db.execute("SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1 ORDER BY name") as cur:
+        subnets = [dict(r) for r in await cur.fetchall()]
     return templates.TemplateResponse(
         "host_form.html",
-        {"request": request, "host": dict(host), "proxy_hosts": proxy_hosts, "title": "Edit Host"},
+        {
+            "request": request,
+            "host": dict(host),
+            "proxy_hosts": proxy_hosts,
+            "subnets": subnets,
+            "title": "Edit Host",
+        },
     )
 
 
@@ -209,6 +233,7 @@ async def edit_host(
     current_ip: str = Form(""),
     port: int = Form(80),
     npm_proxy_host_id: str = Form(""),
+    subnet_id: str = Form(""),
     grace_minutes: int = Form(10),
     notes: str = Form(""),
     enabled: str = Form("off"),
@@ -216,6 +241,7 @@ async def edit_host(
 ):
     mac = normalize_mac(mac_address)
     npm_id = int(npm_proxy_host_id) if npm_proxy_host_id.strip() else None
+    subnet = int(subnet_id) if subnet_id.strip() else None
     is_enabled = 1 if enabled == "on" else 0
     if not 1 <= port <= 65535:
         raise HTTPException(400, "Port must be between 1 and 65535")
@@ -224,12 +250,12 @@ async def edit_host(
         """UPDATE hosts SET
             name = ?, local_device_name = ?, quiet_enabled = ?, quiet_start = ?, quiet_end = ?, quiet_mode = ?,
             domain = ?, mac_address = ?, current_ip = ?,
-            npm_proxy_host_id = ?, port = ?, grace_minutes = ?, notes = ?, enabled = ?,
+            npm_proxy_host_id = ?, subnet_id = ?, port = ?, grace_minutes = ?, notes = ?, enabled = ?,
                 updated_at = ?
             WHERE id = ?""",
             (name, local_device_name or None, quiet_enabled == "on", quiet_start or None, quiet_end or None,
              quiet_mode if quiet_mode in ("suppress", "delete") else "suppress", domain, mac, current_ip or None,
-             npm_id, port, grace_minutes, notes, is_enabled,
+             npm_id, subnet, port, grace_minutes, notes, is_enabled,
             current_time().isoformat(), host_id),
     )
     await db.commit()
@@ -499,10 +525,52 @@ async def delete_channel(channel_id: int, db: aiosqlite.Connection = Depends(get
 async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     async with db.execute("SELECT key, value FROM settings") as cur:
         conf = {r["key"]: r["value"] for r in await cur.fetchall()}
+    async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cur:
+        subnets = [dict(r) for r in await cur.fetchall()]
     return templates.TemplateResponse(
         "settings.html",
-        {"request": request, "conf": conf},
+        {"request": request, "conf": conf, "subnets": subnets},
     )
+
+
+@app.post("/settings/subnets")
+async def add_subnet(
+    name: str = Form(...),
+    cidr: str = Form(...),
+    interface: str = Form(""),
+    enabled: str = Form("on"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    cidr = cidr.strip()
+    if not cidr or not name.strip():
+        raise HTTPException(400, "Subnet name and CIDR are required")
+    try:
+        import ipaddress as _ip
+        _ip.ip_network(cidr, strict=False)
+    except ValueError:
+        raise HTTPException(400, f"Invalid CIDR: {cidr!r}")
+    is_enabled = 1 if enabled == "on" else 0
+    await db.execute(
+        "INSERT INTO subnets (name, cidr, interface, enabled) VALUES (?, ?, ?, ?)",
+        (name.strip(), str(_ip.ip_network(cidr, strict=False)), interface.strip() or None, is_enabled),
+    )
+    await db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/subnets/{subnet_id}/toggle")
+async def toggle_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(get_db)):
+    await db.execute("UPDATE subnets SET enabled = 1 - enabled WHERE id = ?", (subnet_id,))
+    await db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/subnets/{subnet_id}/delete")
+async def delete_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(get_db)):
+    # hosts.subnet_id is ON DELETE SET NULL, so pinning references become NULL.
+    await db.execute("DELETE FROM subnets WHERE id = ?", (subnet_id,))
+    await db.commit()
+    return RedirectResponse("/settings", status_code=303)
 
 
 @app.post("/settings")
@@ -538,6 +606,7 @@ class ScanRequest(BaseModel):
 
     target_mac: str = Field(..., description="MAC address to look for (normalised server-side)")
     method: str = Field("arp-scan", description="'arp-scan' or 'scapy'")
+    subnet_id: int = Field(0, description="Optional subnet id to scope the scan; 0 = all known subnets")
 
 
 @app.get("/diagnostic", response_class=HTMLResponse)
@@ -578,6 +647,7 @@ async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(g
             "npm_available": npm.available,
             "scan_types": scan_types,
             "hosts": hosts,
+            "subnets": await list_subnets(db),
         },
     )
 
@@ -616,12 +686,16 @@ async def diagnostic_api(db: aiosqlite.Connection = Depends(get_db)):
 
 
 @app.post("/api/diagnostic/scan")
-async def diagnostic_scan(body: ScanRequest):
+async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(get_db)):
     """Run an ARP or scapy scan on demand and return the raw output.
 
     The scanner work is executed in a thread pool (see ``run_scan``) so a slow
     ``arp-scan`` never blocks the event loop. Returns the found IP (if any), the
     scanner that produced it, the full raw output, and any error string.
+
+    ``body.subnet_id`` optionally scopes the sweep to a single subnet (e.g. a
+    host is pinned to a specific network).  When 0, the scan covers every
+    effective subnet (manual rows + auto-discovered local networks).
     """
     method = body.method.strip().lower()
     if method not in ("arp-scan", "scapy"):
@@ -629,10 +703,20 @@ async def diagnostic_scan(body: ScanRequest):
     if not body.target_mac.strip():
         raise HTTPException(status_code=400, detail="target_mac is required")
 
-    result = await run_scan(body.target_mac, method)
+    subnet_ids: list[str] = []
+    if body.subnet_id:
+        async with db.execute("SELECT cidr FROM subnets WHERE id = ?", (body.subnet_id,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                subnet_ids = [row["cidr"]]
+    if not subnet_ids:
+        subnet_ids = [s["cidr"] for s in await list_subnets(db)]
+
+    result = await run_scan(body.target_mac, method, subnets=subnet_ids or None)
+    result["subnets"] = subnet_ids
     logger.info(
         f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac)} "
-        f"found_ip={result['found_ip']} error={result['error']}"
+        f"subnets={subnet_ids} found_ip={result['found_ip']} error={result['error']}"
     )
     return result
 

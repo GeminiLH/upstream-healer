@@ -17,10 +17,22 @@ CREATE TABLE IF NOT EXISTS hosts (
     port INTEGER NOT NULL DEFAULT 80,
     grace_minutes INTEGER DEFAULT 10,
     enabled INTEGER DEFAULT 1,
+    subnet_id INTEGER,
     notes TEXT,
     created_at TEXT,
     updated_at TEXT,
-    UNIQUE (mac_address, port)
+    UNIQUE (mac_address, port),
+    FOREIGN KEY (subnet_id) REFERENCES subnets(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS subnets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    cidr TEXT NOT NULL,
+    interface TEXT,
+    enabled INTEGER DEFAULT 1,
+    check_interval_seconds INTEGER,
+    UNIQUE (cidr)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -94,6 +106,13 @@ async def init_db():
         for column, definition in host_columns_to_add.items():
             if column not in host_columns:
                 await db.execute(f"ALTER TABLE hosts ADD COLUMN {column} {definition}")
+        # Backfill subnet_id for legacy databases created before the multi-subnet
+        # feature landed.  New databases get the column via the SCHEMA above; this
+        # ALTER handles existing ones.
+        async with db.execute("PRAGMA table_info(hosts)") as cursor:
+            host_columns = {row[1] for row in await cursor.fetchall()}
+        if "subnet_id" not in host_columns:
+            await db.execute("ALTER TABLE hosts ADD COLUMN subnet_id INTEGER")
         async with db.execute("PRAGMA table_info(host_state)") as cursor:
             state_columns = {row[1] for row in await cursor.fetchall()}
         for column, definition in {

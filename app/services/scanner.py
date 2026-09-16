@@ -6,6 +6,7 @@ Designed to be quiet on Windows (local development).
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import re
 import subprocess
@@ -24,21 +25,25 @@ def normalize_mac(mac: str) -> str:
     return mac
 
 
-async def find_ip_by_mac(target_mac: str, interface: Optional[str] = None) -> Optional[str]:
+async def find_ip_by_mac(target_mac: str, interface: Optional[str] = None, subnets: Optional[list[str]] = None) -> Optional[str]:
     """
     Search the local network for a device with the given MAC.
     Returns the IP address if found, else None.
+
+    ``subnets`` optionally scopes the scan to specific CIDRs (e.g. the subnet
+    a host is pinned to).  When ``None``, the scanner uses its default target —
+    the primary interface's /24 — which is the historic behaviour.
     """
     target_mac = normalize_mac(target_mac)
-    logger.info(f"Scanning for MAC {target_mac}")
+    logger.info(f"Scanning for MAC {target_mac}" + (f" (subnets={subnets})" if subnets else ""))
 
     # Try arp-scan first (fast and reliable on Linux)
-    ip = await _scan_with_arp_scan(target_mac)
+    ip = await _scan_with_arp_scan(target_mac, subnets=subnets)
     if ip:
         return ip
 
     # Fallback to scapy (mainly useful on Linux)
-    ip = await _scan_with_scapy(target_mac, interface)
+    ip = await _scan_with_scapy(target_mac, interface, subnets=subnets)
     return ip
 
 
@@ -46,6 +51,7 @@ async def run_scan(
     target_mac: str,
     method: str = "arp-scan",
     interface: Optional[str] = None,
+    subnets: Optional[list[str]] = None,
 ) -> dict:
     """Run one scanner and return a JSON-ready dict for the diagnostic UI.
 
@@ -53,6 +59,9 @@ async def run_scan(
     long ``arp-scan``/scapy run never blocks the event loop. ``method`` selects
     the scanner; ``"auto"`` is not valid here — ``find_ip_by_mac`` owns that
     fallback logic and returns a single IP rather than raw output.
+
+    ``subnets`` optionally restricts the scan to the given CIDRs; when ``None``
+    the scanner targets its default (the primary interface's /24).
 
     Returns ``{"method", "found_ip", "found_via", "output", "error"}`` where
     ``found_via`` names the scanner that actually produced the answer.
@@ -63,12 +72,14 @@ async def run_scan(
 
     if method == "scapy":
         found_ip, output, error = await loop.run_in_executor(
-            None, lambda: run_scapy_scan(target_mac, interface)
+            None, lambda: run_scapy_scan(target_mac, interface, subnets=subnets)
         )
     else:  # "arp-scan" (the only other method we ship)
-        found_ip, output, error = await loop.run_in_executor(None, run_arp_scan)
+        found_ip, output, error = await loop.run_in_executor(
+            None, lambda: run_arp_scan(subnets=subnets)
+        )
         if not error:
-            found_ip = _match_mac_in_output(target_mac, output)
+            found_ip = _match_mac_in_output(target_mac, output, subnets=subnets)
 
     return {
         "method": method,
@@ -79,16 +90,22 @@ async def run_scan(
     }
 
 
-def _match_mac_in_output(target_mac: str, output: str) -> Optional[str]:
-    """Return the IP for ``target_mac`` in an arp-scan table, or ``None``."""
+def _match_mac_in_output(target_mac: str, output: str, subnets: Optional[list[str]] = None) -> Optional[str]:
+    """Return the IP for ``target_mac`` in an arp-scan table, or ``None``.
+
+    When ``subnets`` is given, only responders whose IP falls inside one of the
+    CIDRs are considered — this keeps a multi-subnet sweep from matching a
+    device with the same MAC on a different network.
+    """
     for line in output.splitlines():
         parts = line.split()
         if len(parts) >= 2 and normalize_mac(parts[1]) == target_mac:
-            return parts[0]
+            if subnets is None or ip_in_subnets(parts[0], subnets):
+                return parts[0]
     return None
 
 
-def run_arp_scan() -> tuple[Optional[str], str, Optional[str]]:
+def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], str, Optional[str]]:
     """Run ``arp-scan -l`` and report the raw table.
 
     Returns ``(found_ip, raw_output, error)`` where ``found_ip`` is ``None``
@@ -97,10 +114,37 @@ def run_arp_scan() -> tuple[Optional[str], str, Optional[str]]:
     the process fails to run. Cheap, synchronous: wraps the subprocess call so
     a test can drive it from a thread pool or a TestClient without an event
     loop of its own.
+
+    ``subnets`` (a list of CIDRs) optionally constrains the sweep to specific
+    local networks via ``-i``.  For each subnet we look up the local interface
+    that owns it (via :func:`get_local_ip_for_network` + :func:`get_default_subnets`);
+    if a subnet has no local interface we skip it with a note in the output.
+    When ``subnets`` is ``None`` we keep the historic ``-l`` (all interfaces).
     """
+    interfaces: list[str] = []
+    notes: list[str] = []
+    if subnets:
+        discovered = {d["cidr"]: d["interface"] for d in get_default_subnets()}
+        for cidr in subnets:
+            try:
+                network = ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                notes.append(f"(skipped unparseable subnet {cidr!r})")
+                continue
+            iface = discovered.get(str(network))
+            if iface:
+                if iface not in interfaces:
+                    interfaces.append(iface)
+            else:
+                notes.append(f"(skipped {cidr}: no local interface)")
+
+    cmd: list[str] = ["arp-scan", "-l", "-q", "--retry=3"]
+    for iface in interfaces:
+        cmd.extend(["-i", iface])
+
     try:
         proc = subprocess.run(
-            ["arp-scan", "-l", "-q", "--retry=3"],
+            cmd,
             capture_output=True,
             text=True,
             timeout=45,
@@ -110,53 +154,85 @@ def run_arp_scan() -> tuple[Optional[str], str, Optional[str]]:
     except Exception as exc:  # noqa: BLE001
         return None, "", f"arp-scan failed: {exc}"
     output = (proc.stdout or "") + (proc.stderr or "")
+    if notes:
+        output = "\n".join(notes) + ("\n" + output if output.strip() else "")
     if not output.strip():
         output = "(arp-scan produced no output)"
     return None, output, None
 
 
-def run_scapy_scan(target_mac: str, interface: Optional[str] = None) -> tuple[Optional[str], str, Optional[str]]:
-    """ARP-sweep the local /24 with scapy and find ``target_mac``.
+def run_scapy_scan(
+    target_mac: str,
+    interface: Optional[str] = None,
+    subnets: Optional[list[str]] = None,
+) -> tuple[Optional[str], str, Optional[str]]:
+    """ARP-sweep with scapy and find ``target_mac``.
 
-    Returns ``(found_ip, raw_output, error)``. ``raw_output`` lists every
-    responder (IP -> MAC) so the diagnostic UI can show the full sweep, not just
-    whether the target was present. Importing scapy is deferred so that a
-    machine without it (e.g. Windows dev) still works — ``error`` is set in that
-    case rather than raising.
+    Sweeps ``subnets`` (a list of CIDRs) one at a time.  When ``subnets`` is
+    ``None`` or empty, falls back to the historic behaviour: derive the local
+    /24 from the primary IP and sweep that.  Returns
+    ``(found_ip, raw_output, error)`` where ``raw_output`` lists every
+    responder (IP -> MAC) so the diagnostic UI can show the full sweep.
+    Importing scapy is deferred so that a machine without it (e.g. Windows dev)
+    still works — ``error`` is set in that case rather than raising.
     """
     try:
         from scapy.all import ARP, Ether, srp, conf  # type: ignore
     except ImportError:
         return None, "", "scapy library not installed"
 
+    target_mac = normalize_mac(target_mac)
+
+    # Determine the set of CIDRs to sweep.  An explicit `subnets` list wins;
+    # otherwise fall back to the local /24 (historic behaviour).
+    networks: list[str] = []
+    for s in (subnets or []):
+        s = (s or "").strip()
+        if not s:
+            continue
+        try:
+            networks.append(str(ipaddress.ip_network(s, strict=False)))
+        except ValueError:
+            logger.warning(f"scapy: ignoring unparseable subnet {s!r}")
+    if not networks:
+        local_ip = _get_primary_ip()
+        if not local_ip:
+            return None, "", "could not determine local IP"
+        networks.append(".".join(local_ip.split(".")[:3]) + ".0/24")
+
     try:
         conf.verb = 0
         if interface:
             conf.iface = interface
-
-        local_ip = _get_primary_ip()
-        if not local_ip:
-            return None, "", "could not determine local IP"
-
-        target_mac = normalize_mac(target_mac)
-        network = ".".join(local_ip.split(".")[:3]) + ".0/24"
-        logger.info(f"Scapy scanning {network} for {target_mac}")
-
-        ans, _ = srp(
-            Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network),
-            timeout=3,
-            retry=2,
-            verbose=0,
-        )
+        logger.info(f"Scapy scanning {networks} for {target_mac}")
 
         found_ip: Optional[str] = None
-        lines = []
-        for _, received in ans:
-            mac = normalize_mac(received.hwsrc)
-            ip = received.psrc
-            lines.append(f"{ip}  {mac}")
-            if mac == target_mac:
-                found_ip = ip
+        lines: list[str] = []
+        for network in networks:
+            # A manual `interface` (set above) wins; otherwise pick the egress
+            # interface that owns this network via scapy's own routing table so
+            # the sweep goes out the right NIC for multi-homed boxes.
+            if not interface:
+                local_ip = get_local_ip_for_network(network)
+                if local_ip:
+                    ifaces = conf.get_if_addresses()
+                    for if_name, if_ips in ifaces.items():
+                        if local_ip in if_ips:
+                            conf.iface = if_name
+                            break
+
+            ans, _ = srp(
+                Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network),
+                timeout=3,
+                retry=2,
+                verbose=0,
+            )
+            for _, received in ans:
+                mac = normalize_mac(received.hwsrc)
+                ip = received.psrc
+                lines.append(f"{ip}  {mac}  (via {network})")
+                if mac == target_mac and found_ip is None:
+                    found_ip = ip
 
         if found_ip:
             logger.info(f"Found {target_mac} at {found_ip} via scapy")
@@ -166,12 +242,16 @@ def run_scapy_scan(target_mac: str, interface: Optional[str] = None) -> tuple[Op
         return None, "", f"scapy scan failed: {exc}"
 
 
-async def _scan_with_arp_scan(target_mac: str) -> Optional[str]:
-    """Find a single MAC via ``arp-scan`` (async wrapper over :func:`run_arp_scan`)."""
+async def _scan_with_arp_scan(target_mac: str, subnets: Optional[list[str]] = None) -> Optional[str]:
+    """Find a single MAC via ``arp-scan`` (async wrapper over :func:`run_arp_scan`).
+
+    ``subnets`` optionally scopes the sweep to specific CIDRs; ``None`` keeps the
+    historic all-interfaces behaviour.
+    """
     target_mac = normalize_mac(target_mac)
 
     def _work() -> Optional[str]:
-        _, output, error = run_arp_scan()
+        _, output, error = run_arp_scan(subnets=subnets)
         if error:
             return None
         for line in output.splitlines():
@@ -180,7 +260,7 @@ async def _scan_with_arp_scan(target_mac: str) -> Optional[str]:
             if len(parts) >= 2:
                 ip = parts[0]
                 mac = normalize_mac(parts[1])
-                if mac == target_mac:
+                if mac == target_mac and (subnets is None or ip_in_subnets(ip, subnets)):
                     logger.info(f"Found {target_mac} at {ip} via arp-scan")
                     return ip
         return None
@@ -188,9 +268,9 @@ async def _scan_with_arp_scan(target_mac: str) -> Optional[str]:
     return await asyncio.get_running_loop().run_in_executor(None, _work)
 
 
-async def _scan_with_scapy(target_mac: str, interface: Optional[str] = None) -> Optional[str]:
+async def _scan_with_scapy(target_mac: str, interface: Optional[str] = None, subnets: Optional[list[str]] = None) -> Optional[str]:
     """Find a single MAC via scapy (async wrapper over :func:`run_scapy_scan`)."""
-    found_ip, _, _ = run_scapy_scan(target_mac, interface)
+    found_ip, _, _ = run_scapy_scan(target_mac, interface, subnets=subnets)
     return found_ip
 
 
@@ -223,6 +303,125 @@ def _get_primary_ip() -> Optional[str]:
         pass
 
     return None
+
+
+def ip_in_subnets(ip: str, subnets: list[str]) -> bool:
+    """Return ``True`` if ``ip`` falls inside any of the given CIDRs.
+
+    Used to scope the ``arp-scan`` output (which always enumerates every local
+    network) to just the subnets the caller asked about.  Invalid/blank entries
+    are ignored.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    for cidr in subnets:
+        try:
+            if addr in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def get_local_ip_for_network(cidr: str) -> Optional[str]:
+    """Return the local IPv4 src address the kernel uses to reach ``cidr``.
+
+    Resolves via ``ip route get <network-address>`` — the most reliable signal
+    for "which local interface would we use to talk to this network?".  Returns
+    ``None`` when no route exists or ``ip`` is unavailable.  Used to pick the
+    right scapy egress interface for a given subnet.
+    """
+    cidr = (cidr or "").strip()
+    if not cidr:
+        return None
+    try:
+        base = ipaddress.ip_network(cidr, strict=False).network_address
+        result = subprocess.run(
+            ["ip", "-4", "route", "get", str(base)],
+            capture_output=True, text=True, timeout=5,
+        )
+        match = re.search(r"src\s+(\d+\.\d+\.\d+\.\d+)", result.stdout)
+        if match:
+            return match.group(1)
+    except Exception:  # noqa: BLE001 - best-effort helper
+        pass
+    return None
+
+
+def get_default_subnets() -> list[dict]:
+    """Auto-discover locally-attached IPv4 /24 networks.
+
+    Reads ``ip -4 addr`` and returns ``[{cidr, interface, source: "auto"}]`` for
+    every primary address of prefix length 24.  Loops out ``127.0.0.0/8`` and
+    other non-/24 prefixes (bridges, VPNs, etc.) — those should be added
+    explicitly via the ``subnets`` table if needed.  Used as the fallback subnet
+    list for monitor recovery and diagnostics when no explicit subnet is set.
+    """
+    import re as _re
+
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+
+    found: list[dict] = []
+    seen_cidrs: set[str] = set()
+    for line in (result.stdout or "").splitlines():
+        if not line:
+            continue
+        # typical line: "2: enp6s0    inet 192.168.86.38/24 scope global enp6s0"
+        match = _re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/24\b", line)
+        if not match:
+            continue
+        iface, addr = match.group(1), match.group(2)
+        if iface == "lo" or addr.startswith("127."):
+            continue
+        try:
+            cidr = str(ipaddress.ip_network(f"{addr}/24", strict=False))
+        except ValueError:
+            continue
+        if cidr in seen_cidrs:
+            continue
+        seen_cidrs.add(cidr)
+        found.append({"cidr": cidr, "interface": iface, "source": "auto"})
+    return found
+
+
+async def list_subnets(db=None) -> list[dict]:
+    """Return the effective list of subnets to scan.
+
+    Merges enabled rows from the ``subnets`` table (when ``db`` is given) with
+    the auto-discovered local networks from :func:`get_default_subnets`.  Manual
+    rows win for a given CIDR (their name/interface is preferred); auto rows fill
+    in the rest.  Order: enabled manual rows first, then auto rows.  Called once
+    per scan so a newly-plugged-in interface is picked up without a restart.
+    """
+    manual: list[dict] = []
+    if db is not None:
+        try:
+            async with db.execute(
+                "SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1"
+            ) as cursor:
+                for row in await cursor.fetchall():
+                    manual.append({
+                        "id": row["id"], "name": row["name"], "cidr": row["cidr"],
+                        "interface": row["interface"], "source": "manual",
+                    })
+        except Exception:  # noqa: BLE001 - a missing table etc. shouldn't abort a scan
+            logger.exception("list_subnets: could not read subnets table")
+
+    auto = get_default_subnets()
+    seen = {m["cidr"] for m in manual}
+    for a in auto:
+        if a["cidr"] not in seen:
+            manual.append(a)
+            seen.add(a["cidr"])
+    return manual
 
 
 async def check_host_reachable(ip: str, port: int = 80, timeout: float = 3.0) -> bool:

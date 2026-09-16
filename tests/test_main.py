@@ -42,3 +42,13 @@ def test_health_endpoint():
     resp = client.get("/api/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "service": "upstream-healer"}
+
+
+def test_routes_registered_subnets():
+    paths = {route.path for route in app.routes}
+    # The subnets CRUD routes live under /settings (no dedicated nav link, to
+    # avoid widening the top-bar surface area).
+    assert "/settings" in paths
+    assert "/settings/subnets" in paths
+    assert "/settings/subnets/{subnet_id}/toggle" in paths
+    assert "/settings/subnets/{subnet_id}/delete" in paths

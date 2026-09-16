@@ -7,7 +7,11 @@ from datetime import datetime, time, timedelta, timezone
 import aiosqlite
 from app.config import settings
 from app.config import current_time
-from app.services.scanner import check_host_reachable, find_ip_by_mac
+from app.services.scanner import (
+    check_host_reachable,
+    find_ip_by_mac,
+    list_subnets,
+)
 from app.services.npm import NPMClient
 from app.services.notifications import send_event
 
@@ -223,6 +227,23 @@ class Monitor:
         npm_id = host["npm_proxy_host_id"]
         port = host["port"] or 80
 
+        # Resolve the subnets to sweep.  If this host has a pinned subnet we use
+        # only that (targeted recovery — fast, no false positives from other
+        # VLANs).  Otherwise we fall back to the effective list of subnets
+        # (enabled manual rows + auto-discovered local networks) so a host that
+        # has no explicit subnet still gets every reachable /24 swept.
+        subnet_ids: list[str] = []
+        subnet_id = host["subnet_id"] if "subnet_id" in host.keys() else None
+        if subnet_id is not None:
+            async with db.execute(
+                "SELECT cidr FROM subnets WHERE id = ?", (subnet_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    subnet_ids = [row["cidr"]]
+        if not subnet_ids:
+            subnet_ids = [s["cidr"] for s in await list_subnets(db)]
+
         await db.execute(
             "UPDATE host_state SET status = 'recovering', last_check_at = ? WHERE host_id = ?",
             (current_time().isoformat(), host_id),
@@ -240,12 +261,12 @@ class Monitor:
         await send_event(
             db,
             "scan_started",
-            f"🔍 Scanning local network for {name} (MAC {mac})",
+            f"🔍 Scanning {' on '.join(subnet_ids) if subnet_ids else 'local network'} for {name} (MAC {mac})",
             host_id=host_id,
             notify=notify,
         )
 
-        new_ip = await find_ip_by_mac(mac)
+        new_ip = await find_ip_by_mac(mac, subnets=subnet_ids or None)
 
         if not new_ip:
             await send_event(

@@ -26,13 +26,19 @@ must never be copied into code, tests, or the memory bank.
 ## Tech stack
 
 - Python 3, **FastAPI** (web UI + JSON API on port **8787**), Jinja2 templates
-- **aiosqlite** — app state in `healer.db` (SQLite, in `healer-data` volume)
+- **aiosqlite** — app state in `healer.db` (SQLite, in `healer-data` volume).
+  Tables: `hosts` (incl. `subnet_id` FK), `subnets`, `settings`,
+  `notification_channels`, `notification_rules`, `events`, `host_state`.
 - **pymysql** — read/write of NPM's MariaDB (`proxy_manager` schema)
 - **bcrypt** — hashes the seeded NPM owner's wizard password (seed image only;
   the app container also builds with it but doesn't use it)
-- **scapy** — LAN ARP scan for MAC → IP discovery (also an `arp-scan` binary in
-  the Dockerfile); the Diagnostic page can run either on demand via
-  `POST /api/diagnostic/scan` → `app.services.scanner.run_scan`
+- **scapy** — LAN ARP scan for MAC → IP discovery; `arp-scan` (Dockerfile
+  `iproute2`-adjacent) is the fast first choice. The Diagnostic page can run
+  either on demand via `POST /api/diagnostic/scan` → `run_scan`.
+- **Multi-subnet discovery:** `app.services.scanner.get_default_subnets()`
+  shells out to `ip -4 -o addr` (from `iproute2`, in the Dockerfile) to
+  enumerate locally-attached /24s. Manual overrides live in the `subnets`
+  table; per-host pinning via `hosts.subnet_id`.
 - **docker** python SDK — reaches into the `nginx-app-1` container
 - apscheduler, aiosmtplib (email), httpx (telegram), pydantic-settings
 - Dev: pytest (asyncio_mode=auto), ruff (lint: E,F; E501 ignored)
@@ -108,16 +114,6 @@ commit `cb09b16`), including `plex`, `homeassistant`, `portainer`. `failtest`
 is a deliberately dead device to exercise the full recovery flow
 (unreachable → scan → NPM update → nginx reload).
 
-**Current live state (2026-09-16):** the seeder's "Cursor closed" bug is fixed
-and deployed (commit `72dd82b`). The next layer — `user.avatar` 1364 (a NOT-NULL-
-with-no-default column the seed omits) — is **now also fixed in code** (uncommitted
-WIP): the seeder introspects each table via `SHOW COLUMNS` before its INSERT and
-auto-fills any NOT-NULL-with-no-default column the INSERT doesn't supply, using
-`_KNOWN_COLUMNS_WITH_DEFAULTS` in `scripts/seed_dev.py`. **Awaiting deploy + live
-verification** on the pristine dev NPM — the DB is still empty until then.
-`decisions.md` records the full two-bug history and the exact columns; `progress.md`
-has the live-verification recipe. (Do NOT re-add owner/access_list/certificate to
-the proxy_host INSERT — that gap was already closed in `3a9545f`; that older note
-is stale. And do NOT hardcode a column list per INSERT — the introspection handles
-schema drift automatically; if you add a new required column, add it to
-`_KNOWN_COLUMNS_WITH_DEFAULTS`.)
+Seeder history is complete: the "Cursor closed" bug (`72dd82b`) and the
+NOT-NULL 1364 introspection fix are both live. The current live state is
+recorded in `progress.md` / `decisions.md`; no further seeder work expected.

@@ -118,6 +118,23 @@
     </div>
 
     <div>
+      <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Subnet</label>
+      <select name="subnet_id" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
+                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
+        <option value="">— All known subnets —</option>
+        {% for s in subnets %}
+        <option value="{{ s.id }}" {% if host and host.subnet_id and host.subnet_id == s.id %}selected{% endif %}>
+          {{ s.name }} ({{ s.cidr }}{% if s.interface %}, {{ s.interface }}{% endif %})
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+        Where this host lives. Leave empty to let the monitor sweep every known subnet.
+      </p>
+    </div>
+
+    <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Grace period (minutes)</label>
       <input type="number" name="grace_minutes" min="1" max="120" value="{{ host.grace_minutes if host else 10 }}"
         class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600

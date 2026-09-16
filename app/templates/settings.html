@@ -44,5 +44,83 @@
       needed.
     </p>
   </div>
+
+  <!-- Subnets management -->
+  <div class="mt-8 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+    <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
+      <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Subnets</h2>
+      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+        Networks to sweep during recovery and diagnostics. Local /24s are auto-detected;
+        add manual overrides (e.g. a /28 on a VLAN) here.
+      </p>
+    </div>
+
+    {% if subnets %}
+    <div class="overflow-x-auto">
+      <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
+        <thead class="bg-slate-50 dark:bg-slate-900">
+          <tr>
+            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Name</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">CIDR</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Interface</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Source</th>
+            <th class="px-6 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Enabled</th>
+            <th class="px-6 py-3 text-right text-xs font-medium text-slate-500 dark:text-slate-400 uppercase">Actions</th>
+          </tr>
+        </thead>
+        <tbody class="bg-white dark:bg-slate-800 divide-y divide-slate-200 dark:divide-slate-700">
+          {% for s in subnets %}
+          <tr>
+            <td class="px-6 py-3 text-sm text-slate-900 dark:text-slate-100">{{ s.name }}</td>
+            <td class="px-6 py-3 text-sm font-mono text-slate-700 dark:text-slate-300">{{ s.cidr }}</td>
+            <td class="px-6 py-3 text-sm font-mono text-slate-700 dark:text-slate-300">{{ s.interface or '—' }}</td>
+            <td class="px-6 py-3 text-sm text-slate-500 dark:text-slate-400">{{ s.source if s.source in ('auto', 'manual') else 'manual' }}</td>
+            <td class="px-6 py-3 text-sm {% if s.enabled %}text-emerald-600{% else %}text-slate-400{% endif %}">
+              {% if s.enabled %}yes{% else %}no{% endif %}
+            </td>
+            <td class="px-6 py-3 text-right text-sm">
+              <form method="post" action="/settings/subnets/{{ s.id }}/toggle" class="inline">
+                <button class="text-slate-600 dark:text-slate-300 hover:text-brand-600">{{ 'disable' if s.enabled else 'enable' }}</button>
+              </form>
+              <form method="post" action="/settings/subnets/{{ s.id }}/delete" class="inline ml-3"
+                    onsubmit="return confirm('Delete this subnet? Hosts pinned to it will fall back to all subnets.')">
+                <button class="text-red-600 dark:text-red-400 hover:underline">delete</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="px-6 py-6 text-sm text-slate-500 dark:text-slate-400">
+      No subnets configured. The monitor and diagnostic page sweep every auto-detected local /24.
+    </div>
+    {% endif %}
+
+    <form method="post" action="/settings/subnets"
+          class="px-6 py-5 border-t border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+      <div>
+        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Name</label>
+        <input name="name" required placeholder="Guest Wi-Fi"
+               class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">CIDR</label>
+        <input name="cidr" required placeholder="192.168.10.0/24"
+               class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Interface</label>
+        <input name="interface" placeholder="auto"
+               class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
+      </div>
+      <button type="submit"
+              class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">
+        Add subnet
+      </button>
+    </form>
+  </div>
+
 </div>
 {% endblock %}

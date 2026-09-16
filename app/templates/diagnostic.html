@@ -141,6 +141,19 @@
           <label for="scan-mac" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Target MAC</label>
           <input type="text" id="scan-mac" placeholder="aa:bb:cc:dd:ee:ff" class="w-full" />
         </div>
+        <div>
+          <label for="scan-subnet" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Subnet</label>
+          <select id="scan-subnet" class="form-control">
+            <option value="0">All known subnets</option>
+            {% for s in subnets %}
+              <option value="{{ s.id if s.id else '' }}"
+                {% if not s.id %}data-cidr="{{ s.cidr }}"{% endif %}>
+                {{ s.name if s.name else s.cidr }} ({{ s.cidr }}{% if s.interface %}, {{ s.interface }}{% endif %}{% if s.source == 'auto' %}, auto{% endif %})
+              </option>
+            {% endfor %}
+          </select>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Which networks to sweep.</p>
+        </div>
         <button id="scan-run" type="button"
           class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -178,11 +191,20 @@
   (function () {
     const methodEl = document.getElementById('scan-method');
     const macEl = document.getElementById('scan-mac');
+    const subnetEl = document.getElementById('scan-subnet');
     const runBtn = document.getElementById('scan-run');
     const runLabel = document.getElementById('scan-run-label');
     const resultEl = document.getElementById('scan-result');
     const statusEl = document.getElementById('scan-status');
     const outputEl = document.getElementById('scan-output');
+
+    function _selectedSubnetId() {
+      // Manual rows have a numeric id; auto rows have data-cidr but no id.
+      // We send subnet_id=0 to mean "all known"; the server resolves either
+      // way via list_subnets().
+      const v = subnetEl ? subnetEl.value : "0";
+      return v === "" ? 0 : Number(v);
+    }
 
     runBtn.addEventListener('click', async () => {
       const mac = macEl.value.trim();
@@ -194,9 +216,10 @@
         return;
       }
       const method = methodEl.value;
+      const subnetId = _selectedSubnetId();
       runBtn.disabled = true;
       runLabel.textContent = 'Running…';
-      statusEl.textContent = `Running ${method} for ${mac}…`;
+      statusEl.textContent = `Running ${method} for ${mac}${subnetId ? ' on subnet ' + subnetId : ''}…`;
       statusEl.className = 'mb-2 text-sm text-slate-500 dark:text-slate-400';
       resultEl.classList.remove('hidden');
       outputEl.textContent = '…';
@@ -204,7 +227,7 @@
         const res = await fetch('/api/diagnostic/scan', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target_mac: mac, method: method }),
+          body: JSON.stringify({ target_mac: mac, method: method, subnet_id: subnetId }),
         });
         const data = await res.json();
         if (!res.ok) {
