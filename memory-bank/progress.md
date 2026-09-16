@@ -1,90 +1,91 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-15 (after live dev-stack verification via the `dev_debug`
-> CI job — found 2 real bugs, see decisions.md "KNOWN BUGS").
+> Snapshot: 2026-09-16 (both seeder bugs fixed: `72dd82b` cursor fix + the new
+> NOT-NULL introspection fix below. 114 tests pass, ruff clean. **Not yet
+> deployed** — awaiting live verification on the pristine dev NPM.)
 > **Verify before acting**: `git status`, `git log -5`,
 > then run `python3 -m pytest tests/ -q`.
 
 ## Current state
 
-- Branch: `main` (tracking `gitlab/main`; also pushed to `origin`/GitHub).
-- HEAD: `0311e56e` (memory-bank commit; pipeline #36 on gitlab/main —
-  lint / unit_tests / build_image / deploy_dev / dev_down all **success**,
-  verified 2026-09-15). Prior: `cb09b16` tests fix.
-- Health (verified this snapshot): **105 tests pass**; **ruff clean**
-  (`python3 -m ruff check app/ scripts/ tests/` → all checks passed).
-  The F541 at `app/cli.py:243` (stray `f` prefix in `check-npm-db`) was
-  fixed with `ruff check --fix` — the fix lives inside the uncommitted
-  `app/cli.py` WIP.
-- Dev stack on batcave (verified via `dev_debug` job 638): all containers
-  up, 0 restarts, no OOM. **But see KNOWN BUGS below** — the deployed
-  healer's NPM sync and the dev seeder are both broken on the current
-  schema.
-- Working tree has **uncommitted WIP** (4 files, +546/−334):
+- Branch: `main` (tracking `gitlab/main`).
+- HEAD: `72dd82b` (fix(seed): keep NPM cursor statements inside the with-block;
+  retry closed-cursor errors) — pushed to gitlab/main, deployed to dev
+  (pipeline 140 → `deploy_dev` job 669 **success** 2026-09-16). That commit had
+  **107 tests pass**, ruff clean.
+- **Uncommitted WIP** (the second seeder fix — NOT-NULL introspection):
+  `scripts/seed_dev.py` + `tests/test_seed_dev.py` + this memory-bank. Health:
+  **114 tests pass** (was 107; +7 in `tests/test_seed_dev.py`
+  `TestSchemaIntrospection`), **ruff clean** (`scripts/seed_dev.py` +
+  `tests/test_seed_dev.py`).
+- Dev stack on batcave is up; `:8787/diagnostic` reachable, `npm_available=True`.
+  **The dev NPM DB is still EMPTY** (both seeder layers fixed in code but not yet
+  deployed) — the diagnostic page still renders "No proxy hosts found" until the
+  new seeder is deployed and re-run against the pristine sandbox.
 
-```
-M app/cli.py            (large: +823/−...)  new CLI subcommands + check-npm-db diagnostic
-M app/main.py           diagnostic endpoints logging + SQLite host comparison
-M app/services/npm.py   diagnostic logging in get_all_hosts / cred caching
-M scripts/seed_dev.py   verbose logging of seed + proxy_host link flow
-```
+## The seeder failure modes — full history
 
-## Uncommitted WIP details
+1. ✅ **SOLVED & live-confirmed: "Cursor closed"** (the original bug, `72dd82b`).
+   `_ensure_npm_defaults` ran the owner `INSERT` *after* the `SELECT user`
+   `with conn.cursor()` block had closed the cursor → pymysql raised
+   `Cursor closed` (a str-args OperationalError, **no errno**). The retry loop
+   only backed off on schema errnos (1054/1146) + connection-marker strings, so
+   it **gave up after 1 attempt** and seeded 0 rows. Fixed in `72dd82b`:
+   statements moved inside their with-blocks; retry loop now also treats
+   `"closed"` / `"not connected"` / `"not yet connected"` as transient.
+2. ✅ **SOLVED (in code, awaiting deploy): NOT-NULL 1364.** After the cursor fix,
+   the seeder died at the **`user` owner INSERT** with
+   `(1364, "Field 'avatar' doesn't have a default value")` → seed gave up → all
+   4 tables stayed empty. Root cause: NPM's stock sandbox never ran the setup
+   wizard, so `user` is empty and the seeder must *create* the owner row, but
+   its fixed INSERT omitted every NOT-NULL-with-no-default column the image
+   added since the last release. Real schema (introspected via `SHOW COLUMNS` on
+   the live dev DB, see `memory-bank/context.md`):
+   - `user` requires `avatar` (NOT NULL, no default) — the seed didn't supply it.
+   - `proxy_host` requires `advanced_config` + `meta` — the seed didn't supply them.
+   - `certificate` requires `meta` — the seed already supplied `'{}'`, but
+     `domain_names`/`expires_on` are nullable (NULL is fine, no 1048).
+   - `access_list` requires `meta` — the seed already supplied `'{}'`.
+   - `created_on`/`modified_on` (NOT NULL, no default) — handled by `NOW()` in
+     the INSERT (not a column the seed omits).
+   **Fix (uncommitted):** the seeder now introspects each table
+   (`SHOW COLUMNS`) *before* its INSERT and auto-fills any NOT-NULL-with-no-
+   default column the INSERT does not already supply, using
+   `_KNOWN_COLUMNS_WITH_DEFAULTS` (`user.avatar=''`, `certificate.meta='{}'`,
+   `proxy_host.advanced_config='{}'`+`meta='{}'`, `access_list.meta='{}'`),
+   falling back to `""` for a truly unknown new column. This is robust against
+   NPM renaming or adding required columns across image releases — the fill is
+   derived from the live schema, not a hardcoded column list. 1364 is NOT
+   treated as transient (a stable schema won't fix itself with time), so the
+   pass fails fast rather than retrying ~30s.
+   - ⚠️ RISK (unverified): the exact JSON shape of `roles` (`'["admin"]'`) and
+     `advanced_config` (`'{}'`) is a guess. 1364 = "no default & no value", and
+     the column accepts any non-NULL, so *some* valid value clears the error —
+     but a malformed shape could break NPM's own parse later. Verify by running
+     the seeder against the live dev DB (`:3306`, writable) and confirming the
+     diagnostic page populates, **not** by trusting a bare value.
 
-### `app/cli.py` — new admin commands + diagnostic
-- `check-npm-db`: multi-step diagnostic (Docker daemon → NPM container →
-  DB credentials via `exec_run("printenv | grep DB_MYSQL_")` → proxy host rows).
-- `list-events`: `--host-id`, `--limit`, `--days` (both ≥ 1), joins `hosts`
-  for names, time-filtered by `parse_timestamp`.
-- `disable-host HOST_ID`: sets `enabled = 0`, errors if not found.
-- `add-telegram --name --bot-token --chat-ids` (comma list): inserts channel
-  **enabled** and one `notification_rules` row per `EVENT_TYPES`.
-- `list-telegram`, `disable-telegram CHANNEL_ID`.
-- (Fixed 2026-07-09) F541 at line 243 — stray `f` prefix removed via `ruff --fix`.
-
-### `app/main.py` — diagnostic instrumentation
-- `/diagnostic` + `/api/diagnostic` now log steps and also fetch
-  `SELECT name, domain, npm_proxy_host_id FROM hosts` for on-page comparison
-  between NPM and SQLite host state.
-
-### `app/services/npm.py` — logging only
-- `get_all_hosts()`: logs row count + per-host `domain/forward` lines;
-  exceptions now logged with `exc_info=True` (was `logger.warning`).
-- Credential cache hit logs at debug.
-
-### `scripts/seed_dev.py` — troubleshooting logging
-- Verbose logs of: settings (db_path, npm_db_*), seed host count, each
-  proxy_host seeding attempt, `_wait_for_mysql` outcome, and a post-apply
-  verification dump of all hosts + their `npm_proxy_host_id`.
-
-## Test expectations (from recent commits)
-
-Recent `fix(tests)` commits (b8a6bb1, 0aace39, cb09b16) updated
-`tests/test_seed_dev.py` / related for the **6-host** seed set:
-5 hosts linked to NPM proxy_host ids; hosts include plex, homeassistant,
-portainer (plus vault, jellyfin, failtest). `insert_ids` and states counts
-were updated to match.
 
 ## Immediate next steps
 
-1. ~~Ruff F541~~ — done 2026-07-09 (`ruff check --fix app/cli.py`); lint is clean.
-2. **Fix the two KNOWN BUGS** (decisions.md):
-   a. `app/services/npm.py:256` — rewrite the `get_all_hosts` SELECT to real
-      columns (`forward_scheme`, `ssl_forced`, `http2_support`,
-      `advanced_config`, …); update any tests asserting the old column names.
-   b. `scripts/seed_dev.py:432` — the `proxy_host` INSERT must supply
-      `owner_user_id`, `access_list_id`, `certificate_id` (resolve from the
-      NPM `user`/`access_list`/`certificate` tables, or bootstrap the dev
-      admin row first — those tables are empty in the sandbox because the
-      NPM setup wizard was never completed there).
-3. After the fixes: push to `gitlab/main`, let `deploy_dev` run, then
-   re-trigger `dev_debug` and confirm the healer logs show real proxy_host
-   rows instead of the 1054 error.
-4. Review/trim the WIP diagnostic logging — some of it (per-row host logs)
-   is noisy for production; consider demoting to debug.
-5. Commit the WIP in logical pieces (CLI commands; diagnostic logging) once
-   verified, then push to `gitlab/main`.
-6. Optional: document `check-npm-db` in README under "Docker exec administration".
+1. **Deploy the introspection fix** (commit → push → GitLab pipeline →
+   `deploy_dev`). The cursor fix is already live; this is the second half.
+2. **Re-run the seeder against the live pristine dev NPM**
+   (`192.168.86.38:3306`, user `proxymanager`, sandbox password) and confirm:
+   - `user` now has 1 row (healer@example.com, roles `["admin"]`, avatar `""`).
+   - `certificate` + `access_list` each have 1 row.
+   - `proxy_host` has 6 rows (one per seed host: vault, jellyfin, failtest,
+     plex, homeassistant, portainer).
+   - `:8787/api/diagnostic` `npm_hosts` is non-empty and `hosts[*].npm_proxy_host_id`
+     is populated.
+   - If any column trips 1364 again, the pass now fails *loudly* (the
+     `_missing_default_columns` check) rather than silently seeding 1364s —
+     read the log to see which column.
+3. If the `roles` shape is wrong (NPM's wizard uses `ADMINISTRATOR` not
+   `admin` — verify by logging into the NPM UI or inspecting a wizard-created
+   user), correct `_ensure_npm_defaults`'s `roles` value and re-run.
+4. After green: confirm the diagnostic page renders, then this snapshot is
+   current. No further seeder work expected.
 
 ## Live-verification recipe (no docker/SSH from this workstation)
 
@@ -96,6 +97,8 @@ were updated to match.
   `upstream-healer`.
 - Direct DB checks: `pymysql` → `192.168.86.38:3306` (dev MariaDB
   `proxy_manager`; sandbox creds in `docker-compose.dev.yml` defaults).
+- Re-run the seeder: `python3 scripts/seed_dev.py seed` (or the in-container
+  equivalent) — it is idempotent; safe to re-run after a schema change.
 - NPM interaction rule: `docker exec` on the batcave box — never the web UI
   (ports 8181/8182 are not reachable from the LAN).
 
@@ -107,3 +110,10 @@ were updated to match.
 - Never restart the NPM container; only `nginx -s reload`.
 - Host identity = MAC + port (unique pair).
 - Ruff: E+F, long lines allowed. Tests: pytest-asyncio auto mode.
+- **Seeder introspection contract:** every INSERT in `seed_dev.py` must be
+  preceded by a `_fills_for(conn, table, known)` call that introspects the
+  table and auto-fills NOT-NULL-with-no-default columns not in `known`. If you
+  add a new table or a new required column to an INSERT, add it to
+  `_KNOWN_COLUMNS_WITH_DEFAULTS` (or the `known` set) so the introspection
+  knows how to fill it.
+

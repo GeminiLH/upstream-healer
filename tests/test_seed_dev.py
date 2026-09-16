@@ -13,12 +13,21 @@ import scripts.seed_dev as seed
 
 class _FakeCursor:
     """Behaves like the DictCursor the seeder uses (``with cur:``).
-    Each execute() consumes the next fake insert id."""
+    Each execute() consumes the next fake insert id.
 
-    def __init__(self, rows, insert_ids):
+    ``schema`` is an optional table -> SHOW COLUMNS rows mapping, returned
+    when a ``SHOW COLUMNS FROM ...`` is issued (so ``_fills_for`` can
+    exercise the real introspection path in tests that opt in). When a table
+    is not in ``schema``, ``SHOW COLUMNS`` returns an empty list (mid-migration
+    shape), which the seeder treats as "nothing to auto-fill".
+    """
+
+    def __init__(self, rows, insert_ids, schema=None):
         self._rows = rows
         self._insert_ids = insert_ids
+        self._schema = schema or {}
         self.lastrowid = None
+        self._show_cols: list = []
 
     def __enter__(self):
         return self
@@ -27,24 +36,30 @@ class _FakeCursor:
         return False
 
     def execute(self, sql, *args, **kwargs):
-        if "INSERT" not in str(sql).upper():
+        s = str(sql).upper()
+        if "SHOW COLUMNS" in s:
+            # extract the table name from "SHOW COLUMNS FROM `table`"
+            table = s.split("FROM", 1)[-1].strip().strip("`").strip().lower()
+            self._show_cols = self._schema.get(table, [])
             return
-        self.lastrowid = self._insert_ids.pop(0) if self._insert_ids else self.lastrowid
+        if "INSERT" in s:
+            self.lastrowid = self._insert_ids.pop(0) if self._insert_ids else self.lastrowid
 
     def fetchall(self):
-        return list(self._rows)
+        return list(self._show_cols) if self._show_cols else list(self._rows)
 
 
 class _FakeConn:
     """Behaves like the pymysql connection the seeder uses (cursor/commit/close)."""
 
-    def __init__(self, rows, insert_ids):
+    def __init__(self, rows, insert_ids, schema=None):
         self._rows = rows
         self._insert_ids = insert_ids
+        self._schema = schema
         self.closed = False
 
     def cursor(self):
-        return _FakeCursor(self._rows, self._insert_ids)
+        return _FakeCursor(self._rows, self._insert_ids, self._schema)
 
     def commit(self):
         pass
@@ -127,6 +142,11 @@ class _ClosingCursor:
         self.executed.append(str(sql).strip())
         if "insert" in str(sql).lower():
             self.lastrowid = (self.lastrowid or 0) + 1
+        # SHOW COLUMNS is a SELECT-style statement; _match will find no
+        # scripted entry (the script has no "show columns" key) and return
+        # None, so fetchall() returns [] — the seeder then sees an empty
+        # schema and skips auto-fill, which is safe (the pre-introspection
+        # INSERT list is unchanged).
         return self._match(self._last_sql)
 
     def fetchone(self):
@@ -407,6 +427,183 @@ class TestTelegram:
                 assert (await cursor.fetchone())[0] == len(seed.EVENT_TYPES)
         finally:
             await db.close()
+
+
+class TestSchemaIntrospection:
+    """Regression tests for the NOT-NULL auto-fill introspection.
+
+    The dev NPM sandbox has never run the setup wizard, so the ``user`` table
+    is empty and the seeder must create the owner row. But the seeder's INSERT
+    only lists the columns it *knows* about — when a new NPM image release adds
+    a NOT-NULL column with no default (``user.avatar``, ``proxy_host.
+    advanced_config``/``meta`` on current images), the INSERT omits it and the
+    whole pass fails with 1364 in strict mode. The fix introspects each table
+    (``SHOW COLUMNS``) before INSERT and auto-fills any NOT-NULL-with-no-default
+    column the INSERT does not already supply, using values from
+    ``_KNOWN_COLUMNS_WITH_DEFAULTS`` (falling back to ``""`` for truly unknown
+    columns). These tests lock that behaviour in so a future refactor that
+    drops the introspection is caught.
+    """
+
+    def test_fills_for_returns_known_defaults_for_required_columns(
+        self, temp_settings, monkeypatch
+    ):
+        """``_fills_for`` introspects the table and returns safe defaults for
+        every NOT-NULL-with-no-default column not in ``known``."""
+        import scripts.seed_dev as s
+
+        user_cols = [
+            {"Field": "id", "Type": "int", "Null": "NO", "Key": "PRI", "Default": None, "Extra": "auto_increment"},
+            {"Field": "created_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "modified_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "is_deleted", "Type": "tinyint", "Null": "NO", "Key": "", "Default": "0", "Extra": ""},
+            {"Field": "is_disabled", "Type": "tinyint", "Null": "NO", "Key": "", "Default": "0", "Extra": ""},
+            {"Field": "email", "Type": "varchar(255)", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "name", "Type": "varchar(255)", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "nickname", "Type": "varchar(255)", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "avatar", "Type": "varchar(255)", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "roles", "Type": "longtext", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+        ]
+
+        class _ColCursor:
+            def __init__(self, cols):
+                self._cols = cols
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, *a): pass
+            def fetchall(self): return list(self._cols)
+
+        class _ColConn:
+            def __init__(self, cols): self._cols = cols
+            def cursor(self): return _ColCursor(self._cols)
+            def commit(self): pass
+            def close(self): pass
+
+        conn = _ColConn(user_cols)
+        known = {"created_on", "modified_on", "is_deleted", "is_disabled", "email", "name", "nickname", "roles"}
+        fills = s._fills_for(conn, "user", known)
+        assert fills == {"avatar": ""}
+
+    def test_fills_for_falls_back_to_empty_string_for_unknown_required_column(
+        self, temp_settings, monkeypatch
+    ):
+        """A NOT-NULL-with-no-default column not in ``_KNOWN_COLUMNS_WITH_
+        DEFAULTS`` gets ``""`` — safe enough for a dev seed."""
+        import scripts.seed_dev as s
+
+        class _ColCursor:
+            def __init__(self, cols): self._cols = cols
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, *a): pass
+            def fetchall(self): return list(self._cols)
+
+        class _ColConn:
+            def __init__(self, cols): self._cols = cols
+            def cursor(self): return _ColCursor(self._cols)
+            def commit(self): pass
+            def close(self): pass
+
+        cols = [
+            {"Field": "created_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "modified_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "email", "Type": "varchar(255)", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "brand_new_col", "Type": "varchar(255)", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+        ]
+        conn = _ColConn(cols)
+        known = {"created_on", "modified_on", "email"}
+        fills = s._fills_for(conn, "user", known)
+        assert fills == {"brand_new_col": ""}
+
+    def test_fills_for_returns_empty_when_table_not_migrated(self, temp_settings, monkeypatch):
+        """If the table does not exist yet (mid-migration), ``SHOW COLUMNS``
+        fails; ``_fills_for`` must return an empty dict, not raise."""
+        import scripts.seed_dev as s
+
+        class _ErrCursor:
+            def __init__(self): self.lastrowid = None
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, *a):
+                raise Exception("Table 'proxy_manager.proxy_host' doesn't exist")
+            def fetchall(self): return []
+
+        class _ErrConn:
+            def cursor(self): return _ErrCursor()
+            def commit(self): pass
+            def close(self): pass
+
+        conn = _ErrConn()
+        fills = s._fills_for(conn, "proxy_host", {"domain_names"})
+        assert fills == {}
+
+    def test_inspect_columns_returns_empty_on_error(self, temp_settings, monkeypatch):
+        """``_inspect_columns`` never raises; a missing table yields ``[]``."""
+        import scripts.seed_dev as s
+
+        class _ErrCursor:
+            def __init__(self): self.lastrowid = None
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, *a):
+                raise Exception("no such table")
+            def fetchall(self): return []
+
+        cur = _ErrCursor()
+        assert s._inspect_columns(cur, "proxy_host") == []
+
+    def test_inspect_columns_lowercases_field_names(self, temp_settings, monkeypatch):
+        """``_inspect_columns`` folds column names to lower-case so callers
+        can use a lower-case default table without per-release guessing."""
+        import scripts.seed_dev as s
+
+        class _Cur:
+            def __init__(self): self.lastrowid = None
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, *a): pass
+            def fetchall(self):
+                return [
+                    {"Field": "AdvancedConfig", "Type": "text", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+                    {"Field": "Meta", "Type": "longtext", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+                ]
+
+        cur = _Cur()
+        cols = s._inspect_columns(cur, "proxy_host")
+        assert [c["Field"] for c in cols] == ["advancedconfig", "meta"]
+
+    def test_missing_default_columns_surfaces_unfilled_required_columns(
+        self, temp_settings, monkeypatch
+    ):
+        """``_missing_default_columns`` returns a non-empty list when a NOT-NULL
+        column has no default, is not in ``known``, and is not in
+        ``_KNOWN_COLUMNS_WITH_DEFAULTS`` — the caller then fails the pass
+        loudly rather than silently seeding 1364s."""
+        import scripts.seed_dev as s
+
+        cols = [
+            {"Field": "created_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "modified_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "new_required", "Type": "varchar(255)", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+        ]
+        known = {"created_on", "modified_on"}
+        unfilled = s._missing_default_columns("proxy_host", cols, known)
+        assert ("new_required", "??") in unfilled
+
+    def test_missing_default_columns_empty_when_all_filled(self, temp_settings, monkeypatch):
+        """When every NOT-NULL-no-default column is either in ``known`` or in
+        ``_KNOWN_COLUMNS_WITH_DEFAULTS``, the result is empty (the pass
+        proceeds)."""
+        import scripts.seed_dev as s
+
+        cols = [
+            {"Field": "created_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "modified_on", "Type": "datetime", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "advanced_config", "Type": "text", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+            {"Field": "meta", "Type": "longtext", "Null": "NO", "Key": "", "Default": None, "Extra": ""},
+        ]
+        known = {"created_on", "modified_on"}
+        assert s._missing_default_columns("proxy_host", cols, known) == []
 
 
 class TestBootstrap:

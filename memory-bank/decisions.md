@@ -1,6 +1,6 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-09-15.
+> Last updated: 2026-09-16.
 
 ## Design decisions
 
@@ -105,29 +105,94 @@ collection with `ValidationError: extra_forbidden`.
   UI-configured channels are never touched.
 - GitLab CI deploy jobs need `needs:optional` syntax for `unit_tests`
   (fixed in commits 4bbdfd7 / bbddb45) — preserve if editing CI.
+- **pymysql error-shape trap (learned the hard way, 2026-09-16):** a
+  cursor/connection-lifecycle misuse ("Cursor closed", "Not yet connected")
+  is raised as a *str-args* `OperationalError` with **no numeric errno**,
+  whereas a real SQL failure (missing column = 1364, unknown column = 1054,
+  missing table = 1146, null-into-NOT-NULL = 1048) carries a numeric errno
+  in `exc.args[0]`. Any retry/backoff logic that keys off `err_no` MUST also
+  check the *string* form — otherwise lifecycle errors look "non-retryable"
+  and the seeder silently gives up. This is exactly why the "Cursor closed"
+  bug seeded 0 rows without an obvious trace.
+- **NPM tables have NOT-NULL-with-no-default columns that must be explicitly
+  supplied on INSERT** (strict mode; a NULL *also* fails these). On the live
+  dev `jc21/nginx-proxy-manager` image the columns the current seeder
+  **omits** are: `user.avatar` (the one that actually fires 1364),
+  `proxy_host.advanced_config` + `proxy_host.meta`, and `certificate.meta`.
+  (`user.roles` IS already supplied by the seed as `'["admin"]'` — do not list
+  it as missing; but re-verify that JSON shape is what NPM expects.) The schema
+  *changes between NPM image releases*, so prefer introspecting `SHOW COLUMNS`
+  and auto-filling over hardcoding a fixed column list.
 
-## KNOWN BUGS — verified live in dev 2026-09-15 (via `dev_debug` job 638)
+## Seeder / NPM-sync bug history — RESOLVED vs CURRENT (verified live in dev)
 
-1. **`app/services/npm.py:256` — `get_all_hosts` SELECT is broken on the
-   current NPM schema.** It selects `protocol`, `ssl_removed`,
-   `client_body_buffer`, `proxy_buffer_size` — none of which exist. Error
-   1054 (`"Unknown column 'protocol' in 'field list'"`), logged by the
-   deployed healer. Real `proxy_host` columns (SHOW COLUMNS, MariaDB
-   10.11): `id, created_on, modified_on, owner_user_id, is_deleted,
-   domain_names, forward_host, forward_port, access_list_id, certificate_id,
-   ssl_forced, caching_enabled, block_exploits, advanced_config, meta,
-   allow_websocket_upgrade, http2_support, forward_scheme, enabled,
-   locations, hsts_enabled, hsts_subdomains, trust_forwarded_proto`.
-   Consequence: the healer's NPM host sync silently returns `[]`.
-2. **`scripts/seed_dev.py:432` — the `proxy_host` INSERT omits
-   `owner_user_id`, `access_list_id`, `certificate_id`** (all NOT NULL, no
-   defaults) → seeding fails on a fresh NPM DB with "cannot be null", yet
-   the seed container exits 0, so the DB is left with 0 proxy_host rows.
-   Must supply these values (owner = a real `user` row).
-3. **Dev sandbox NPM DB state** (`nginx-db-1`): schema migrated to
-   20260131163528, but `user`, `access_list`, and `certificate` tables are
-   **empty** — the NPM setup wizard was never completed on the dev box.
-   Until then the NPM web UI shows the setup wizard, and seeder fixes must
-   either bootstrap a dev admin row or tolerate this state. Direct SQL from
-   this workstation works: `pymysql` → `192.168.86.38:3306`
+Track these carefully; the failure mode has changed layer by layer. As of the
+introspection fix (uncommitted WIP, 2026-09-16) **both** seeder bugs (#1 cursor
+closed, #4 NOT-NULL 1364) are fixed in code; #4 awaits deploy + live
+verification. The #2 (`protocol` 1054 in `npm.py`) needs re-verification and #3
+is stale/disproven — do not re-implement.
+
+1. ✅ **RESOLVED (commit `72dd82b`, live-confirmed 2026-09-16): "Cursor closed".**
+   `_ensure_npm_defaults` originally ran its owner `INSERT` *after* the
+   `SELECT user` `with conn.cursor()` block closed the cursor. pymysql raises
+   closed-cursor misuse as a **str-args** `OperationalError` ("Cursor closed",
+   "Not yet connected") — **no `errno`** — so the seeding retry loop (which
+   only backed off on schema errnos + a few connection-marker strings) gave up
+   after one attempt and seeded **zero** rows. The heal (not a symptom) is:
+   (a) every statement now lives *inside* its `with conn.cursor()` block, and
+   (b) the retry loop treats `"closed"` / `"not connected"` /
+   `"not yet connected"` as transient. Regression: `tests/test_seed_dev.py
+   TestCursorLifecycle` uses a faithful `_ClosingCursor`/`_ClosingConn` that
+   raises "Cursor closed" post-`__exit__`; the buggy layout fails against it,
+   the fixed layout seeds all 6 hosts.
+2. ⚠️ **HISTORICAL (status: RE-VERIFY — may have been fixed in the WIP that
+   later became part of the deployed build):** the earlier 1054
+   (`"Unknown column 'protocol'"`) from `app/services/npm.py` `get_all_hosts`.
+   ⚠️ Do NOT assume this is fixed just because the seeder progressed — the
+   seeder writing rows and the healer's `get_all_hosts` reading them are
+   *independent* code paths. Confirm `get_all_hosts`'s SELECT uses only real
+   columns before trusting the diagnostic page.
+3. ❌ **STALE / DISPROVEN — do NOT re-implement this.** The prior note
+   "the `proxy_host` INSERT omits `owner_user_id`/`access_list_id`/
+   `certificate_id` (NOT NULL) → cannot be null". That was a *previous*
+   code state. The current `scripts/seed_dev.py` INSERT **already supplies all
+   three** via an explicit column list (owner resolved from the NPM `user`
+   table, access_list + certificate bootstrapped). The live DB confirms the
+   seeder now gets *past* this INSERT. Do not re-add/rewrite these.
+4. ✅ **FIXED (in code, uncommitted — awaiting deploy + live verification):**
+   **1364, NOT-NULL with no default** — the *next* layer after the cursor fix.
+   On the live dev NPM (`jc21/nginx-proxy-manager`), the seeder's **first**
+   INSERT (`user` owner) failed with
+   `(1364, "Field 'avatar' doesn't have a default value")` → seed gave up →
+   `user`/`access_list`/`certificate`/`proxy_host` all stayed **0 rows** → the
+   `:8787/diagnostic` page showed "No proxy hosts found". The real schema
+   (introspected via `SHOW COLUMNS` on the live dev DB) has these
+   NOT-NULL-with-no-default columns the seed **omitted** (the 1364 fires on
+   `avatar` first, in definition order — the rest are the same class):
+   - `user`: **`avatar`** (varchar(255)). (`roles` is supplied as `'["admin"]'` —
+     unverified shape, not the cause of 1364.)
+   - `proxy_host`: **`advanced_config`** (text), **`meta`** (longtext).
+   - `certificate`: **`meta`** (longtext). (`domain_names`/`expires_on` are
+     actually *nullable* in the live schema — NULL is fine, no 1048.)
+   - `access_list`: `meta` (longtext) — the seed already passes `"{}"`, so no
+     change needed there.
+   **The fix** (uncommitted `scripts/seed_dev.py`): the seeder now introspects
+   each table via `SHOW COLUMNS` *before* its INSERT and auto-fills any
+   NOT-NULL-with-no-default column the INSERT doesn't already supply, using
+   `_KNOWN_COLUMNS_WITH_DEFAULTS` (`user.avatar=''`, `certificate.meta='{}'`,
+   `proxy_host.advanced_config='{}'`+`meta='{}'`, `access_list.meta='{}'`),
+   falling back to `""` for a truly unknown new column. This is robust against
+   NPM renaming or adding required columns across image releases — the fill is
+   derived from the live schema, not a hardcoded column list. 1364 is NOT
+   treated as transient (a stable schema won't fix itself with time), so the
+   pass fails fast rather than retrying ~30s. Regression:
+   `tests/test_seed_dev.py TestSchemaIntrospection` (7 tests). ⚠️ JSON *shape*
+   of `roles`/`advanced_config` is still a guess — verify by running the seeder
+   against `:3306` (writable sandbox) and seeing the diagnostic page populate,
+   **do not ship on a bare value assumption**.
+5. **Dev sandbox NPM DB state** (`nginx-db-1`): schema migrated, but `user`,
+   `access_list`, `certificate` are **empty** (setup wizard never ran on the
+   dev box). That is *expected* and is why the seeder must bootstrap a dev
+   admin row; it is not the bug itself (see #4 for the real blocker). Direct
+   SQL from this workstation works: `pymysql` → `192.168.86.38:3306`
    (user `proxymanager`, sandbox password — see compose defaults).

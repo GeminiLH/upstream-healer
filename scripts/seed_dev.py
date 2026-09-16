@@ -29,7 +29,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import aiosqlite
 
@@ -106,6 +106,120 @@ _MIGRATING_ERRNOS = {1054, 1146}
 # How many times to retry the seeding attempt on a still-migrating
 # schema before giving up (3s apart -> ~30s of migration headroom).
 _SEED_RETRIES = 10
+
+# Not a "still migrating" error: 1364 is the "Field 'x' doesn't have a default
+# value" strict-mode error. It means the schema is *complete but the data is
+# incomplete* — fixing it requires a real value (a safe default is auto-filled
+# by the introspection helpers below), not more time. Retrying 1364 for ~30s
+# against a stable schema is pure waste, so it is deliberately kept out of
+# _MIGRATING_ERRNOS and the pass skips with a clear warning instead.
+_MISSING_DEFAULT_ERRNO = 1364
+
+# Tables we write to, and the safe values to use for a NOT-NULL column that has
+# no database default (i.e. a column NPM's own "wizard leaves empty" migrations
+# forgot to give a default). NPM's schema changes across image releases, so
+# instead of hardcoding a per-INSERT column list (fragile against renames) the
+# seeder introspects each table (SHOW COLUMNS) and auto-fills any such column
+# it does not explicitly supply. Only columns that genuinely have no database
+# default need an entry here (most have sensible defaults: is_deleted=0,
+# enabled=1, forward_scheme=http, ...). Keys are lower-case: introspection
+# folds the live column names to lower-case before lookup.
+_KNOWN_COLUMNS_WITH_DEFAULTS: Dict[str, Dict[str, Optional[str]]] = {
+    "user": {"avatar": ""},
+    "access_list": {},
+    "certificate": {"meta": "{}"},
+    "proxy_host": {"advanced_config": "{}", "meta": "{}"},
+}
+
+
+def _inspect_columns(cursor: Any, table: str) -> List[Dict[str, Any]]:
+    """Return ``SHOW COLUMNS`` rows for ``table``, or ``[]`` if the table does
+    not exist yet (mid-migration) or the query fails (a transient DB issue).
+
+    Never raises. Column names are folded to lower-case so callers can use a
+    case-insensitive default table without per-release guessing.
+    """
+    try:
+        cursor.execute(f"SHOW COLUMNS FROM `{table}`")
+    except Exception as exc:  # noqa: BLE001 - table missing/not migrated = empty schema
+        logger.debug(f"introspection: could not read {table} columns: {exc}")
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        for row in cursor.fetchall():
+            rec = dict(row)
+            key = str(rec.get("Field", "")).lower()
+            rec["Field"] = key
+            rec["Name"] = key
+            rows.append(rec)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"introspection: could not read {table} rows: {exc}")
+        return []
+    return rows
+
+
+def _missing_default_columns(
+    table: str, columns: List[Dict[str, Any]], known: Set[str]
+) -> List[Tuple[str, str]]:
+    """Return ``(column, value)`` pairs for every NOT-NULL column with no
+    default that is neither supplied by the caller (``known``) nor auto-filled
+    by ``_KNOWN_COLUMNS_WITH_DEFAULTS`` *for this table*.
+
+    These are exactly the columns that would trip error 1364 at insert.
+    Returning a non-empty list lets the caller fail the pass loudly and
+    immediately instead of seeding 1364s into a healthy database. (The value
+    in each pair is a placeholder for display — a missing default means we do
+    *not* know a safe value, which is the whole point of surfacing it.)
+    """
+    table_defaults = _KNOWN_COLUMNS_WITH_DEFAULTS.get(table, {})
+    result: List[Tuple[str, str]] = []
+    for col in columns:
+        if col.get("Extra") == "auto_increment":
+            continue  # the surrogate key; never supplied here
+        if col.get("Null") != "NO":
+            continue  # nullable: an omitted value defaults to NULL
+        if col.get("Default") is not None:
+            continue  # the database supplies a value
+        key = str(col.get("Field", "")).lower()
+        if not key or key in known:
+            continue  # we provide it
+        if key in table_defaults:
+            continue  # _fills_for will auto-fill a safe value for this one
+        result.append((key, "??"))
+    return result
+
+
+def _fills_for(conn: Any, table: str, known: Set[str]) -> Dict[str, str]:
+    """Introspect ``table`` and return the value to use for every NOT-NULL,
+    no-default column it does not already supply.
+
+    All statements run *inside* the surrounding ``with conn.cursor()`` block
+    (the cursor is closed when the block exits). On any error the introspection
+    silently yields an empty dict: in that case the INSERT then omits those
+    columns and, as before, fails with the schema error, which the caller
+    retries while the schema is still being created.
+    """
+    with conn.cursor() as cursor:
+        columns = _inspect_columns(cursor, table)
+    if not columns:
+        return {}
+    table_defaults = _KNOWN_COLUMNS_WITH_DEFAULTS.get(table, {})
+    fills: Dict[str, str] = {}
+    for col in columns:
+        if col.get("Extra") == "auto_increment":
+            continue
+        if col.get("Null") != "NO":
+            continue
+        if col.get("Default") is not None:
+            continue
+        key = str(col.get("Field", "")).lower()
+        if not key or key in known:
+            continue
+        value = table_defaults.get(key)
+        if value is None:
+            value = ""  # safe generic non-NULL value; see _KNOWN_COLUMNS_WITH_DEFAULTS
+        fills[key] = value
+    return fills
 
 
 # ───────────────────────────── Healer SQLite ─────────────────────────────
@@ -321,7 +435,18 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
     The schema itself is guaranteed: on this dev setup the container was
     started by an NPM image that ships the tables; otherwise every
     statement here errors and the caller's retry loop skips seeding (the
-    healer runs fine without NPM). No DDL, no schema inspection needed.
+    healer runs fine without NPM).
+
+    One wrinkle a hard-coded column list cannot survive: NPM's migrations add
+    NOT-NULL columns *without* defaults across releases (``user.avatar``,
+    ``certificate.meta``, ``proxy_host.advanced_config``/``meta`` on current
+    images). A stock sandbox has never run the wizard, so those rows do not
+    exist and the seed must create them — but a fixed INSERT omits those
+    columns and the whole pass fails (``Cursor closed`` at cursor-close,
+    1364 in strict mode, or a missing-column SELECT in non-strict mode). So
+    before each INSERT the table is introspected and any NOT-NULL column with
+    no database default that the INSERT does not already supply is auto-filled
+    with a safe value (see ``_fills_for``).
     """
     # NOTE: every statement must run inside its ``with conn.cursor()`` block.
     # The earlier revision ran the owner INSERT (below) after the SELECT block
@@ -350,12 +475,28 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
                     "NPM_DEFAULT_PASSWORD not set — using 'dev-healer' for the "
                     "seeded owner (set the env var to pick your own)"
                 )
+            known = {
+                "created_on",
+                "modified_on",
+                "is_deleted",
+                "is_disabled",
+                "email",
+                "name",
+                "nickname",
+                "roles",
+            }
+            values = {
+                "email": "healer@example.com",
+                "name": "Healer (seeded)",
+                "nickname": "healer",
+                "roles": '["admin"]',
+            }
+            values.update(
+                _fills_for(conn, "user", known)  # e.g. user.avatar -> ""
+            )
             cursor.execute(
-                """INSERT INTO user
-                   (created_on, modified_on, is_deleted, is_disabled, email,
-                    name, nickname, roles)
-                   VALUES (NOW(), NOW(), 0, 0, %s, %s, %s, %s)""",
-                ("healer@example.com", "Healer (seeded)", "healer", '["admin"]'),
+                build_insert("user", values, timestamps=True),
+                params_for(values, timestamps=True),
             )
             owner_user_id = cursor.lastrowid
             try:
@@ -388,21 +529,53 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
         if row:
             certificate_id = row["id"]
         else:
+            known = {
+                "created_on",
+                "modified_on",
+                "owner_user_id",
+                "is_deleted",
+                "provider",
+                "nice_name",
+                "domain_names",
+                "expires_on",
+                "meta",
+            }
+            values = {
+                "owner_user_id": owner_user_id,
+                "provider": "manual",
+                "nice_name": "Seeded self-signed",
+                "domain_names": None,
+                "expires_on": None,
+                "meta": "{}",
+            }
+            values.update(_fills_for(conn, "certificate", known))
             cursor.execute(
-                """INSERT INTO certificate
-                   (created_on, modified_on, owner_user_id, is_deleted,
-                    provider, nice_name, domain_names, expires_on, meta)
-                   VALUES (NOW(), NOW(), %s, 0, 'manual', %s, NULL, NULL, %s)""",
-                (owner_user_id, "Seeded self-signed", "{}"),
+                build_insert("certificate", values, timestamps=True),
+                params_for(values, timestamps=True),
             )
             certificate_id = cursor.lastrowid
 
+        known = {
+            "created_on",
+            "modified_on",
+            "owner_user_id",
+            "is_deleted",
+            "name",
+            "meta",
+            "satisfy_any",
+            "pass_auth",
+        }
+        values = {
+            "owner_user_id": owner_user_id,
+            "name": "Seed dev allowlist",
+            "meta": "{}",
+            "satisfy_any": 1,
+            "pass_auth": 1,
+        }
+        values.update(_fills_for(conn, "access_list", known))
         cursor.execute(
-            """INSERT INTO access_list
-               (created_on, modified_on, owner_user_id, is_deleted, name,
-                meta, satisfy_any, pass_auth)
-               VALUES (NOW(), NOW(), %s, 0, %s, %s, 1, 1)""",
-            (owner_user_id, "Seed dev allowlist", "{}"),
+            build_insert("access_list", values, timestamps=True),
+            params_for(values, timestamps=True),
         )
         access_list_id = cursor.lastrowid
     conn.commit()
@@ -411,6 +584,69 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
         f"(owner user #{owner_user_id})"
     )
     return owner_user_id, access_list_id, certificate_id
+
+
+def _sql_literal(value: Any) -> str:
+    """Render a value as a SQL literal or a ``%s`` placeholder.
+
+    ``NOW()``-style raw fragments (``__sql__…__``), ints and bools are inlined
+    as literals; ``None`` becomes ``NULL``; everything else is a ``%s``
+    placeholder bound by pymysql. The inlined values come from the seed config
+    or ``_KNOWN_COLUMNS_WITH_DEFAULTS`` — never from user input — so this is
+    safe.
+    """
+    if isinstance(value, str) and value.startswith("__sql__") and value.endswith("__"):
+        return value[len("__sql__") : -2]
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "%s"
+
+
+def build_insert(
+    table: str, values: Dict[str, Any], timestamps: bool = False
+) -> str:
+    """Build an ``INSERT`` statement from a column -> value mapping.
+
+    ``created_on``/``modified_on`` (NOT NULL, no database default) are always
+    included, rendered as ``NOW()`` when ``timestamps`` is set — so callers
+    supply only the business fields, in insertion order. Returns the SQL
+    string; pair it with ``params_for`` for the bound values.
+    """
+    ordered: List[Tuple[str, str]] = []
+    if timestamps:
+        ordered.append(("created_on", _sql_literal("__sql__NOW()__")))
+        ordered.append(("modified_on", _sql_literal("__sql__NOW()__")))
+    for col, value in values.items():
+        if timestamps and col in ("created_on", "modified_on"):
+            continue  # already emitted above as NOW()
+        ordered.append((col, _sql_literal(value)))
+    cols = ", ".join(col for col, _ in ordered)
+    vals = ", ".join(item for _, item in ordered)
+    return f"INSERT INTO {table} ({cols}) VALUES ({vals})"
+
+
+def params_for(
+    values: Dict[str, Any], timestamps: bool = False
+) -> tuple:
+    """The positional parameter list matching ``build_insert``'s ``%s`` slots.
+
+    A value only needs a bound parameter when ``_sql_literal`` rendered it as
+    ``%s`` (i.e. it is neither a ``__sql__…__`` fragment nor an int/float/bool
+    literal); ``None`` renders as the ``NULL`` literal and is not bound.
+    """
+    params: List[Any] = []
+    if timestamps:
+        pass  # created_on/modified_on are emitted as NOW(), not bound
+    for col, value in values.items():
+        if timestamps and col in ("created_on", "modified_on"):
+            continue
+        if _sql_literal(value) == "%s":
+            params.append(value)
+    return tuple(params)
 
 
 def _mysql_connect():
@@ -520,6 +756,12 @@ def ensure_proxy_hosts() -> Dict[str, int]:
                 err_no in _MIGRATING_ERRNOS
                 or any(m in str(exc).lower() for m in _TRANSIENT_MARKERS)
             )
+            # 1364 = the schema is *complete* (the introspection above ran) but
+            # a required column still has no value we know how to supply. That
+            # will not fix itself with time, so it is not transient — fail the
+            # pass rather than retrying against a stable schema for ~30s.
+            if err_no == _MISSING_DEFAULT_ERRNO:
+                retryable = False
             if retryable and attempt < _SEED_RETRIES:
                 logger.info(
                     f"NPM schema still migrating (attempt {attempt}, err {err_no}) — "
@@ -564,23 +806,59 @@ def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
         return links
 
     owner_user_id, access_list_id, certificate_id = _ensure_npm_defaults(conn)
+
+    # The columns every seeded row supplies. Access-list and certificate FKs
+    # are already supplied, so introspection only needs to fill whatever NOT
+    # NULL-with-no-default column NPM has added since the last release (the
+    # 'advanced_config' / 'meta' pair on current images) — robust against a
+    # column *rename* too, because the fill is derived from the live schema.
+    known = {
+        # created_on/modified_on are always emitted by build_insert as NOW()
+        # (timestamps=True) — include them in ``known`` so the unfilled check
+        # below doesn't mistake them for missing.
+        "created_on",
+        "modified_on",
+        "domain_names",
+        "forward_scheme",
+        "forward_host",
+        "forward_port",
+        "owner_user_id",
+        "access_list_id",
+        "certificate_id",
+        "is_deleted",
+    }
+    with conn.cursor() as cursor:
+        proxy_columns = _inspect_columns(cursor, "proxy_host")
+    fills = _fills_for(conn, "proxy_host", known)
+    unfilled = _missing_default_columns("proxy_host", proxy_columns, known)
+    if unfilled:
+        names = ", ".join(f"{name}={value}" for name, value in unfilled)
+        # The schema is complete (we read its columns) yet a required column
+        # has no known safe default — fail the pass loudly so it is not
+        # silently skipped, and so the next release that renames/adds a
+        # required column is loud about it.
+        raise RuntimeError(
+            f"proxy_host has required column(s) with no known safe default: "
+            f"{names} — add them to _KNOWN_COLUMNS_WITH_DEFAULTS"
+        )
+
     for spec in to_create:
         domain = spec["domain"]
+        values = {
+            "domain_names": domain,
+            "forward_scheme": "http",
+            "forward_host": spec.get("ip") or "127.0.0.1",
+            "forward_port": int(spec.get("port") or 80),
+            "owner_user_id": owner_user_id,
+            "access_list_id": access_list_id,
+            "certificate_id": certificate_id,
+            "is_deleted": 0,
+        }
+        values.update(fills)
         with conn.cursor() as cursor:
             cursor.execute(
-                """INSERT INTO proxy_host
-                   (domain_names, forward_scheme, forward_host, forward_port,
-                    owner_user_id, access_list_id, certificate_id, is_deleted,
-                    created_on, modified_on)
-                   VALUES (%s, 'http', %s, %s, %s, %s, %s, 0, NOW(), NOW())""",
-                (
-                    domain,
-                    spec.get("ip") or "127.0.0.1",
-                    str(spec.get("port") or 80),
-                    owner_user_id,
-                    access_list_id,
-                    certificate_id,
-                ),
+                build_insert("proxy_host", values, timestamps=True),
+                params_for(values, timestamps=True),
             )
             proxy_host_id = cursor.lastrowid
         conn.commit()

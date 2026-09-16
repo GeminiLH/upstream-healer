@@ -1,6 +1,6 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-09-15. Re-verify with `git status` and `progress.md` before relying on this.
+> Last updated: 2026-09-16. Re-verify with `git status` and `progress.md` before relying on this.
 
 ## What it is
 
@@ -103,3 +103,17 @@ scripts/seed_dev.py
 commit `cb09b16`), including `plex`, `homeassistant`, `portainer`. `failtest`
 is a deliberately dead device to exercise the full recovery flow
 (unreachable → scan → NPM update → nginx reload).
+
+**Current live state (2026-09-16):** the seeder's "Cursor closed" bug is fixed
+and deployed (commit `72dd82b`). The next layer — `user.avatar` 1364 (a NOT-NULL-
+with-no-default column the seed omits) — is **now also fixed in code** (uncommitted
+WIP): the seeder introspects each table via `SHOW COLUMNS` before its INSERT and
+auto-fills any NOT-NULL-with-no-default column the INSERT doesn't supply, using
+`_KNOWN_COLUMNS_WITH_DEFAULTS` in `scripts/seed_dev.py`. **Awaiting deploy + live
+verification** on the pristine dev NPM — the DB is still empty until then.
+`decisions.md` records the full two-bug history and the exact columns; `progress.md`
+has the live-verification recipe. (Do NOT re-add owner/access_list/certificate to
+the proxy_host INSERT — that gap was already closed in `3a9545f`; that older note
+is stale. And do NOT hardcode a column list per INSERT — the introspection handles
+schema drift automatically; if you add a new required column, add it to
+`_KNOWN_COLUMNS_WITH_DEFAULTS`.)
