@@ -67,6 +67,14 @@ collection with `ValidationError: extra_forbidden`.
 - **GitLab base URL (verified)**: `http://192.168.86.38:32769` (port map:
   32768→git-ssh, 32769→web-80, 32770→web-443; HTTPS 32770 not reachable from
   this dev host, use 32769).
+  - ⚠️ **Do NOT invent other ports.** `8929`/`89xx` are *not* GitLab ports —
+    they are NPM ports and have nothing to do with this instance. Always use
+    `:32769` for the GitLab Web/API. A session that "recalled" `8929` got
+    connection-refused and wrongly concluded the API was unreachable.
+  - The tokens (`GITLAB_READ_TOKEN`, `GITLAB_PIPELINE_TOKEN`) are in the
+    git-ignored `.env.local` at repo root — load with `set -a; . ./.env.local`.
+    `GITLAB_PIPELINE_TOKEN` is sufficient for all project-scoped pipeline/job
+    reads; `GITLAB_READ_TOKEN` is a separate PAT.
 - **Project id: 4** (`monster/upstream_healer`, default branch `main`).
 - Verified endpoints (project id 4):
   - `GET  /api/v4/projects/4/pipelines?per_page=3` — latest pipelines

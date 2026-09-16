@@ -1,18 +1,26 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-16 — **multi-subnet support implemented, 150 tests pass,
-> ruff clean, smoke-tested end-to-end.** Ready to commit + deploy.
-> **Verify before acting**: `git status`, `git log -5`,
-> then run `python3 -m pytest tests/ -q`.
+> Snapshot: 2026-09-16 — **multi-subnet support live** (feature commit
+> `d6abef0`; the one pipeline break it caused was fixed in `89ff442` —
+> **verified green in pipeline 149**: `unit_tests` 150 pass, `deploy_dev`
+> success). **All done.**
+> **Verify before acting**: `git status`, `git log -5`, then
+> `python3 -m pytest tests/ -q`.
 
 ## Current state
 
 - Branch: `main` (tracking `gitlab/main`).
-- HEAD (pre-this-feature): `5c480a9` (on-demand ARP/scapy scan on diagnostic;
-  committed + deployed + live-verified 2026-09-16, pipeline 147 job 722 success).
-- **Uncommitted WIP (this session):** multi-subnet support — scanner, monitor,
-  database, main, templates, tests, and this memory-bank.
-- **Health: 150 tests pass** (was 128; +22 new). **Ruff clean** (verify).
+- HEAD: `89ff442` (the test-hermeticity fix) — pushed to gitlab/main, **pipeline
+  149 all-green** (`lint` / `unit_tests` 150 pass / `build_image` / `deploy_dev`
+  all success; only manual jobs `deploy_test`/`deploy_production`/`dev_down` /
+  `dev_debug` remain).
+- Just before it: `d6abef0` (the multi-subnet feature — scanner, monitor,
+  database, main, templates, tests).
+- **Health: 150 tests pass, ruff clean.** Verified live (not just local): the
+  `unit_tests` job 736 trace ends `150 passed, 1 warning in 12.37s`.
+- The one pipeline break from `d6abef0` was environmental (tests depended on a
+  writable `/data` that the `python:3.12-slim` runner lacks); fixed in `89ff442`
+  by a `temp_db_file` fixture in `tests/conftest.py`.
 - **Live smoke test passed** (throwaway DB via `TestClient`):
   - `GET /settings` → 200, renders the new "Subnets" card.
   - `POST /settings/subnets` (LAN / 192.168.10.0/24) → 303 redirect.
@@ -59,17 +67,14 @@
 
 ## Immediate next steps
 
-1. `git add -A && git commit -m "feat: multi-subnet support"` + push to
-   `gitlab/main`. Watch the pipeline (tests + lint + build + deploy_dev).
-2. After deploy, live-verify on the dev box:
-   - `GET :8787/settings` → the Subnets card renders with auto-detected rows
-     (the dev container has `iproute2`, so `get_default_subnets()` is non-empty).
-   - Add a manual subnet; confirm it appears in the diagnostic page's scan
-     dropdown (manual + auto, with the `auto` tag on the discovered ones).
-   - Pin a host to a subnet, trigger a force-scan; confirm the `scan_started`
-     event names the pinned subnet in the host's event log.
-   - Run a scan scoped to a specific subnet from the diagnostic page; confirm
-     the output is limited to that network.
+1. **Optional live check** (the pipeline is already green through
+   `deploy_dev`): `GET :8787/settings` → the Subnets card should show
+   auto-detected rows (the dev container has `iproute2`, so
+   `get_default_subnets()` is non-empty). If it shows zero auto rows, the dev
+   box's interface layout is unusual — just add a manual subnet from the same card.
+2. When ready, the manual jobs in pipeline 149 (`deploy_test`,
+   `deploy_production`, `dev_down`) are still pending — trigger them only on
+   explicit user confirmation.
 
 ## Conventions (keep these when editing)
 
