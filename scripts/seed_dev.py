@@ -526,11 +526,11 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
                 "owner_user_id": owner_user_id,
                 "provider": "manual",
                 "nice_name": "Seeded self-signed",
-                # NPM's built-in id 0 cert uses an EMPTY string for
-                # domain_names; it is NOT NULL in the current schema, so a
-                # None here is a 1048 ("cannot be null"). Mirror the built-in
-                # cert exactly.
-                "domain_names": "",
+                # domain_names is CHECK (json_valid(domain_names)): the column
+                # must hold valid JSON. '' passes the NOT NULL check but fails
+                # the JSON check (a 4025 constraint error), so seed the JSON
+                # empty list that represents "no specific domains".
+                "domain_names": "[]",
                 # expires_on is a DATETIME column. STRICT mode rejects both
                 # NULL (1048) and '' (1292 "Incorrect datetime value"); the
                 # built-in cert carries a far-future sentinel instead, so a
@@ -767,6 +767,32 @@ def ensure_proxy_hosts() -> Dict[str, int]:
     return links
 
 
+def _proxy_host_domain(raw: Any) -> str:
+    """Return the primary domain for a ``proxy_host.domain_names`` value.
+
+    The current NPM schema declares ``domain_names`` as
+    ``longtext CHECK (json_valid(…))`` — a JSON array of hosts, not a bare
+    hostname. A seed for a single domain is ``["example.com"]``; older rows or
+    hand-created ones may hold a plain string. This returns the first element
+    (a single-host row has exactly one) so existing-row matching is stable
+    across both shapes.
+    """
+    if raw is None:
+        return ""
+    text = str(raw).strip()
+    if not text:
+        return ""
+    if text.startswith("[") or text.startswith('"'):
+        try:
+            parsed = json.loads(text)
+        except Exception:  # noqa: BLE001 - malformed; fall through to the raw string
+            return text
+        if isinstance(parsed, list):
+            return str(parsed[0]) if parsed else ""
+        return str(parsed)
+    return text
+
+
 def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
     """One seeding pass: record existing rows, create the missing ones.
 
@@ -781,9 +807,9 @@ def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
     with conn.cursor() as cursor:
         cursor.execute("SELECT id, domain_names FROM proxy_host WHERE is_deleted = 0")
         existing = {
-            str(row["domain_names"]).strip(): row["id"]
+            _proxy_host_domain(row["domain_names"]): row["id"]
             for row in cursor.fetchall()
-            if row.get("domain_names")
+            if _proxy_host_domain(row["domain_names"])
         }
 
     links: Dict[str, int] = {}
@@ -835,7 +861,9 @@ def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
     for spec in to_create:
         domain = spec["domain"]
         values = {
-            "domain_names": domain,
+            # domain_names is longtext CHECK (json_valid(…)) — store the
+            # domain as a JSON array (a single-host proxy row).
+            "domain_names": json.dumps([domain]),
             "forward_scheme": "http",
             "forward_host": spec.get("ip") or "127.0.0.1",
             "forward_port": int(spec.get("port") or 80),

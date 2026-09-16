@@ -28,6 +28,8 @@ must never be copied into code, tests, or the memory bank.
 - Python 3, **FastAPI** (web UI + JSON API on port **8787**), Jinja2 templates
 - **aiosqlite** — app state in `healer.db` (SQLite, in `healer-data` volume)
 - **pymysql** — read/write of NPM's MariaDB (`proxy_manager` schema)
+- **bcrypt** — hashes the seeded NPM owner's wizard password (seed image only;
+  the app container also builds with it but doesn't use it)
 - **scapy** — LAN ARP scan for MAC → IP discovery
 - **docker** python SDK — reaches into the `nginx-app-1` container
 - apscheduler, aiosmtplib (email), httpx (telegram), pydantic-settings

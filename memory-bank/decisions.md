@@ -172,12 +172,11 @@ is stale/disproven — do not re-implement.
    - `user`: **`avatar`** (varchar(255)). (`roles` is supplied as `'["admin"]'` —
      unverified shape, not the cause of 1364.)
    - `proxy_host`: **`advanced_config`** (text), **`meta`** (longtext).
-   - `certificate`: **`meta`** (longtext). (`domain_names`/`expires_on` are
-     actually *nullable* in the live schema — NULL is fine, no 1048.)
+   - `certificate`: **`meta`** (longtext).
    - `access_list`: `meta` (longtext) — the seed already passes `"{}"`, so no
      change needed there.
-   **The fix** (uncommitted `scripts/seed_dev.py`): the seeder now introspects
-   each table via `SHOW COLUMNS` *before* its INSERT and auto-fills any
+   **The fix** (`scripts/seed_dev.py`, deployed): the seeder introspects each
+   table via `SHOW COLUMNS` *before* its INSERT and auto-fills any
    NOT-NULL-with-no-default column the INSERT doesn't already supply, using
    `_KNOWN_COLUMNS_WITH_DEFAULTS` (`user.avatar=''`, `certificate.meta='{}'`,
    `proxy_host.advanced_config='{}'`+`meta='{}'`, `access_list.meta='{}'`),
@@ -186,11 +185,45 @@ is stale/disproven — do not re-implement.
    derived from the live schema, not a hardcoded column list. 1364 is NOT
    treated as transient (a stable schema won't fix itself with time), so the
    pass fails fast rather than retrying ~30s. Regression:
-   `tests/test_seed_dev.py TestSchemaIntrospection` (7 tests). ⚠️ JSON *shape*
-   of `roles`/`advanced_config` is still a guess — verify by running the seeder
-   against `:3306` (writable sandbox) and seeing the diagnostic page populate,
-   **do not ship on a bare value assumption**.
-5. **Dev sandbox NPM DB state** (`nginx-db-1`): schema migrated, but `user`,
+   `tests/test_seed_dev.py TestSchemaIntrospection` (7 tests).
+
+5. **FIXED + DEPLOYED — the full set of NPM schema blockers (resolved
+   2026-09-16, live-verified against `192.168.86.38:3306`):** deploying the
+   introspection fix surfaced *four more* schema blockers, one per deploy,
+   because the seed is a per-table atomic pass and each INSERT fails the
+   whole pass. All now fixed, committed, deployed, and **live-verified**
+   (the seeder created all 6 proxy_host rows + owner + access_list +
+   certificate; idempotent re-run reuses them; zero duplicates):
+   - **1064 SQL syntax** — the owner-creation used
+     `CREATE USER (email=…, password=…, realm=…)`, a *privileged* MySQL
+     statement that does NOT accept an INSERT-style parenthesized column list
+     (syntax error). It was also redundant (the `user` row is already
+     INSERTed in the same transaction) — **removed** it.
+   - **`No module named 'bcrypt'`** — `requirements.txt` lacked `bcrypt`, so
+     the owner's password hash came back empty (no password login). **Added**
+     `bcrypt==4.2.1`.
+   - **1048 then 1292 on `certificate`** — the fallback cert (NPM's built-in
+     id 0 is absent on a pristine sandbox; the seed creates its own) seeded
+     `domain_names=NULL` (1048) then `expires_on=''` (1292). Live schema:
+     `expires_on datetime NOT NULL`, `domain_names longtext NOT NULL CHECK
+     (json_valid(domain_names))`, `meta longtext NOT NULL CHECK
+     (json_valid(meta))`. **Fixed** to `domain_names="[]"` (valid JSON),
+     `expires_on="2999-12-31 23:59:59"` (a `__sql__` datetime literal — not
+     NULL and not `''`), `meta="{}"`.
+   - **4025 on `proxy_host.domain_names`** — that column is ALSO
+     `longtext CHECK (json_valid(domain_names))` (a JSON *array*, not a bare
+     hostname). The seed passed the plain domain string. **Fixed** with
+     `_proxy_host_domain()` (decode: `["host"]`→`host`, `"host"`→`host`,
+     plain→as-is, malformed→as-is) for existing-row matching, and
+     `json.dumps([domain])` for the INSERT.
+   Regression: `TestSchemaIntrospection::test_fallback_certificate_…` (pins
+   the cert values) + `TestProxyHostDomainJson` (pins the helper + the
+   JSON-array INSERT shape). 117 tests pass, ruff clean.
+   **Takeaway:** the dev NPM (`jc21/nginx-proxy-manager`) schema is stricter
+   than the seed assumed in four places. The introscopic `_fills_for` +
+   explicit JSON values now handle all of them, and the live-verified deploy
+   is the ground truth (do not trust a bare value assumption again).
+6. **Dev sandbox NPM DB state** (`nginx-db-1`): schema migrated, but `user`,
    `access_list`, `certificate` are **empty** (setup wizard never ran on the
    dev box). That is *expected* and is why the seeder must bootstrap a dev
    admin row; it is not the bug itself (see #4 for the real blocker). Direct
