@@ -16,6 +16,23 @@ def test_routes_registered():
     assert "/hosts/add" in paths
     assert "/settings" in paths
     assert "/api/health" in paths
+    assert "/api/diagnostic" in paths
+    assert "/api/diagnostic/scan" in paths
+
+
+def test_scan_endpoint_rejects_bad_method():
+    # /api/diagnostic/scan validates its input without touching the network.
+    client = TestClient(app)
+    resp = client.post("/api/diagnostic/scan", json={"target_mac": "aa:bb:cc:dd:ee:ff", "method": "nope"})
+    assert resp.status_code == 400
+    assert "Unknown scanner method" in resp.json()["detail"]
+
+
+def test_scan_endpoint_rejects_empty_mac():
+    client = TestClient(app)
+    resp = client.post("/api/diagnostic/scan", json={"target_mac": "   ", "method": "arp-scan"})
+    assert resp.status_code == 400
+    assert "target_mac is required" in resp.json()["detail"]
 
 
 def test_health_endpoint():

@@ -2,6 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
+from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import aiosqlite
@@ -12,7 +13,7 @@ from app.database import init_db
 from app.services.monitor import monitor
 from app.services.npm import NPMClient
 from app.services.notifications import send_event
-from app.services.scanner import check_host_reachable, find_ip_by_mac, normalize_mac
+from app.services.scanner import check_host_reachable, find_ip_by_mac, normalize_mac, run_scan
 
 logging.basicConfig(
     level=logging.INFO,
@@ -531,6 +532,14 @@ async def save_settings(
 
 # ───────────────────────────── Diagnostic ─────────────────────────────
 
+
+class ScanRequest(BaseModel):
+    """Body for ``POST /api/diagnostic/scan`` — run one scanner on demand."""
+
+    target_mac: str = Field(..., description="MAC address to look for (normalised server-side)")
+    method: str = Field("arp-scan", description="'arp-scan' or 'scapy'")
+
+
 @app.get("/diagnostic", response_class=HTMLResponse)
 async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     logger.info("diagnostic_page: starting")
@@ -542,11 +551,24 @@ async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(g
     scan_types = NPMClient.scan_types()
 
     # Also check SQLite DB hosts for comparison
-    async with db.execute("SELECT name, domain, npm_proxy_host_id FROM hosts") as cursor:
+    async with db.execute(
+        "SELECT name, domain, mac_address, current_ip, port, enabled FROM hosts"
+    ) as cursor:
         sqlite_hosts = await cursor.fetchall()
     logger.info(f"diagnostic_page: SQLite hosts count = {len(sqlite_hosts)}")
     for h in sqlite_hosts:
-        logger.info(f"  SQLite: name={h['name']} domain={h['domain']} npm_proxy_host_id={h['npm_proxy_host_id']}")
+        logger.info(f"  SQLite: name={h['name']} domain={h['domain']} mac={h['mac_address']}")
+    hosts = [
+        {
+            "name": r["name"],
+            "domain": r["domain"],
+            "mac_address": r["mac_address"],
+            "current_ip": r["current_ip"],
+            "port": r["port"],
+            "enabled": bool(r["enabled"]),
+        }
+        for r in sqlite_hosts
+    ]
 
     return templates.TemplateResponse(
         "diagnostic.html",
@@ -555,22 +577,64 @@ async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(g
             "npm_hosts": npm_hosts,
             "npm_available": npm.available,
             "scan_types": scan_types,
+            "hosts": hosts,
         },
     )
 
 
 @app.get("/api/diagnostic")
-async def diagnostic_api():
+async def diagnostic_api(db: aiosqlite.Connection = Depends(get_db)):
     logger.info("diagnostic_api: starting")
     npm = NPMClient()
     logger.info(f"diagnostic_api: npm.available = {npm.available}")
     npm_hosts = npm.get_all_hosts()
     logger.info(f"diagnostic_api: npm_hosts count = {len(npm_hosts)}")
+
+    # SQLite hosts give the UI a list of MACs to prefill the scan form with.
+    async with db.execute(
+        "SELECT name, domain, mac_address, current_ip, port, enabled FROM hosts"
+    ) as cursor:
+        rows = await cursor.fetchall()
+    hosts = [
+        {
+            "name": r["name"],
+            "domain": r["domain"],
+            "mac_address": r["mac_address"],
+            "current_ip": r["current_ip"],
+            "port": r["port"],
+            "enabled": bool(r["enabled"]),
+        }
+        for r in rows
+    ]
+
     return {
         "npm_hosts": npm_hosts,
         "npm_available": npm.available,
         "scan_types": NPMClient.scan_types(),
+        "hosts": hosts,
     }
+
+
+@app.post("/api/diagnostic/scan")
+async def diagnostic_scan(body: ScanRequest):
+    """Run an ARP or scapy scan on demand and return the raw output.
+
+    The scanner work is executed in a thread pool (see ``run_scan``) so a slow
+    ``arp-scan`` never blocks the event loop. Returns the found IP (if any), the
+    scanner that produced it, the full raw output, and any error string.
+    """
+    method = body.method.strip().lower()
+    if method not in ("arp-scan", "scapy"):
+        raise HTTPException(status_code=400, detail=f"Unknown scanner method: {body.method!r}")
+    if not body.target_mac.strip():
+        raise HTTPException(status_code=400, detail="target_mac is required")
+
+    result = await run_scan(body.target_mac, method)
+    logger.info(
+        f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac)} "
+        f"found_ip={result['found_ip']} error={result['error']}"
+    )
+    return result
 
 
 @app.get("/api/diagnostic/debug")

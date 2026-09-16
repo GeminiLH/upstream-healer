@@ -30,7 +30,9 @@ must never be copied into code, tests, or the memory bank.
 - **pymysql** — read/write of NPM's MariaDB (`proxy_manager` schema)
 - **bcrypt** — hashes the seeded NPM owner's wizard password (seed image only;
   the app container also builds with it but doesn't use it)
-- **scapy** — LAN ARP scan for MAC → IP discovery
+- **scapy** — LAN ARP scan for MAC → IP discovery (also an `arp-scan` binary in
+  the Dockerfile); the Diagnostic page can run either on demand via
+  `POST /api/diagnostic/scan` → `app.services.scanner.run_scan`
 - **docker** python SDK — reaches into the `nginx-app-1` container
 - apscheduler, aiosmtplib (email), httpx (telegram), pydantic-settings
 - Dev: pytest (asyncio_mode=auto), ruff (lint: E,F; E501 ignored)

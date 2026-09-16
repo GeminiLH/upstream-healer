@@ -118,5 +118,125 @@
     </div>
   </div>
 
+  <!-- Run a Scan Section -->
+  <div class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+    <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
+      <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Run a Scan</h2>
+    </div>
+    <div class="p-6">
+      <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">
+        Manually run the ARP scanner and view the raw output. Pick a scanner and a MAC
+        address, then run it — the full output is shown below.
+      </p>
+
+      <div class="flex flex-col sm:flex-row gap-4 items-start sm:items-end">
+        <div>
+          <label for="scan-method" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Scanner</label>
+          <select id="scan-method" class="form-control">
+            <option value="arp-scan" selected>arp-scan</option>
+            <option value="scapy">scapy</option>
+          </select>
+        </div>
+        <div class="flex-1 w-full">
+          <label for="scan-mac" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Target MAC</label>
+          <input type="text" id="scan-mac" placeholder="aa:bb:cc:dd:ee:ff" class="w-full" />
+        </div>
+        <button id="scan-run" type="button"
+          class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H12" />
+          </svg>
+          <span id="scan-run-label">Run scan</span>
+        </button>
+      </div>
+
+      {% if hosts %}
+        <div class="mt-4">
+          <span class="text-xs uppercase tracking-wider text-slate-400 dark:text-slate-500">Known hosts — click to prefill:</span>
+          <div class="mt-2 flex flex-wrap gap-2">
+            {% for h in hosts %}
+              <button type="button" data-mac="{{ h.mac_address }}" data-name="{{ h.name }}"
+                class="text-xs px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:border-brand-400 transition">
+                {{ h.name }}
+              </button>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+
+      <div id="scan-result" class="hidden mt-5">
+        <div id="scan-status" class="mb-2 text-sm"></div>
+        <pre id="scan-output"
+          class="bg-slate-900 text-slate-100 text-xs font-mono p-4 rounded-lg overflow-auto max-h-96 whitespace-pre-wrap"></pre>
+      </div>
+    </div>
+  </div>
+
 </div>
+
+<script>
+  (function () {
+    const methodEl = document.getElementById('scan-method');
+    const macEl = document.getElementById('scan-mac');
+    const runBtn = document.getElementById('scan-run');
+    const runLabel = document.getElementById('scan-run-label');
+    const resultEl = document.getElementById('scan-result');
+    const statusEl = document.getElementById('scan-status');
+    const outputEl = document.getElementById('scan-output');
+
+    runBtn.addEventListener('click', async () => {
+      const mac = macEl.value.trim();
+      if (!mac) {
+        statusEl.textContent = 'Enter a MAC address first.';
+        statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+        resultEl.classList.remove('hidden');
+        outputEl.textContent = '';
+        return;
+      }
+      const method = methodEl.value;
+      runBtn.disabled = true;
+      runLabel.textContent = 'Running…';
+      statusEl.textContent = `Running ${method} for ${mac}…`;
+      statusEl.className = 'mb-2 text-sm text-slate-500 dark:text-slate-400';
+      resultEl.classList.remove('hidden');
+      outputEl.textContent = '…';
+      try {
+        const res = await fetch('/api/diagnostic/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_mac: mac, method: method }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = `Error: ${data.detail || res.status}`;
+          statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+          outputEl.textContent = '';
+          return;
+        }
+        if (data.error) {
+          statusEl.textContent = `${method}: ${data.error}`;
+          statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+        } else if (data.found_ip) {
+          statusEl.textContent = `Found ${mac} at ${data.found_ip} (via ${data.found_via})`;
+          statusEl.className = 'mb-2 text-sm text-emerald-600 dark:text-emerald-400';
+        } else {
+          statusEl.textContent = `No match for ${mac} (${method} finished)`;
+          statusEl.className = 'mb-2 text-sm text-amber-600 dark:text-amber-400';
+        }
+        outputEl.textContent = data.output || '(no output)';
+      } catch (err) {
+        statusEl.textContent = `Request failed: ${err}`;
+        statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+        outputEl.textContent = '';
+      } finally {
+        runBtn.disabled = false;
+        runLabel.textContent = 'Run scan';
+      }
+    });
+
+    document.querySelectorAll('[data-mac]').forEach((btn) => {
+      btn.addEventListener('click', () => { macEl.value = btn.getAttribute('data-mac'); });
+    });
+  })();
+</script>
 {% endblock %}

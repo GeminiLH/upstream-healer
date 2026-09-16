@@ -30,6 +30,24 @@
   NPM's boot; it becomes `True` and shows 6 within a minute. See the seeder
   failure-mode history below for the full 4-blocker resolution.)
 
+- **🆕 Enhancement: on-demand ARP/scapy scan on the Diagnostic page (WIP, uncommitted — 2026-09-16).**
+  Added a "Run a Scan" section to `/diagnostic`: pick a scanner (arp-scan/scapy) +
+  a MAC (or click a known-host chip to prefill), run it, and see the raw output +
+  found IP in a terminal panel.
+  - `app/services/scanner.py`: new `run_arp_scan()` (sync, raw `arp-scan -l` table),
+    `run_scapy_scan(target_mac)` (full ARP sweep table), and `run_scan(target_mac,
+    method)` dispatcher that runs in a thread pool and returns
+    `{method, found_ip, found_via, output, error}`. `_scan_with_arp_scan` /
+    `_scan_with_scapy` are now thin async wrappers over these, so `find_ip_by_mac`
+    (and the monitor) are unchanged. `arp-scan` (Dockerfile) + `scapy`
+    (requirements) are already deps, so it works in the container.
+  - `app/main.py`: `ScanRequest` Pydantic model + `POST /api/diagnostic/scan`;
+    `/api/diagnostic` and `/diagnostic` now also return the SQLite `hosts` list
+    (name/domain/mac/current_ip/port/enabled) so the UI can prefill + show chips.
+  - `app/templates/diagnostic.html`: the Run-a-Scan UI + inline vanilla-JS `fetch`.
+  - **Health: 128 tests pass (was 117; +11: 9 in `tests/test_scanner.py`, 2 in
+    `tests/test_main.py`), ruff clean.** Not yet committed/deployed.
+
 ## The seeder failure modes — full history
 
 1. ✅ **SOLVED & live-confirmed: "Cursor closed"** (the original bug, `72dd82b`).
