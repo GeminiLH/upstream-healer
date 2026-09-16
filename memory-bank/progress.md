@@ -19,9 +19,16 @@
   `TestSchemaIntrospection`), **ruff clean** (`scripts/seed_dev.py` +
   `tests/test_seed_dev.py`).
 - Dev stack on batcave is up; `:8787/diagnostic` reachable, `npm_available=True`.
-  **The dev NPM DB is still EMPTY** (both seeder layers fixed in code but not yet
-  deployed) — the diagnostic page still renders "No proxy hosts found" until the
-  new seeder is deployed and re-run against the pristine sandbox.
+- **🎉 SEEDING FULLY WORKS (deployed + live-verified 2026-09-16):** the seeder
+  now creates all 6 proxy_host rows + owner + access_list + certificate in the
+  live dev NPM DB, and links them in the healer SQLite DB. The
+  `:8787/api/diagnostic` endpoint returns `npm_hosts: 6` (vault, jelly, none,
+  plex, ha, portainer) with valid JSON `domain_names` / `advanced_config` /
+  `meta`. **The 1364-error task is done.** Health: **117 tests pass**, ruff
+  clean. (An early "0 hosts" reading right after deploy was a startup-timing
+  artifact — `NPMClient.available` is cached `False` if the first query races
+  NPM's boot; it becomes `True` and shows 6 within a minute. See the seeder
+  failure-mode history below for the full 4-blocker resolution.)
 
 ## The seeder failure modes — full history
 
