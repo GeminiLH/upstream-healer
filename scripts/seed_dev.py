@@ -526,8 +526,12 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
                 "owner_user_id": owner_user_id,
                 "provider": "manual",
                 "nice_name": "Seeded self-signed",
-                "domain_names": None,
-                "expires_on": None,
+                # NPM's built-in id 0 cert uses an EMPTY string for
+                # domain_names; it is NOT NULL in the current schema, so a
+                # None here is a 1048 ("cannot be null"). Mirror the built-in
+                # cert exactly.
+                "domain_names": "",
+                "expires_on": "",
                 "meta": "{}",
             }
             values.update(_fills_for(conn, "certificate", known))
