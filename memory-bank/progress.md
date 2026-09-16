@@ -1,9 +1,11 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-16 — **multi-subnet support live** (feature commit
-> `d6abef0`; the one pipeline break it caused was fixed in `89ff442` —
-> **verified green in pipeline 149**: `unit_tests` 150 pass, `deploy_dev`
-> success). **All done.**
+> Snapshot: 2026-09-16 — **multi-subnet support live + scapy route-bug fixed**
+> (feature commit `d6abef0`; the one pipeline break it caused was fixed in
+> `89ff442` — **verified green in pipeline 149**; a live smoke test then
+> surfaced a scapy route bug in the scapy fallback that broke the *whole* ARP
+> sweep, now fixed here — **152 tests pass, ruff clean, not yet committed**).
+> **All done.**
 > **Verify before acting**: `git status`, `git log -5`, then
 > `python3 -m pytest tests/ -q`.
 
@@ -49,8 +51,11 @@
   `None` = historic behaviour (default `arp-scan -l` + local-/24 scapy sweep).
   - `run_arp_scan(subnets=...)` maps CIDRs → `-i <iface>` flags from the
     subnet→iface map; unknown/unparseable subnets get a `(skipped ...)` note.
-  - `run_scapy_scan(subnets=...)` loops CIDRs, picking egress iface via
-    `conf.get_if_addresses()` when no explicit `interface`.
+  - `run_scapy_scan(subnets=...)` loops CIDRs, picking the per-sweep egress via
+    `srp(..., iface=<egress>)` (NOT `conf.iface=` — that triggers a scapy
+    `int("enp6s0")` route bug that aborts the *whole* sweep; see decisions.md #7).
+    Each subnet is swept in its own try/except so one failing subnet is skipped
+    with a log line rather than killing the rest.
   - `find_ip_by_mac(subnets=...)` → `_scan_with_arp_scan` / `_scan_with_scapy`;
     `_match_mac_in_output` + `ip_in_subnets` scope arp-scan output so a MAC
     shared across VLANs doesn't false-positive.
@@ -67,12 +72,22 @@
 
 ## Immediate next steps
 
-1. **Optional live check** (the pipeline is already green through
-   `deploy_dev`): `GET :8787/settings` → the Subnets card should show
-   auto-detected rows (the dev container has `iproute2`, so
-   `get_default_subnets()` is non-empty). If it shows zero auto rows, the dev
-   box's interface layout is unusual — just add a manual subnet from the same card.
-2. When ready, the manual jobs in pipeline 149 (`deploy_test`,
+1. **Commit + push** the scapy route-bug fix (scanner.py + test_scanner.py +
+   this memory-bank update). The 152 tests pass locally and ruff is clean, but
+   the fix is **not yet in a pipeline** — `unit_tests` in CI is the next gate.
+   (CI runs scapy 2.6.1 on `python:3.12-slim`; the fix is version-agnostic —
+   it never assigns `conf.iface`.)
+2. **Live-verify the scapy path** after deploy: pick a host pinned to a subnet
+   and run a *scapy* diagnostic scan (not arp-scan) — it must sweep **and**
+   return the full responder table (no `ERROR: "enp6s0" is not a valid numeric
+   value`, no `(no ARP responses received)`). The `arp-scan` method is the
+   primary path and always worked; this fix matters for the scapy fallback.
+3. **How to enter a subnet (user-facing):** on the Settings page → Subnets
+   card, add the **network CIDR** (e.g. `192.168.70.0/24`), *not* a single host
+   (`192.168.70.0/32` — that's one IP with no broadcast, so it can't be
+   ARP-swept). Enter a `/32` and the scanner now says so explicitly instead of
+   the old misleading "no local interface".
+4. When ready, the manual jobs in the pipeline (`deploy_test`,
    `deploy_production`, `dev_down`) are still pending — trigger them only on
    explicit user confirmation.
 

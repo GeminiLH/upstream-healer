@@ -137,6 +137,49 @@ class TestRunScapyScan:
         assert error is None
         assert "no ARP responses" in output
 
+    def test_per_sweep_failure_is_isolated(self):
+        """A scapy failure while sweeping ONE subnet must not abort the whole
+        multi-subnet run — the remaining networks are still swept and the target
+        is still found.  Regression: the historical ``conf.iface = "enp6s0"``
+        mutation made scapy do ``int("enp6s0")`` and raise, aborting every sweep."""
+        import scapy.all as scapy_all
+
+        request = scapy_all.Ether(dst="ff:ff:ff:ff:ff:ff") / scapy_all.ARP(pdst="192.168.86.0/24")
+        pkt = _FakeScapyPkt("192.168.86.10", "aa:bb:cc:dd:ee:ff")
+        swept: list = []
+
+        def flaky_srp(packet, **kwargs):
+            # The request is built with the first subnet's pdst and re-stamped
+            # per-network only at send time (via scapy's conf), so the reliable
+            # per-sweep discriminator is the egress ``iface`` we pass.
+            swept.append(kwargs.get("iface") or "default")
+            if kwargs.get("iface") == "enp6s0":
+                raise ValueError('"enp6s0" is not a valid numeric value')
+            return [(None, pkt)], []
+
+        # Per-subnet local source: 10.0.0.0/24 owns 10.0.0.5 (on enp6s0); the
+        # 192.168.86.0/24 has no local iface on this fake box, so it sweeps via
+        # the default interface.  Each maps to a DIFFERENT egress iface.
+        local_ip = {
+            "192.168.86.0/24": None,  # no local iface -> default interface
+            "10.0.0.0/24": "10.0.0.5",  # on enp6s0
+        }
+        with patch.object(scapy_all, "srp", side_effect=flaky_srp), \
+                patch.object(scapy_all, "Ether", return_value=request), \
+                patch.object(scapy_all, "ARP", return_value=request), \
+                patch.object(scapy_all, "conf", create=True), \
+                patch("app.services.scanner.get_local_ip_for_network", side_effect=lambda cidr: local_ip.get(cidr)):
+            scapy_all.conf.get_if_addresses = lambda: {"enp6s0": ["10.0.0.5"]}
+            found_ip, output, error = run_scapy_scan(
+                "aa:bb:cc:dd:ee:ff", subnets=["192.168.86.0/24", "10.0.0.0/24"]
+            )
+        assert error is None
+        assert "enp6s0" in swept and "default" in swept
+        assert found_ip == "192.168.86.10"
+        # The failed sweep contributed no rows; the good one did.
+        assert "192.168.86.10" in output
+        assert "10.0.0.5" not in output
+
 
 class TestRunScan:
     async def test_arp_scan_dispatcher_matches_target(self):
@@ -309,6 +352,17 @@ class TestRunArpScanWithSubnets:
             _, output, error = run_arp_scan(subnets=["not-a-cidr"])
         assert error is None
         assert "(skipped unparseable subnet" in output
+
+    def test_host_only_subnet_is_noted_not_really_skipped(self):
+        """A /32 (a single host, not a network) is not ARP-sweepable.  We should
+        emit a *specific* note rather than the misleading "no local interface",
+        which implies the interface is missing when it is usually present."""
+        with patch("app.services.scanner.get_default_subnets", return_value=[]), \
+                patch("app.services.scanner.subprocess.run", return_value=_FakeProc("10.0.0.5  aa:bb  X\n")):
+            _, output, error = run_arp_scan(subnets=["192.168.70.0/32"])
+        assert error is None
+        assert "single host" in output
+        assert "no local interface" not in output
 
 
 class TestMatchMacInOutputSubnetScope:

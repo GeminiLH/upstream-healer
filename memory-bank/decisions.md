@@ -132,6 +132,30 @@ collection with `ValidationError: extra_forbidden`.
   *changes between NPM image releases*, so prefer introspecting `SHOW COLUMNS`
   and auto-filling over hardcoding a fixed column list.
 
+## Scanner / multi-subnet gotchas
+
+- **NEVER assign `conf.iface = <name>` in the scapy path — use `srp(...,
+  iface=...)` instead (fixed 2026-09-16).** A multi-subnet scapy sweep set
+  `conf.iface` to the per-network egress (e.g. `"enp6s0"`). On scapy 2.6.1
+  (pinned in `requirements.txt`), mutating the *global* `conf.iface` leaves
+  `conf.route.default_iface` unset, so when scapy resolves a destination it
+  does `int("enp6s0")` → `ValueError: "enp6s0" is not a valid numeric value`
+  (emitted as `ERROR:`), which **aborts the entire sweep** — zero responders.
+  Passing `iface=` per `srp` call keeps the default resolution path intact.
+  Regression: `tests/test_scanner.py::TestRunScapyScan::test_per_sweep_failure_is_isolated`.
+- **`run_scapy_scan` sweeps each subnet in its own try/except.** One subnet
+  failing to sweep (route resolution, no route, permission) logs a warning and
+  `continue`s — it no longer fails the whole multi-subnet run. (This is the
+  same "one bad subnet must not kill the rest" principle as the arp-scan
+  `(skipped ...)` notes.)
+- **arp-scan note: a `/32` (or `/31`) is a *host*, not a network.** It has no
+  usable broadcast, so it is not ARP-sweepable. `run_arp_scan` now emits a
+  specific `(skipped <cidr>: single host, not an ARP-swept network — add its
+  /24 ...)` note instead of the misleading "no local interface" (the interface
+  is usually *present*; the address is just a single host). If a user added a
+  specific IP (e.g. `192.168.70.0/32`) and expected a whole-LAN sweep, the real
+  fix is to enter the `/24` (e.g. `192.168.70.0/24`).
+
 ## Seeder / NPM-sync bug history — RESOLVED vs CURRENT (verified live in dev)
 
 Track these carefully; the failure mode has changed layer by layer. As of the

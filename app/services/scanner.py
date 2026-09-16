@@ -135,6 +135,15 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
             if iface:
                 if iface not in interfaces:
                     interfaces.append(iface)
+            elif network.prefixlen >= 31:
+                # A /32 (single host) or /31 (point-to-point) is not a network
+                # we can ARP-sweep — it has no usable broadcast.  Say so rather
+                # than the misleading "no local interface" (the interface usually
+                # *is* local; the host is just a single address, not a subnet).
+                notes.append(
+                    f"(skipped {cidr}: single host, not an ARP-swept network — "
+                    "add its /24 instead if you meant to scan the whole LAN)"
+                )
             else:
                 notes.append(f"(skipped {cidr}: no local interface)")
 
@@ -202,31 +211,44 @@ def run_scapy_scan(
 
     try:
         conf.verb = 0
-        if interface:
-            conf.iface = interface
-        logger.info(f"Scapy scanning {networks} for {target_mac}")
-
+        # An explicit `interface` (from run_scan / a manual subnet pin) wins.
+        # Deliberately NOT assigned to conf.iface here: setting the global is a
+        # known scapy footgun — it leaves `conf.route.default_iface` unset, and
+        # when scapy resolves a target it then does int("enp6s0"), which raises
+        # ValueError and aborts the whole sweep.  Passing `iface=` per-packet
+        # keeps the default resolution path intact, so a full-table sweep still
+        # works even when no per-network interface matches.
         found_ip: Optional[str] = None
         lines: list[str] = []
         for network in networks:
-            # A manual `interface` (set above) wins; otherwise pick the egress
-            # interface that owns this network via scapy's own routing table so
-            # the sweep goes out the right NIC for multi-homed boxes.
-            if not interface:
+            # Per-network egress: pick the local interface that owns this
+            # network (so the sweep goes out the right NIC on multi-homed
+            # boxes).  `None` lets scapy fall back to its default interface.
+            egress: Optional[str] = interface
+            if not egress:
                 local_ip = get_local_ip_for_network(network)
                 if local_ip:
                     ifaces = conf.get_if_addresses()
                     for if_name, if_ips in ifaces.items():
                         if local_ip in if_ips:
-                            conf.iface = if_name
+                            egress = if_name
                             break
 
-            ans, _ = srp(
-                Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network),
-                timeout=3,
-                retry=2,
-                verbose=0,
-            )
+            try:
+                if egress:
+                    ans, _ = srp(
+                        Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network),
+                        iface=egress, timeout=3, retry=2, verbose=0,
+                    )
+                else:
+                    ans, _ = srp(
+                        Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network),
+                        timeout=3, retry=2, verbose=0,
+                    )
+            except Exception as exc:  # noqa: BLE001 - per-network isolation
+                logger.warning(f"scapy: sweep of {network} failed ({exc})")
+                continue
+
             for _, received in ans:
                 mac = normalize_mac(received.hwsrc)
                 ip = received.psrc
