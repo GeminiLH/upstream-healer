@@ -533,10 +533,20 @@ async def save_settings(
 
 @app.get("/diagnostic", response_class=HTMLResponse)
 async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
+    logger.info("diagnostic_page: starting")
     npm = NPMClient()
+    logger.info(f"diagnostic_page: npm.available = {npm.available}")
     npm_hosts = npm.get_all_hosts()
+    logger.info(f"diagnostic_page: npm_hosts count = {len(npm_hosts)}")
 
     scan_types = NPMClient.scan_types()
+
+    # Also check SQLite DB hosts for comparison
+    async with db.execute("SELECT name, domain, npm_proxy_host_id FROM hosts") as cursor:
+        sqlite_hosts = await cursor.fetchall()
+    logger.info(f"diagnostic_page: SQLite hosts count = {len(sqlite_hosts)}")
+    for h in sqlite_hosts:
+        logger.info(f"  SQLite: name={h['name']} domain={h['domain']} npm_proxy_host_id={h['npm_proxy_host_id']}")
 
     return templates.TemplateResponse(
         "diagnostic.html",
@@ -551,13 +561,95 @@ async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(g
 
 @app.get("/api/diagnostic")
 async def diagnostic_api():
+    logger.info("diagnostic_api: starting")
     npm = NPMClient()
+    logger.info(f"diagnostic_api: npm.available = {npm.available}")
     npm_hosts = npm.get_all_hosts()
+    logger.info(f"diagnostic_api: npm_hosts count = {len(npm_hosts)}")
     return {
         "npm_hosts": npm_hosts,
         "npm_available": npm.available,
         "scan_types": NPMClient.scan_types(),
     }
+
+
+@app.get("/api/diagnostic/debug")
+async def diagnostic_debug():
+    """Raw debugging view of the NPM integration — prints everything it knows
+    (effective DB credentials, the exact pymysql attempt, raw connection
+    introspection) so a ``curl`` can diagnose without reading container logs.
+
+    Dev/debug aid: runs unauthenticated like the rest of /diagnostic, and it
+    reveals the effective DB user/host/password — it does not exist in the
+    production image (Dockerfile) and must stay out of it.
+    """
+    import os
+
+    import pymysql
+
+    import pymysql.cursors  # registers pymysql.cursors.DictCursor
+
+    npm = NPMClient()
+    result: dict = {
+        "npm_available": npm.available,
+        "settings": {
+            "npm_container": settings.npm_container,
+            "npm_db_host": settings.npm_db_host,
+            "npm_db_port": settings.npm_db_port,
+            "npm_db_user": settings.npm_db_user or "(empty)",
+            "npm_db_password": "set" if settings.npm_db_password else "(empty)",
+            "npm_db_name": settings.npm_db_name,
+            "db_path": settings.db_path,
+        },
+        "npm_env": {
+            k: v
+            for k, v in sorted(os.environ.items())
+            if k.startswith("NPM_") or k.startswith("DB_MYSQL_")
+        },
+    }
+
+    # Effective credentials: what the client actually uses to connect
+    # (container env if discoverable, else settings fallback).
+    creds = dict(getattr(npm, "_db_creds", None) or {})
+    result["effective_creds"] = {
+        k: (f"{v[:3]}***" if len(v) > 3 else "***") if k.endswith("PASSWORD") else v
+        for k, v in creds.items()
+    }
+
+    try:
+        conn = pymysql.connect(
+            host=creds.get("DB_MYSQL_HOST") or settings.npm_db_host,
+            port=int(creds.get("DB_MYSQL_PORT") or settings.npm_db_port),
+            user=creds.get("DB_MYSQL_USER") or settings.npm_db_user,
+            password=creds.get("DB_MYSQL_PASSWORD") or settings.npm_db_password,
+            database=creds.get("DB_MYSQL_NAME") or settings.npm_db_name,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=5,
+        )
+    except Exception as exc:  # noqa: BLE001
+        result["connection"] = f"FAILED: {type(exc).__name__}: {exc}"
+        return result
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT VERSION() AS v, DATABASE() AS db, USER() AS who")
+            version, database, user = cur.fetchone().values()
+            result["connection"] = "OK"
+            result["server"] = {"version": version, "database": database, "user": user}
+            cur.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s", (database,))
+            result["tables"] = [r["TABLE_NAME"] for r in cur.fetchall()]
+            cur.execute(
+                "SELECT id, domain_names, forward_host, forward_port, "
+                "owner_user_id, access_list_id, certificate_id, enabled, is_deleted "
+                "FROM proxy_host ORDER BY id"
+            )
+            result["proxy_host_rows"] = [dict(r) for r in cur.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        result["query"] = f"FAILED: {type(exc).__name__}: {exc}"
+    finally:
+        conn.close()
+    return result
 
 
 @app.get("/api/health")

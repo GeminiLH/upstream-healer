@@ -80,6 +80,7 @@ class NPMClient:
         This keeps secrets out of the healer repository and config files.
         """
         if self._db_creds is not None:
+            logger.debug("Returning cached DB credentials")
             return self._db_creds
 
         if not self.available:
@@ -243,24 +244,30 @@ class NPMClient:
     def get_all_hosts(self) -> List[Dict[str, Any]]:
         """Return every non-deleted host row from the NPM database."""
         if not self.available:
+            logger.info("get_all_hosts: Docker not available, returning empty list")
             return []
         try:
+            logger.info("get_all_hosts: querying NPM proxy_host table")
             with self._get_connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         """
                         SELECT id, domain_names, forward_host, forward_port,
-                               protocol, ssl_removed, ssl_forced,
-                               http2_support, client_body_buffer,
-                               proxy_buffer_size, advanced_config
+                               forward_scheme, ssl_forced, http2_support,
+                               enabled, advanced_config, meta
                         FROM proxy_host
                         WHERE is_deleted = 0
                         ORDER BY id
                         """
                     )
-                    return [dict(row) for row in cur.fetchall()]
+                    rows = [dict(row) for row in cur.fetchall()]
+                    logger.info(f"get_all_hosts: found {len(rows)} proxy_host rows")
+                    for r in rows:
+                        logger.info(f"  proxy_host id={r['id']} domain={r['domain_names']} "
+                                    f"forward={r.get('forward_host')}:{r.get('forward_port')}")
+                    return rows
         except Exception as e:
-            logger.warning(f"get_all_hosts failed: {e}")
+            logger.error(f"get_all_hosts failed: {e}", exc_info=True)
             return []
 
     @staticmethod
