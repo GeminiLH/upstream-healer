@@ -531,7 +531,11 @@ def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
                 # None here is a 1048 ("cannot be null"). Mirror the built-in
                 # cert exactly.
                 "domain_names": "",
-                "expires_on": "",
+                # expires_on is a DATETIME column. STRICT mode rejects both
+                # NULL (1048) and '' (1292 "Incorrect datetime value"); the
+                # built-in cert carries a far-future sentinel instead, so a
+                # valid-but-distant date is the only shape that round-trips.
+                "expires_on": "__sql__'2999-12-31 23:59:59'__",
                 "meta": "{}",
             }
             values.update(_fills_for(conn, "certificate", known))
