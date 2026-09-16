@@ -212,6 +212,19 @@ async def disable_telegram(channel_id: int, db: aiosqlite.Connection) -> None:
     print(json.dumps({"id": channel_id, "enabled": False}))
 
 
+async def list_npm_hosts(db: aiosqlite.Connection) -> None:
+    """List available Nginx Proxy Manager proxy hosts."""
+    from app.services.npm import NPMClient
+
+    npm = NPMClient()
+    if not npm.available:
+        print(json.dumps([]))
+        return
+
+    proxy_hosts = npm.list_proxy_hosts()
+    print(json.dumps(proxy_hosts))
+
+
 async def check_npm_db(args=None) -> None:
     """Diagnostic: verify Docker/NPM status, DB credentials, and proxy hosts.
 
@@ -225,7 +238,6 @@ async def check_npm_db(args=None) -> None:
     print("  NPM Database Diagnostic")
     print("=" * 60)
 
-    # 1. Check Docker availability
     print()
     print("[1] Docker daemon:")
     docker_ok = False
@@ -238,7 +250,6 @@ async def check_npm_db(args=None) -> None:
     except Exception as exc:
         print(f"    Docker not available: {exc}")
 
-    # 2. Check NPM container status
     print()
     print(f"[2] NPM container ({settings.npm_container}):")
     npm_container = None
@@ -253,13 +264,13 @@ async def check_npm_db(args=None) -> None:
     else:
         try:
             result = subprocess.run(
-                ["docker", "ps", "--format", "{{.Names}}\\t{{.Status}}"],
+                ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
                 capture_output=True, text=True, timeout=10,
             )
             for line in result.stdout.strip().splitlines():
                 if not line:
                     continue
-                parts = line.split("\\t")
+                parts = line.split("\t")
                 if len(parts) >= 2 and settings.npm_container in parts[0]:
                     print(f"    Found via docker CLI: {parts[0]} ({parts[1]})")
                     break
@@ -268,7 +279,6 @@ async def check_npm_db(args=None) -> None:
         except Exception as exc:
             print(f"    docker CLI not available: {exc}")
 
-    # 3. Discover DB credentials from container env
     print()
     print("[3] DB credentials:")
     print(f"    npm_db_host  = {settings.npm_db_host}")
@@ -287,7 +297,7 @@ async def check_npm_db(args=None) -> None:
                 env_text = raw.decode(errors="ignore")
                 db_creds = {}
                 for line in env_text.strip().splitlines():
-                    m = _re.match(r"^(DB_MYSQL_\\w+)=?(.*)", line)
+                    m = _re.match(r"^(DB_MYSQL_\w+)=?(.*)", line)
                     if m:
                         db_creds[m.group(1)] = m.group(2)
                 if db_creds:
@@ -304,6 +314,11 @@ async def check_npm_db(args=None) -> None:
 
     if not db_creds:
         print("    (using fallback config values from settings)")
+
+    await _check_npm_db_steps2(db_creds, args)
+
+
+async def _check_npm_db_steps2(db_creds: dict | None, args=None) -> None:
     # 4. Try connecting to NPM DB
     print()
     print("[4] NPM database connectivity:")
@@ -343,12 +358,8 @@ async def check_npm_db(args=None) -> None:
         print("    Connected to NPM database successfully")
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS cnt FROM proxy_host WHERE is_deleted = 0")
-            count = cur.fetchone()[0]
+            count = cur.fetchone()["cnt"]
             print(f"    proxy_host table: {count} active rows")
-            cur.execute(
-                "SELECT id, domain_names, forward_host, forward_port "
-                "FROM proxy_host WHERE is_deleted = 0 ORDER BY id"
-            )
             cur.execute(
                 "SELECT id, domain_names, forward_host, forward_port, "
                 "owner_user_id, access_list_id, certificate_id, enabled "
@@ -375,12 +386,13 @@ async def check_npm_db(args=None) -> None:
     print("[5] NPMClient proxy hosts:")
     try:
         from app.services.npm import NPMClient
+
         npm = NPMClient()
         print(f"    Docker available: {npm.available}")
         hosts = npm.list_proxy_hosts()
         print(f"    Proxy hosts returned: {len(hosts)}")
         for h in hosts:
-            print(f"      id={h['id']}  domain={h['domain_names']}  forward={h['forward_host']}:{h['forward_port']}")
+            print(f"      id={h['id']}  domain={h.get('domain_names')}  forward={h.get('forward_host')}:{h.get('forward_port')}")
     except Exception as exc:
         print(f"    Error listing hosts via NPMClient: {exc}")
 
@@ -402,19 +414,6 @@ async def check_npm_db(args=None) -> None:
     print("=" * 60)
     print("  Diagnostic complete")
     print("=" * 60)
-
-
-async def list_npm_hosts(db: aiosqlite.Connection) -> None:
-    """List available Nginx Proxy Manager proxy hosts."""
-    from app.services.npm import NPMClient
-
-    npm = NPMClient()
-    if not npm.available:
-        print(json.dumps([]))
-        return
-
-    proxy_hosts = npm.list_proxy_hosts()
-    print(json.dumps(proxy_hosts))
 
 
 async def edit_host(host_id: int, args: argparse.Namespace, db: aiosqlite.Connection) -> None:
@@ -516,10 +515,10 @@ async def run(args: argparse.Namespace) -> None:
             await add_host(args, db)
         elif args.command == "list-hosts":
             await list_hosts(db)
-        elif args.command == "check-npm-db":
-            await check_npm_db(args)
         elif args.command == "list-npm-hosts":
             await list_npm_hosts(db)
+        elif args.command == "check-npm-db":
+            await check_npm_db(args)
         elif args.command == "list-events":
             await list_events(args, db)
         elif args.command == "disable-host":

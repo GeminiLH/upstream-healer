@@ -150,8 +150,13 @@ class TestNpmLinks:
         insert_ids = [12, 13, 14, 15, 16]
         conn = _FakeConn(existing, insert_ids)
         monkeypatch.setattr(seed, "_mysql_connect", lambda: conn)
+        calls = []
+        monkeypatch.setattr(
+            seed, "_ensure_npm_defaults", lambda c: calls.append(1) or (3, 4, 0)
+        )
 
         links = seed.ensure_proxy_hosts()
+        assert calls == [1]  # ids provisioned exactly once per seeding pass
         assert links == {
             "vault.hylla.us": 11,
             "jelly.hylla.us": 12,
@@ -206,12 +211,16 @@ class TestNpmLinks:
         class _MigratingCursor:
             def __init__(self):
                 self.lastrowid = None
+                self._row = None
 
             def __enter__(self):
                 return self
 
             def __exit__(self, *exc):
                 return False
+
+            def fetchone(self):
+                return self._row
 
             def execute(self, sql, *args):
                 calls["n"] += 1
@@ -221,6 +230,9 @@ class TestNpmLinks:
                     )
                 if "INSERT" in str(sql).upper():
                     self.lastrowid = 20
+                # _ensure_npm_defaults' SELECTs (user/certificate) fetch a row
+                if "SELECT" in str(sql).upper():
+                    self._row = {"id": 3}
 
             def fetchall(self):
                 return []

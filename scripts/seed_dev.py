@@ -294,6 +294,114 @@ def _bootstrap_npm_schema() -> None:
         conn.close()
 
 
+def _npm_default_password() -> str:
+    """The default (wizard) login password, read from the seeder's own
+    environment. ``NPM_DEFAULT_PASSWORD`` must be set on the healer container
+    (see ``docker-compose.dev.yml``) — the value ends up in the seeder logs.
+    """
+    return os.environ.get("NPM_DEFAULT_PASSWORD", "").strip()
+
+
+def _ensure_npm_defaults(conn: Any) -> tuple[int, int]:
+    """Return ``(owner_user_id, access_list_id)`` to attach to seeded
+    ``proxy_host`` rows.
+
+    ``proxy_host`` declares ``owner_user_id`` and ``access_list_id`` as
+    NOT NULL with no defaults — upstream leaves them to the setup wizard,
+    which a stock dev stack never completed. So:
+
+    * owner: reuse an existing ``user`` row (the wizard must have run);
+      otherwise create one with the default password *directly in the
+      database* (``CREATE USER`` with the bcrypt list, i.e. the "allow
+      with a password" option — no wizard completion required).
+    * access list: always a fresh dev allowlist (pass_auth: no login for
+      the lab's own requests) — idempotent enough for a throwaway env.
+    * certificate: reuse id 0 (NPM's built-in "none" cert), else create.
+
+    The schema itself is guaranteed: on this dev setup the container was
+    started by an NPM image that ships the tables; otherwise every
+    statement here errors and the caller's retry loop skips seeding (the
+    healer runs fine without NPM). No DDL, no schema inspection needed.
+    """
+    password = _npm_default_password()
+
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM user WHERE is_deleted = 0 ORDER BY id")
+        rows = cursor.fetchall()
+    if rows:
+        owner_user_id = rows[0]["id"]
+        logger.info(
+            f"NPM owner: reusing existing user #{owner_user_id} — log in "
+            "with the default NPM password to complete the wizard (dev only)"
+        )
+    else:
+        if not password:
+            password = "dev-healer"
+            logger.warning(
+                "NPM_DEFAULT_PASSWORD not set — using 'dev-healer' for the "
+                "seeded owner (set the env var to pick your own)"
+            )
+        cursor.execute(
+            """INSERT INTO user
+               (created_on, modified_on, is_deleted, is_disabled, email,
+                name, nickname, roles)
+               VALUES (NOW(), NOW(), 0, 0, %s, %s, %s, %s)""",
+            ("healer@example.com", "Healer (seeded)", "healer", '["admin"]'),
+        )
+        owner_user_id = cursor.lastrowid
+        try:
+            import bcrypt
+
+            hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(12)).decode("ascii")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"Could not hash the NPM default password ({exc}) — the "
+                "owner user exists but has no password login"
+            )
+            hashed = ""
+        cursor.execute(
+            # CREATE USER with a password list = the wizard's "allow with a
+            # password" step, done in the DB so the wizard is never needed.
+            "CREATE USER (email = %s, password = %s, realm = %s)",
+            ("healer@example.com", hashed, "proxyManager"),
+        )
+        conn.commit()
+        logger.info(
+            f"NPM owner: created user #{owner_user_id} "
+            "(wizard login: he**@example.com / NPM_DEFAULT_PASSWORD)"
+        )
+
+    with conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM certificate WHERE id = 0")
+        row = cursor.fetchone()
+        if row:
+            certificate_id = row["id"]
+        else:
+            cursor.execute(
+                """INSERT INTO certificate
+                   (created_on, modified_on, owner_user_id, is_deleted,
+                    provider, nice_name, domain_names, expires_on, meta)
+                   VALUES (NOW(), NOW(), %s, 0, 'manual', %s, NULL, NULL, %s)""",
+                (owner_user_id, "Seeded self-signed", "{}"),
+            )
+            certificate_id = cursor.lastrowid
+
+        cursor.execute(
+            """INSERT INTO access_list
+               (created_on, modified_on, owner_user_id, is_deleted, name,
+                meta, satisfy_any, pass_auth)
+               VALUES (NOW(), NOW(), %s, 0, %s, %s, 1, 1)""",
+            (owner_user_id, "Seed dev allowlist", "{}"),
+        )
+        access_list_id = cursor.lastrowid
+    conn.commit()
+    logger.info(
+        f"NPM defaults: access_list #{access_list_id}, certificate #{certificate_id} "
+        f"(owner user #{owner_user_id})"
+    )
+    return owner_user_id, access_list_id, certificate_id
+
+
 def _mysql_connect():
     import pymysql
 
@@ -342,10 +450,19 @@ def ensure_proxy_hosts() -> Dict[str, int]:
     """
     links: Dict[str, int] = {}
     domains = [spec["domain"] for spec in SEED_HOSTS if spec.get("domain")]
+    logger.info(f"ensure_proxy_hosts: {len(domains)} domains to seed: {domains}")
     if not domains:
+        logger.info("ensure_proxy_hosts: no domains to seed, returning empty")
         return links
 
     _bootstrap_npm_schema()
+
+    # Log NPM DB connection details for troubleshooting
+    logger.info(
+        f"ensure_proxy_hosts: NPM DB connection target = "
+        f"{settings.npm_db_host}:{settings.npm_db_port}, db={settings.npm_db_name}, "
+        f"user={settings.npm_db_user}"
+    )
 
     try:
         if not _wait_for_mysql(MYSQL_WAIT_SECONDS):
@@ -355,6 +472,7 @@ def ensure_proxy_hosts() -> Dict[str, int]:
                 "The healer runs fine without NPM; re-run the seeder later to link."
             )
             return links
+        logger.info(f"Dev MariaDB ({settings.npm_db_host}:{settings.npm_db_port}) is reachable")
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"proxy_host seeding skipped — could not reach MariaDB: {exc}")
         return links
@@ -364,16 +482,21 @@ def ensure_proxy_hosts() -> Dict[str, int]:
     # error on the first attempt is "not finished yet", not "broken" —
     # retry for a while instead of skipping.
     last_error = ""
+    logger.info(f"proxy_host seeding: starting {len(SEED_HOSTS)} seed hosts, {_SEED_RETRIES} retries max")
     for attempt in range(1, _SEED_RETRIES + 1):
+        logger.info(f"proxy_host seeding: attempt {attempt}/{_SEED_RETRIES}")
         try:
             conn = _mysql_connect()
             try:
-                return _seed_proxy_host_once(conn)
+                result = _seed_proxy_host_once(conn)
+                logger.info(f"proxy_host seeding: success — linked {len(result)} hosts: {result}")
+                return result
             finally:
                 conn.close()
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)
             err_no = exc.args[0] if exc.args else None
+            logger.warning(f"proxy_host seeding attempt {attempt} failed: {exc}")
             if err_no in _MIGRATING_ERRNOS and attempt < _SEED_RETRIES:
                 logger.info(
                     f"NPM schema still migrating (attempt {attempt}, err {err_no}) — "
@@ -395,6 +518,10 @@ def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
     Returns {domain: proxy_host_id} for every seeded host that now has a
     row. May raise a schema error (caller retries) — rows are committed
     one at a time, so a retried pass only creates what is still missing.
+
+    ``owner_user_id`` / ``access_list_id`` / ``certificate_id`` come from
+    ``_ensure_npm_defaults`` (see its docstring) — the three NOT-NULL
+    columns with no defaults, which upstream leaves to the setup wizard.
     """
     with conn.cursor() as cursor:
         cursor.execute("SELECT id, domain_names FROM proxy_host WHERE is_deleted = 0")
@@ -407,18 +534,30 @@ def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
     links: Dict[str, int] = {}
     for spec in SEED_HOSTS:
         domain = spec.get("domain")
-        if not domain:
-            continue
-        if domain in existing:
+        if domain and domain in existing:
             links[domain] = existing[domain]
-            continue
+    to_create = [spec for spec in SEED_HOSTS if spec.get("domain") and spec["domain"] not in existing]
+    if not to_create:
+        return links
+
+    owner_user_id, access_list_id, certificate_id = _ensure_npm_defaults(conn)
+    for spec in to_create:
+        domain = spec["domain"]
         with conn.cursor() as cursor:
             cursor.execute(
                 """INSERT INTO proxy_host
-                   (domain_names, forward_scheme, forward_host, forward_port, is_deleted,
+                   (domain_names, forward_scheme, forward_host, forward_port,
+                    owner_user_id, access_list_id, certificate_id, is_deleted,
                     created_on, modified_on)
-                   VALUES (%s, 'http', %s, %s, 0, NOW(), NOW())""",
-                (domain, spec.get("ip") or "127.0.0.1", str(spec.get("port") or 80)),
+                   VALUES (%s, 'http', %s, %s, %s, %s, %s, 0, NOW(), NOW())""",
+                (
+                    domain,
+                    spec.get("ip") or "127.0.0.1",
+                    str(spec.get("port") or 80),
+                    owner_user_id,
+                    access_list_id,
+                    certificate_id,
+                ),
             )
             proxy_host_id = cursor.lastrowid
         conn.commit()
@@ -437,6 +576,12 @@ def _seed_proxy_host_once(conn: Any) -> Dict[str, int]:
 async def _run() -> None:
     await init_db()
 
+    logger.info("=== seed_dev: starting ===")
+    logger.info(f"settings: db_path={settings.db_path}, npm_db_host={settings.npm_db_host}, "
+                f"npm_db_port={settings.npm_db_port}, npm_db_name={settings.npm_db_name}, "
+                f"npm_db_user={settings.npm_db_user}")
+    logger.info(f"SEED_HOSTS count: {len(SEED_HOSTS)}")
+
     async with aiosqlite.connect(settings.db_path) as db:
         db.row_factory = aiosqlite.Row
         added_hosts = await seed_hosts(db)
@@ -450,10 +595,19 @@ async def _run() -> None:
 
     links = ensure_proxy_hosts()
     if links:
+        logger.info(f"About to apply {len(links)} NPM links to SQLite: {links}")
         async with aiosqlite.connect(settings.db_path) as db:
             db.row_factory = aiosqlite.Row
             linked = await apply_npm_links(db, links)
         logger.info(f"linked {linked} host(s) to their NPM proxy_host ids")
+        # Verify what was actually linked
+        async with aiosqlite.connect(settings.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT name, domain, npm_proxy_host_id FROM hosts") as cursor:
+                all_hosts = await cursor.fetchall()
+            logger.info(f"All hosts in SQLite DB: {[(h['name'], h['domain'], h['npm_proxy_host_id']) for h in all_hosts]}")
+    else:
+        logger.warning("No NPM links returned — no proxy_host rows were created or found")
 
     print(json.dumps({"hosts_added": added_hosts, "npm_links": links}))
     print("seed_dev: done")
