@@ -2,7 +2,7 @@
 {% block title %}Settings · Upstream Healer{% endblock %}
 
 {% block content %}
-<div class="max-w-xl">
+<div class="max-w-3xl">
   <h1 class="text-2xl font-bold text-slate-900 dark:text-slate-100 mb-6">Settings</h1>
 
   <form method="post"
@@ -102,18 +102,21 @@
           class="px-6 py-5 border-t border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
       <div>
         <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Name</label>
-        <input name="name" required placeholder="Guest Wi-Fi"
+        <input name="name" required placeholder="Home Wi-Fi"
                class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Friendly label (e.g. Home Wi-Fi, VLAN 20)</p>
       </div>
       <div>
         <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">CIDR</label>
         <input name="cidr" required placeholder="192.168.10.0/24"
                class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
+        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Network CIDR — use /24, not /32</p>
       </div>
       <div>
         <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Interface</label>
-        <input name="interface" placeholder="auto"
+        <input name="interface" placeholder="Leave blank for automatic detection"
                class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
+        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Egress NIC (e.g. enp6s0, eth0, en0)</p>
       </div>
       <button type="submit"
               class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">

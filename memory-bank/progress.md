@@ -1,35 +1,29 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-16 — **multi-subnet support live + scapy route-bug fixed**
-> (feature commit `d6abef0`; the one pipeline break it caused was fixed in
-> `89ff442` — **verified green in pipeline 149**; a live smoke test then
-> surfaced a scapy route bug in the scapy fallback that broke the *whole* ARP
-> sweep, now fixed here — **152 tests pass, ruff clean, not yet committed**).
-> **All done.**
+> Snapshot: 2026-09-16 — **scapy route-bug fixed + deployed to dev (pipeline 151,
+> `00062a6`); now on UI polish** (the Settings screen is narrow and the "add
+> subnet" form fields are self-evident to devs but not to the user — widening it
+> + adding clear per-field hints is the next task, see "Next task" below).
 > **Verify before acting**: `git status`, `git log -5`, then
 > `python3 -m pytest tests/ -q`.
 
 ## Current state
 
 - Branch: `main` (tracking `gitlab/main`).
-- HEAD: `89ff442` (the test-hermeticity fix) — pushed to gitlab/main, **pipeline
-  149 all-green** (`lint` / `unit_tests` 150 pass / `build_image` / `deploy_dev`
-  all success; only manual jobs `deploy_test`/`deploy_production`/`dev_down` /
-  `dev_debug` remain).
-- Just before it: `d6abef0` (the multi-subnet feature — scanner, monitor,
-  database, main, templates, tests).
-- **Health: 150 tests pass, ruff clean.** Verified live (not just local): the
-  `unit_tests` job 736 trace ends `150 passed, 1 warning in 12.37s`.
-- The one pipeline break from `d6abef0` was environmental (tests depended on a
-  writable `/data` that the `python:3.12-slim` runner lacks); fixed in `89ff442`
-  by a `temp_db_file` fixture in `tests/conftest.py`.
-- **Live smoke test passed** (throwaway DB via `TestClient`):
-  - `GET /settings` → 200, renders the new "Subnets" card.
-  - `POST /settings/subnets` (LAN / 192.168.10.0/24) → 303 redirect.
-  - `POST /settings/subnets` with invalid CIDR → 400 "Invalid CIDR: 'not-a-cidr'".
-  - `GET /diagnostic` → 200, renders `#scan-subnet` select.
-  - `GET /hosts/add` → 200, renders the subnet `<select name="subnet_id">`.
-  - `POST /hosts/add` with `subnet_id=1` → 303; verified `hosts.subnet_id=1`.
+- HEAD: `00062a6` (the scapy route-bug fix) — pushed to gitlab/main, **pipeline 151
+  all-green**: `lint` / `unit_tests` (152 pass) / `build_image` all success, and
+  **`deploy_dev` success** (live on the dev box `192.168.86.38:8787`).
+- Just before it: `89ff442` (test-hermeticity fix, pipeline 149) ← `d6abef0`
+  (the multi-subnet feature — scanner, monitor, database, main, templates, tests).
+- **Health: 152 tests pass, ruff clean** (verified live: `unit_tests` job 752).
+- The multi-subnet live smoke test (throwaway DB via `TestClient`) covered:
+  `GET /settings` → 200 (Subnets card), `POST /settings/subnets` → 303,
+  invalid CIDR → 400, `GET /diagnostic` renders `#scan-subnet`, `GET/POST
+  /hosts/add` carry `subnet_id`.
+- **Manual jobs in pipeline 151** (`deploy_test` / `deploy_production` /
+  `dev_down` / `dev_debug`) are still `manual` — **trigger only on explicit user
+  confirmation** (the scapy fix is live on dev; the user has *not* asked for
+  test/prod yet).
 
 ## Multi-subnet design + file map
 
@@ -70,26 +64,70 @@
   `host_form.html` (subnet select). No new nav link — subnets live in Settings.
 
 
-## Immediate next steps
+## Next task (UI polish — Settings screen)
 
-1. **Commit + push** the scapy route-bug fix (scanner.py + test_scanner.py +
-   this memory-bank update). The 152 tests pass locally and ruff is clean, but
-   the fix is **not yet in a pipeline** — `unit_tests` in CI is the next gate.
-   (CI runs scapy 2.6.1 on `python:3.12-slim`; the fix is version-agnostic —
-   it never assigns `conf.iface`.)
-2. **Live-verify the scapy path** after deploy: pick a host pinned to a subnet
-   and run a *scapy* diagnostic scan (not arp-scan) — it must sweep **and**
-   return the full responder table (no `ERROR: "enp6s0" is not a valid numeric
-   value`, no `(no ARP responses received)`). The `arp-scan` method is the
-   primary path and always worked; this fix matters for the scapy fallback.
-3. **How to enter a subnet (user-facing):** on the Settings page → Subnets
-   card, add the **network CIDR** (e.g. `192.168.70.0/24`), *not* a single host
-   (`192.168.70.0/32` — that's one IP with no broadcast, so it can't be
-   ARP-swept). Enter a `/32` and the scanner now says so explicitly instead of
-   the old misleading "no local interface".
-4. When ready, the manual jobs in the pipeline (`deploy_test`,
-   `deploy_production`, `dev_down`) are still pending — trigger them only on
-   explicit user confirmation.
+User request (2026-09-16, mid-task): *"make the settings screen wider for entering
+new subnets, but also clarify what information you expect in the fields, including
+what interfaces you expect. There is no reason to keep the screen narrow, but it
+should size for a phone."*
+
+**Target file: `app/templates/settings.html`** (template-only; no backend change).
+Three pieces:
+
+1. **Widen the page.** The whole page is wrapped in `<div class="max-w-xl">`
+   (line 5) = max 576px — that is the bottleneck. Change to `max-w-3xl` or
+   `max-w-4xl`. The outer `base.html` `<main>` is already `max-w-6xl`, so only
+   this inner wrapper constrains it. `max-w-xl`/`3xl` are fine on phone because
+   max-width is a *ceiling* — on a narrow viewport the content is `width:100%` +
+   `px-4` padding, so this "widens on desktop, still full-width on a phone" with
+   no media query. (`host_form.html` also uses `max-w-xl` — out of scope unless
+   the user asks, but the same pattern applies.)
+
+2. **Clarify the "add subnet" form** (the `POST /settings/subnets` form, ~line 101,
+   `grid grid-cols-1 sm:grid-cols-4`). The 3 fields map to
+   `app/main.py::add_subnet` (line 537):
+   - **Name** (`name`, `required`, `Form(...)`) — *free-text friendly label*; what
+     the user calls the network. Shown in the table + the host/diagnostic subnet
+     dropdowns. e.g. `Home Wi-Fi`, `VLAN 20`, `Guest`. Not validated.
+   - **CIDR** (`cidr`, `required`, `Form(...)`) — the **network CIDR**
+     `<network>/<prefix>`. Validated with `ipaddress.ip_network(cidr, strict=False)`
+     (line 549) — `strict=False` accepts non-zero host bits (`192.168.70.5/24` →
+     normalised to `192.168.70.0/24`). **Emphasise in the hint: enter the whole
+     network (`…0/24`), not a single host (`…5/32`).** A `/32` is one IP with no
+     broadcast → can't be ARP-swept; the scanner now explains that (decisions.md "Scanner /
+     multi-subnet gotchas" — the /32 bullet).
+   - **Interface** (`interface`, optional, `Form("")` default, stored `None` if
+     blank — line 555). The **egress NIC name** ARP/scapy packets leave via.
+     Real values = `ip -o -4 addr` names like `enp6s0`, `eth0`, `en0`.
+     **CRITICAL UX bug to fix:** the current placeholder is `auto`, but
+     `interface="auto"` is treated as a *literal* NIC name and fails ("no such
+     device")! Leave **blank** = auto (the scanner picks the local iface for that
+     CIDR via `get_default_subnets`). Change the placeholder to `leave blank for
+     auto` (or add a helper line) and note example local interface names.
+
+   **Do NOT rename the form fields** (`name`/`cidr`/`interface`) or the
+   `action="/settings/subnets"` — the handler reads them by those names.
+
+3. **Responsive/phone sizing.** Keep the form's `grid-cols-1 sm:grid-cols-4`
+   (already stacks to 1 column on phones; stays correct once the page is wider).
+   The subnets **table** already sits in `overflow-x-auto` (scrolls on phones).
+
+**Validation** (no tests touch templates — render check only): `ruff` clean; a
+throwaway `TestClient` `GET /settings` (see `temp_db_file` in `tests/conftest.py`)
+rendering the new width + hint text and still posting `name/cidr/interface` to
+`/settings/subnets`; then commit → push → spawn pipeline → auto jobs →
+`deploy_dev` **on the explicit user-confirmation pattern** (deploy_dev is manual).
+
+## Done (recent history)
+
+- Scapy route-bug fix (`00062a6`) is deployed to dev (pipeline 151). Live-verify
+  on the dev box when convenient: pick a host pinned to a subnet and run a *scapy*
+  diagnostic scan — it must sweep and return the full responder table (no
+  `ERROR: "enp6s0" is not a valid numeric value`, no `(no ARP responses received)`).
+  The `arp-scan` method is the primary path and always worked; the fix matters for
+  the scapy fallback.
+- User-facing: on Settings → Subnets, add the **network** CIDR (`…0/24`), not a
+  single host (`/32`).
 
 ## Conventions (keep these when editing)
 
@@ -108,4 +146,15 @@
   add a new table or a new required column to an INSERT, add it to
   `_KNOWN_COLUMNS_WITH_DEFAULTS` (or the `known` set) so the introspection
   knows how to fill it.
+- **Templates use the Tailwind Play CDN** (`base.html`: `<script
+  src="https://cdn.tailwindcss.com">`), so ANY Tailwind class works — there is no
+  build step / content-scan to update. Theme is class-based dark mode (`.dark` on
+  `<html>`, toggled in `base.html`). The global `<style>` in `base.html` forces
+  `input[type=text]/[number]/[password]/[email]`, `select`, `textarea` colours;
+  `host_form.html` uses a `.form-control` helper class, `settings.html` inlines
+  the same classes per-input.
+- **UI layout:** `base.html` renders `<main class="max-w-6xl mx-auto px-4 sm:px-6
+  lg:px-8 py-8">`; each page wraps its own content in a narrower `max-w-*`
+  (`settings.html` + `host_form.html` = `max-w-xl`; `diagnostic.html` = none).
+  To widen a page, change *its own* `max-w-*` wrapper, not the `<main>`.
 

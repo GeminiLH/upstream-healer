@@ -261,3 +261,43 @@ is stale/disproven — do not re-implement.
    admin row; it is not the bug itself (see #4 for the real blocker). Direct
    SQL from this workstation works: `pymysql` → `192.168.86.38:3306`
    (user `proxymanager`, sandbox password — see compose defaults).
+
+## UI / templates
+
+- **Settings "add subnet" form: 3 fields + how they're used** (template
+  `settings.html`; handler `app/main.py::add_subnet`). This is the form the
+  2026-09-16 "widen + clarify" UI task touches. The three fields:
+  - **Name** — free-text *friendly label* (shown in the subnets table and in the
+    host/diagnostic subnet dropdowns). Not validated; any string.
+  - **CIDR** — the **network** CIDR. Validated with
+    `ipaddress.ip_network(cidr, strict=False)`; `strict=False` accepts
+    non-zero host bits and normalises them (`192.168.70.5/24` →
+    `192.168.70.0/24`). Must be a *network*, not a `/32` host (see
+    "Scanner / multi-subnet gotchas" #5).
+  - **Interface** — the *egress* NIC name (optional). **TRAP:** the old
+    placeholder was the literal word `auto`, but a stored `interface="auto"`
+    is treated as a *real* interface name at scan time and fails ("no such
+    device")! **Blank/empty = auto** (the scanner picks the local iface that
+    owns the CIDR via `get_default_subnets`). So the placeholder must read
+    *leave blank for auto* (not `auto`), and the field should show the actual
+    local interface names as examples. Valid values are `ip -o -4 addr` names
+    (`enp6s0`, `eth0`, `en0`, …). Only set it when the subnet lives on a
+    specific physical NIC that differs from the local one (VLAN/secondary NIC).
+
+- **Widening a page = change *that page's* wrapper, not `<main>`.** `base.html`
+  renders `<main class="max-w-6xl mx-auto …">`; each page then wraps its own
+  content in a narrower `max-w-*` (`settings.html` + `host_form.html` =
+  `max-w-xl` = 576px; `diagnostic.html` = none). The Settings page was stuck at
+  `max-w-xl`; widening it to `max-w-3xl`/`4xl` is the whole fix. A Tailwind
+  max-width is a *ceiling* — on a phone the content is `width:100%` + `px-4`
+  padding, so one change gives "wider on desktop, full-width on a phone" with no
+  media query. The form's `grid grid-cols-1 sm:grid-cols-4` already stacks to one
+  column on phones, and the subnets table sits in `overflow-x-auto` (scrolls), so
+  no phone-specific work is needed.
+
+- **Templates use the Tailwind Play CDN** (in `base.html`: `<script
+  src="https://cdn.tailwindcss.com">`), so *any* utility class renders — there is
+  no build step / content-scan to update when adding classes. Theme is class-based
+  dark mode (`.dark` on `<html>`, toggled in `base.html`). Form-control colours
+  come from a global `<style>` block in `base.html` (forces white/slate-900 on
+  `input[type=text]/[number]/[password]/[email]`, `select`, `textarea`).
