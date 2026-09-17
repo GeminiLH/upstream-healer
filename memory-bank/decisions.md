@@ -148,6 +148,14 @@ collection with `ValidationError: extra_forbidden`.
   `continue`s — it no longer fails the whole multi-subnet run. (This is the
   same "one bad subnet must not kill the rest" principle as the arp-scan
   `(skipped ...)` notes.)
+- **`get_local_ip_for_network` returns `(ip, iface)` from `ip route get`.**
+  The kernel-reported interface (`dev` field) is always valid and is used as
+  the egress interface in `run_scapy_scan`, avoiding the scapy
+  `int("enp6s0")` route-bug entirely.  The old approach (matching local IP
+  against scapy's `conf.get_if_addresses()`) could leave `egress=None`, which
+  caused scapy to use its (possibly corrupted) default interface.  Fixed
+  2026-09-17.
+
 - **arp-scan note: a `/32` (or `/31`) is a *host*, not a network.** It has no
   usable broadcast, so it is not ARP-sweepable. `run_arp_scan` now emits a
   specific `(skipped <cidr>: single host, not an ARP-swept network — add its

@@ -224,15 +224,26 @@ def run_scapy_scan(
             # Per-network egress: pick the local interface that owns this
             # network (so the sweep goes out the right NIC on multi-homed
             # boxes).  `None` lets scapy fall back to its default interface.
+            #
+            # CRITICAL: do NOT set ``conf.iface`` here — scapy 2.6.x mutates
+            # ``conf.route.default_iface`` when ``conf.iface`` changes, and then
+            # ``int("enp6s0")`` aborts the whole sweep.  Always pass ``iface=``
+            # to ``srp()`` directly.
             egress: Optional[str] = interface
             if not egress:
-                local_ip = get_local_ip_for_network(network)
+                local_ip, iface = get_local_ip_for_network(network)
                 if local_ip:
-                    ifaces = conf.get_if_addresses()
-                    for if_name, if_ips in ifaces.items():
-                        if local_ip in if_ips:
-                            egress = if_name
-                            break
+                    # Prefer the kernel-reported interface (from ``ip route``) —
+                    # it is always valid and avoids the scapy
+                    # ``int("enp6s0")`` route-bug entirely.
+                    egress = iface
+                    if not egress:
+                        # Fallback: try scapy's own interface mapping.
+                        ifaces = conf.get_if_addresses()
+                        for if_name, if_ips in ifaces.items():
+                            if local_ip in if_ips:
+                                egress = if_name
+                                break
 
             try:
                 if egress:
@@ -347,29 +358,29 @@ def ip_in_subnets(ip: str, subnets: list[str]) -> bool:
     return False
 
 
-def get_local_ip_for_network(cidr: str) -> Optional[str]:
-    """Return the local IPv4 src address the kernel uses to reach ``cidr``.
+def get_local_ip_for_network(cidr: str) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(local_ip, interface)`` the kernel uses to reach ``cidr``.
 
     Resolves via ``ip route get <network-address>`` — the most reliable signal
     for "which local interface would we use to talk to this network?".  Returns
-    ``None`` when no route exists or ``ip`` is unavailable.  Used to pick the
-    right scapy egress interface for a given subnet.
+    ``(None, None)`` when no route exists or ``ip`` is unavailable.  Used to
+    pick the right scapy egress interface for a given subnet.
     """
     cidr = (cidr or "").strip()
     if not cidr:
-        return None
+        return None, None
     try:
         base = ipaddress.ip_network(cidr, strict=False).network_address
         result = subprocess.run(
             ["ip", "-4", "route", "get", str(base)],
             capture_output=True, text=True, timeout=5,
         )
-        match = re.search(r"src\s+(\d+\.\d+\.\d+\.\d+)", result.stdout)
+        match = re.search(r"(?:src\s+(\d+\.\d+\.\d+\.\d+).*?dev\s+(\S+))|(?:dev\s+(\S+).*?src\s+(\d+\.\d+\.\d+\.\d+))", result.stdout)
         if match:
-            return match.group(1)
+            return match.group(1) or match.group(4), match.group(2) or match.group(3)
     except Exception:  # noqa: BLE001 - best-effort helper
         pass
-    return None
+    return None, None
 
 
 def get_default_subnets() -> list[dict]:

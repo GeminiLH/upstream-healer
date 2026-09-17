@@ -161,8 +161,8 @@ class TestRunScapyScan:
         # 192.168.86.0/24 has no local iface on this fake box, so it sweeps via
         # the default interface.  Each maps to a DIFFERENT egress iface.
         local_ip = {
-            "192.168.86.0/24": None,  # no local iface -> default interface
-            "10.0.0.0/24": "10.0.0.5",  # on enp6s0
+            "192.168.86.0/24": (None, None),  # no local iface -> default interface
+            "10.0.0.0/24": ("10.0.0.5", "enp6s0"),  # on enp6s0
         }
         with patch.object(scapy_all, "srp", side_effect=flaky_srp), \
                 patch.object(scapy_all, "Ether", return_value=request), \
@@ -238,23 +238,23 @@ class TestIpInSubnets:
 
 
 class TestGetLocalIpForNetwork:
-    def test_returns_src_from_ip_route(self):
+    def test_returns_src_and_dev_from_ip_route(self):
         proc = _FakeProc("192.168.10.0/24 via 192.168.10.1 dev eth0 src 192.168.10.5 uid 0\n")
         with patch("app.services.scanner.subprocess.run", return_value=proc):
-            assert get_local_ip_for_network("192.168.10.0/24") == "192.168.10.5"
+            assert get_local_ip_for_network("192.168.10.0/24") == ("192.168.10.5", "eth0")
 
     def test_returns_none_when_no_src(self):
         with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("")):
-            assert get_local_ip_for_network("192.168.10.0/24") is None
+            assert get_local_ip_for_network("192.168.10.0/24") == (None, None)
 
     def test_empty_cidr_returns_none_without_subprocess(self):
         with patch("app.services.scanner.subprocess.run") as mock_run:
-            assert get_local_ip_for_network("") is None
+            assert get_local_ip_for_network("") == (None, None)
         mock_run.assert_not_called()
 
     def test_binary_missing_returns_none(self):
         with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
-            assert get_local_ip_for_network("10.0.0.0/8") is None
+            assert get_local_ip_for_network("10.0.0.0/8") == (None, None)
 
 
 class TestGetDefaultSubnets:
