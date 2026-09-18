@@ -24,9 +24,16 @@ export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=true
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=20}"
 GIT="git -c core.pager=cat"
+# ---------------- gitlab api config ----------------
+# .env.local (uncommitted) defines both token vars. Which one works where:
+#   GITLAB_READ_TOKEN        — API reads (/projects, /pipelines) AND job play
+#   GITLAB_PIPELINE_TOKEN    — pipelines LIST works, but /projects -> 403
+# Direct variable reads only: ${!VAR} indirect expansion crashed a debug run
+# (bash "invalid indirect expansion") and poisoned TOKEN for the whole script.
+if [ -f .env.local ]; then set -a; . ./.env.local; set +a; fi
+TOKEN="${GITLAB_READ_TOKEN:-${GITLAB_PIPELINE_TOKEN:-}}"
 GITLAB_URL="${GITLAB_URL:-http://192.168.86.38:32769}"
 GITLAB_PROJECT_ID="${GITLAB_PROJECT_ID:-4}"
-GITLAB_TOKEN_VAR="${GITLAB_TOKEN_VAR:-GITLAB_PIPELINE_TOKEN}"
 
 T0=$(date +%s)
 say()  { local s=$(( $(date +%s) - T0 )); printf '[%02dm %02ds] %s\n' $((s/60)) $((s%60)) "$*"; }
@@ -77,27 +84,32 @@ fi
 # NB: poll the JOBS, not the pipeline status — with pending manual jobs the
 # pipeline status is "manual" forever.
 step "4/5 pipeline auto jobs for ${SHA:0:7}"
-[ -f .env.local ] || { echo ".env.local missing at repo root — cannot poll gitlab" >&2; exit 1; }
-set -a; . ./.env.local; set +a
-TOKEN="${!GITLAB_TOKEN_VAR:-}"
-[ -n "$TOKEN" ] || { echo "$GITLAB_TOKEN_VAR is not set in .env.local" >&2; exit 1; }
+[ -n "$TOKEN" ] || { echo "no gitlab token: set GITLAB_READ_TOKEN in .env.local (repo root)" >&2; exit 1; }
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT_ID"
 
+# preflight: one cheap API call so a bad token/URL fails in 1s, not 5 min of
+# silent empty polls. (Empty token -> 404 "Project Not Found" is the trap
+# that burned a full 150s poll window before.)
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -H "PRIVATE-TOKEN: $TOKEN" "$API")
+[ "$code" = "200" ] || { echo "gitlab preflight failed: GET $API -> HTTP $code (check token in .env.local)" >&2; exit 1; }
+
 PID=""
-for _ in $(seq 1 60); do
-  PID=$(WANT="$SHA" curl -s -m 10 -H "PRIVATE-TOKEN: $TOKEN" "$API/pipelines?ref=main&per_page=5" \
-    | python3 -c '
+LASTRESP=""
+for _ in $(seq 1 120); do
+  RESP=$(WANT="$SHA" curl -s -m 10 -H "PRIVATE-TOKEN: $TOKEN" "$API/pipelines?ref=main&per_page=5" || true)
+  LASTRESP=$(echo "$RESP" | head -c 200)
+  PID=$(WANT="$SHA" python3 -c '
 import sys, json, os
 try:
     for p in json.load(sys.stdin):
         if p["sha"].startswith(os.environ["WANT"]):
             print(p["id"]); break
 except Exception:
-    pass' || true)
+    pass' <<<"$RESP" || true)
   [ -n "$PID" ] && break
   sleep 5
 done
-[ -n "$PID" ] || { echo "no pipeline for ${SHA:0:7} appeared within 5 min (runner lag?)" >&2; exit 1; }
+[ -n "$PID" ] || { echo "no pipeline for ${SHA:0:7} appeared within 10 min (runner lag?). Last API response: $LASTRESP" >&2; exit 1; }
 say "pipeline $PID created — watching auto jobs (10s cadence)"
 
 DD=""
@@ -144,7 +156,12 @@ done
 # ---------------- 5. deploy_dev (manual play) ----------------
 if [ "$DEPLOY" = 1 ] && [ -n "$DD" ]; then
   step "5/5 deploy_dev (job $DD) — playing manual job"
-  curl -s -m 15 -X POST -H "PRIVATE-TOKEN: $TOKEN" "$API/jobs/$DD/play" >/dev/null || true
+  PLAYRESP=$(curl -s -m 15 -w '\n%{http_code}' -X POST -H "PRIVATE-TOKEN: $TOKEN" "$API/jobs/$DD/play")
+  PLAYCODE=$(echo "$PLAYRESP" | tail -1)
+  case "$PLAYCODE" in
+    2*|3*) say "deploy_dev job $DD played" ;;
+    *) echo "play request failed: HTTP $PLAYCODE — $(echo "$PLAYRESP" | head -c 300)" >&2; exit 1 ;;
+  esac
   DEADLINE=$(( $(date +%s) + 900 ))
   JS="pending"
   while :; do

@@ -129,7 +129,9 @@ rendering the new width + hint text and still posting `name/cidr/interface` to
   `192.168.86.38:8787`).
 - **Fast ship workflow added: `scripts/ship.sh`** (2026-09-17) — one command
   for tests → commit → push gitlab → auto jobs → `deploy_dev`, ~6 min
-  end-to-end (replaces the hand-rolled poll loops; see decisions.md).
+  end-to-end (replaces the hand-rolled poll loops; see decisions.md). Hardened
+  2026-09-18: token selection (`GITLAB_READ_TOKEN`), API preflight, 10-min
+  pipeline-appear window, loud play-failure, resumable re-runs.
 
 - Scapy route-bug fix (`00062a6`) is deployed to dev (pipeline 151). Live-verify
   on the dev box when convenient: pick a host pinned to a subnet and run a *scapy*
@@ -146,6 +148,10 @@ rendering the new width + hint text and still posting `name/cidr/interface` to
   auto jobs → `deploy_dev`, ~6 min, non-interactive). Do not re-invent the
   poll loops by hand — and never poll the *pipeline status* for completion
   (it sticks at `manual` with the pending manual jobs); poll the jobs.
+  If it reports *"no pipeline … appeared within 10 min"*, the GitLab instance
+  was just slow to register the push — **re-run the same command**; the script
+  resumes (skips commit/push when there is nothing to commit) and picks up the
+  pipeline for the current HEAD.
 - CLI: argparse subcommands; success → JSON to stdout; failure → message +
   non-zero exit.
 - Timestamps: use `parse_timestamp`/`format_timestamp` from `app/config.py`.
