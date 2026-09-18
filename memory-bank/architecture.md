@@ -1,6 +1,14 @@
 # Architecture — Upstream Healer
 
-> Last updated: 2026-07-09.
+> Last updated: 2026-09-17.
+
+## Repository
+
+**GitLab is the primary repository.** `gitlab` remote →
+`ssh://git@192.168.86.38:32768/monster/upstream_healer.git` (project
+`monster/upstream_healer`; CI in `.gitlab-ci.yml`). Push explicitly with
+`git push gitlab main`. `origin` → GitHub `GeminiLH/upstream-healer` is a
+legacy mirror — never a push target, never delete (see decisions.md).
 
 ## Layout
 

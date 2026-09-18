@@ -9,7 +9,10 @@
 
 ## Current state
 
-- Branch: `main` (tracking `gitlab/main`).
+- Branch: `main` (tracking `gitlab/main` — re-pointed on 2026-09-17 after it
+  silently tracked `origin/main`; the NFS mount blocked git's config write, so
+  `.git/config` was edited directly. GitLab is the primary repo, see decisions.md;
+  a bare `git push` now goes to `gitlab`.)
 - HEAD: `00062a6` (the scapy route-bug fix) — pushed to gitlab/main, **pipeline 151
   all-green**: `lint` / `unit_tests` (152 pass) / `build_image` all success, and
   **`deploy_dev` success** (live on the dev box `192.168.86.38:8787`).

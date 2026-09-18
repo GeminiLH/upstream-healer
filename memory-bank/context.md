@@ -1,6 +1,20 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-09-16. Re-verify with `git status` and `progress.md` before relying on this.
+> Last updated: 2026-09-17. Re-verify with `git status` and `progress.md` before relying on this.
+
+## Repository (read this first)
+
+**GitLab is the primary repository** — the only active remote. All commits,
+pushes, and CI/pipeline work target the `gitlab` remote:
+`ssh://git@192.168.86.38:32768/monster/upstream_healer.git`
+(project `monster/upstream_healer`; CI = GitLab CI; Web/API
+`http://192.168.86.38:32769`).
+
+- Push **explicitly**: `git push gitlab main`. Never use a bare `git push` —
+  the local branch's upstream may silently point at the legacy `origin` remote.
+- `origin` = GitHub `GeminiLH/upstream-healer` is a **legacy mirror**: never a
+  push target, but never delete the remote or the GitHub repo either (hard rule,
+  see decisions.md).
 
 ## What it is
 
@@ -51,8 +65,9 @@ must never be copied into code, tests, or the memory bank.
 - Use the system interpreter instead: `python3` (3.13, with all deps installed
   globally). Verified working: `python3 -m pytest tests/ -q` → 105 passed.
 - **Remotes**: `gitlab` = `ssh://git@192.168.86.38:32768/monster/upstream_healer.git`
-  — **primary source of truth** (see decisions.md). `origin` = GitHub
-  `GeminiLH/upstream-healer` — **legacy, ignore but never delete**.
+  — **the primary repository** (see the "Repository" section above and the hard
+  rule in decisions.md). `origin` = GitHub `GeminiLH/upstream-healer` —
+  **legacy mirror; never push there, but never delete either**.
 - CI: GitLab CI (`.gitlab-ci.yml`) with unit tests, lint, build, dev/deploy
   jobs; deploy jobs use `needs:optional` for `unit_tests`.
 - `upstream healer notes.txt` contains live secrets and is in `.gitignore` —

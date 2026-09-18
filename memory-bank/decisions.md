@@ -1,6 +1,6 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-09-16.
+> Last updated: 2026-09-17.
 
 ## Design decisions
 
@@ -34,13 +34,19 @@
   (line 28, "Sensitive local notes") and currently untracked. It holds live
   credentials (Telegram bot token, GitLab PATs, LAN IPs/MACs). Never
   `git add -f` it, never quote its contents, and keep it ignored.
-- **GitLab is the primary repository.** All commits, pushes, and CI/pipeline
-  work target the `gitlab` remote:
+- **GitLab is the primary repository** — the only active remote. All commits,
+  pushes, and CI/pipeline work target the `gitlab` remote:
   `ssh://git@192.168.86.38:32768/monster/upstream_healer.git`
   (SSH host `192.168.86.38` port `32768`, project path `monster/upstream_healer`).
-- **GitHub (`origin` → `git@github.com:GeminiLH/upstream-healer.git`) is
-  legacy and can be ignored** in all workflows — but do **NOT** remove the
-  remote, the GitHub repo, or any legacy GitHub-related files.
+  Push **explicitly** — `git push gitlab main` — and never rely on a bare
+  `git push` or the local branch's upstream, which can silently point at the
+  legacy `origin` remote. CI is GitLab CI (`.gitlab-ci.yml`) on the same
+  instance (Web/API `http://192.168.86.38:32769`, project id 4).
+- **GitHub (`origin` → `git@github.com:GeminiLH/upstream-healer.git`) is a
+  legacy mirror and can be ignored** in all workflows. Beware that it carries
+  the *default* remote name `origin`, which is easy to mistake for the primary
+  remote — but do **NOT** remove the remote, the GitHub repo, or any legacy
+  GitHub-related files.
 - **NPM is interacted with via `docker exec` — never via the web UI** (user
   directive, 2026-09-15). Relevant containers on the batcave box:
   `nginx-app-1` (NPM app: exec e.g. `printenv | grep DB_MYSQL_`, `nginx -t`,
@@ -103,6 +109,18 @@ collection with `ValidationError: extra_forbidden`.
   tests, or docs.
 - `.venv/` in the repo is a Windows venv — unusable on Linux; use system
   `python3` (deps installed globally) in this environment.
+- **NFS mount breaks `git` metadata writes (2026-09-17):** the checkout is
+  owned by `nfsnobody` while this workstation runs as uid 1000, so git's
+  lock-file `chmod` fails ("Operation not permitted") and `.git/config`
+  updates **silently do not persist** — e.g. `git branch -u gitlab/main main`
+  printed "set up to track" but the config still pointed at `origin`. The
+  config *is* mode 777, so the workaround is to edit `.git/config` directly
+  (editor/`sed`) and verify with `git branch -vv`. Read-only git commands and
+  `git fetch` work fine (SSH to gitlab is key-auth, non-interactive).
+  ⚠️ Another trap here: unguarded git in this terminal *hangs waiting for
+  input* (pager/ssh prompt) rather than running slowly — always use
+  `core.pager=cat`, `GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND="ssh -o
+  BatchMode=yes"`, and `< /dev/null`.
 - `npm_db_path_in_container` (`/data/database.sqlite`) is a legacy default;
   NPM in the dev stack uses **MariaDB** (`nginx-db-1`), so the SQLite path is
   not where NPM stores state in dev.
