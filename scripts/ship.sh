@@ -195,8 +195,9 @@ except Exception:
     [ "$(date +%s)" -lt "$DEADLINE" ] || { echo "deploy_dev timed out after 15 min" >&2; exit 1; }
     sleep 10
   done
-  code=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "http://192.168.86.38:8787/" || echo 000)
-  say "dev UI check: GET http://192.168.86.38:8787/ -> HTTP $code"
+  ui=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "http://192.168.86.38:8787/" || echo 000)
+  say "dev UI check: GET http://192.168.86.38:8787/ -> HTTP $ui"
+  [ "$ui" = "200" ] || [ "$ui" = "302" ] || [ "$ui" = "303" ] || say "WARNING: dev UI not 2xx (got $ui) — but deploy job reported success"
   say "SHIP OK — ${SHA:0:7} is live on dev (pipeline $PID)"
 else
   step "5/5 deploy"
