@@ -35,10 +35,21 @@
     `anyio.abc.BlockingPortal` **DeprecationWarning** via a `filterwarnings`
     line in `pytest.ini` (this is the startup/test warning you may still see
     if the pin drifts). Touched `app/main.py`, `pytest.ini`, `requirements.txt`.
+  - **(uncommitted — do not claim shipped)** *Settings subnet UX polish*, three
+    fixes on the Subnets card in `settings.html` from direct user feedback:
+    (1) a global **"Rescan networks"** button + `/settings/subnets/rescan-all`
+    (clears the suppression list so all auto /24s come back) — the missing
+    "rescan" the help text always promised; (2) the **Interface** field is a
+    `<datalist>` **suggestion** of real NICs from a new `scanner.get_local_interfaces()`
+    (`ip -4 -o addr`, any prefix, deduped, skips `lo`, `[]` when `ip` is absent)
+    **and** `add_subnet` **validates** it (blank/`auto`/`any`/`default`→auto; an
+    unknown NIC is 400'd with the available list); (3) **lay-person CIDR help**
+    (`/24`≈256, `/28`≈16, `/32`=single IP, must end in `.0`) + `add_subnet` rejects
+    `/31`+. Touched `app/main.py`, `scanner.py`, `settings.html`, `tests/*`.
+    178 tests green, ruff clean; **not yet `git push gitlab main` / `ship.sh`.**
 - The **Settings widen+clarify** task (previously the "Next task") is now
   **done** — `settings.html` is `max-w-3xl` and the three subnet fields carry
-  the clarifying hints (see decisions.md "UI / templates"). Nothing is queued
-  in the notes; awaiting the next user request.
+  the clarifying hints (see decisions.md "UI / templates").
 - Leftovers from earlier: old manual `deploy_*` jobs on stale pipelines —
   `deploy_test` / `deploy_production` / `dev_down` / `dev_debug` in every
   recent pipeline remain `manual` — **trigger only on explicit user

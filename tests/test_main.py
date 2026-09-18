@@ -84,6 +84,7 @@ def test_routes_registered_subnets():
     # Auto subnets are not DB rows; they are managed by CIDR instead.
     assert "/settings/subnets/suppress" in paths
     assert "/settings/subnets/rescan" in paths
+    assert "/settings/subnets/rescan-all" in paths
 
 async def _read_setting(s, key):
     import aiosqlite
@@ -111,8 +112,10 @@ def test_subnet_suppress_and_rescan_roundtrip(temp_db_file):
     assert resp.status_code == 303
     assert json.loads(_read_sync(temp_db_file, "suppressed_subnets")) == ["192.168.99.0/24"]
 
-    with patch("app.main.get_default_subnets",
-               return_value=[{"cidr": "192.168.99.0/24", "interface": "enp9", "source": "auto"}]):
+    with patch(
+        "app.main.get_default_subnets",
+        return_value=[{"cidr": "192.168.99.0/24", "interface": "enp9", "source": "auto"}],
+    ), patch("app.main.get_local_interfaces", return_value=[]):
         resp = client.get("/settings")
     assert resp.status_code == 200
     assert "192.168.99.0/24" in resp.text  # still shown
@@ -137,12 +140,127 @@ def _read_sync(s, key):
     return asyncio.run(_get())
 
 
+def _subnets_sync(s):
+    import asyncio
+    import aiosqlite
+
+    async def _get():
+        async with aiosqlite.connect(s.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY id"
+            ) as cur:
+                return [dict(r) for r in await cur.fetchall()]
+
+    return asyncio.run(_get())
+
+
 def test_settings_page_renders_auto_subnets(temp_db_file):
     from unittest.mock import patch
 
-    with patch("app.main.get_default_subnets",
-               return_value=[{"cidr": "10.9.0.0/24", "interface": "enp9", "source": "auto"}]):
+    with patch(
+        "app.main.get_default_subnets",
+        return_value=[{"cidr": "10.9.0.0/24", "interface": "enp9", "source": "auto"}],
+    ), patch(
+        "app.main.get_local_interfaces",
+        return_value=[{"name": "enp9", "address": "10.9.0.38", "cidr": "10.9.0.38/24"}],
+    ):
         resp = TestClient(app).get("/settings")
     assert resp.status_code == 200
     assert "10.9.0.0/24" in resp.text
     assert "(auto)" in resp.text
+    # Interface field is backed by a datalist of real NICs (suggestion)…
+    assert "iface-options" in resp.text
+    assert "enp9" in resp.text
+    # …and the card offers a global "Rescan networks" action.
+    assert "rescan-all" in resp.text
+    assert "Rescan networks" in resp.text
+
+
+def test_settings_page_renders_empty_interface_suggestion(temp_db_file):
+    """No local NICs (e.g. a Windows dev box) -> no suggestions, still renders."""
+    from unittest.mock import patch
+
+    with patch("app.main.get_default_subnets", return_value=[]), \
+         patch("app.main.get_local_interfaces", return_value=[]):
+        resp = TestClient(app).get("/settings")
+    assert resp.status_code == 200
+    assert "iface-options" in resp.text
+    assert "(none detected)" in resp.text
+
+
+def test_add_subnet_rejects_host_cidr(temp_db_file):
+    """A /32 (single host) can't be swept — rejected with a lay-person message."""
+    client = TestClient(app)
+    resp = client.post(
+        "/settings/subnets",
+        data={"name": "Host", "cidr": "192.168.10.5/32", "interface": "", "enabled": "on"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "single link/host" in resp.json()["detail"]
+
+
+def test_add_subnet_auto_interface_treated_as_blank(temp_db_file):
+    """Typing the literal 'auto' must behave like a blank (auto-detect), not a NIC name."""
+    from unittest.mock import patch
+
+    client = TestClient(app)
+    with patch("app.main.get_local_interfaces", return_value=[
+        {"name": "enp6s0", "address": "192.168.10.2", "cidr": "192.168.10.2/28"},
+    ]):
+        resp = client.post(
+            "/settings/subnets",
+            data={"name": "VLAN", "cidr": "192.168.10.0/28", "interface": "auto", "enabled": "on"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    row = _subnets_sync(temp_db_file)[0]
+    assert row["cidr"] == "192.168.10.0/28"
+    assert row["interface"] is None
+
+
+def test_add_subnet_unknown_interface_rejected(temp_db_file):
+    """A NIC name that does not exist on this host is rejected, with the real ones offered."""
+    from unittest.mock import patch
+
+    client = TestClient(app)
+    with patch("app.main.get_local_interfaces", return_value=[
+        {"name": "enp6s0", "address": "192.168.10.2", "cidr": "192.168.10.2/28"},
+    ]):
+        resp = client.post(
+            "/settings/subnets",
+            data={"name": "VLAN", "cidr": "192.168.10.0/28", "interface": "eth9", "enabled": "on"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 400
+    assert "not found on this host" in resp.json()["detail"]
+    assert "enp6s0" in resp.json()["detail"]
+
+
+def test_add_subnet_interface_not_validated_when_undetectable(temp_db_file):
+    """No `ip` (Windows dev box) -> can't see NICs, so an arbitrary name is accepted."""
+    from unittest.mock import patch
+
+    client = TestClient(app)
+    with patch("app.main.get_local_interfaces", return_value=[]):
+        resp = client.post(
+            "/settings/subnets",
+            data={"name": "VLAN", "cidr": "192.168.10.0/28", "interface": "veth100", "enabled": "on"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    assert _subnets_sync(temp_db_file)[0]["interface"] == "veth100"
+
+
+def test_rescan_all_clears_suppression(temp_db_file):
+    """The global 'Rescan networks' action re-includes every auto-detected network."""
+    import json
+
+    client = TestClient(app)
+    client.post("/settings/subnets/suppress", data={"cidr": "192.168.99.0/24"}, follow_redirects=False)
+    assert json.loads(_read_sync(temp_db_file, "suppressed_subnets")) == ["192.168.99.0/24"]
+
+    resp = client.post("/settings/subnets/rescan-all", follow_redirects=False)
+    assert resp.status_code == 303
+    assert json.loads(_read_sync(temp_db_file, "suppressed_subnets")) == []

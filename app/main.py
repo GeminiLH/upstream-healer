@@ -17,6 +17,7 @@ from app.services.scanner import (
     check_host_reachable,
     find_ip_by_mac,
     get_default_subnets,
+    get_local_interfaces,
     list_subnets,
     load_suppressed_subnets,
     normalize_mac,
@@ -568,7 +569,11 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get
     return templates.TemplateResponse(
         request,
         "settings.html",
-        {"conf": conf, "subnets": subnets},
+        {
+            "conf": conf,
+            "subnets": subnets,
+            "interfaces": get_local_interfaces(),
+        },
     )
 
 
@@ -585,13 +590,36 @@ async def add_subnet(
         raise HTTPException(400, "Subnet name and CIDR are required")
     try:
         import ipaddress as _ip
-        _ip.ip_network(cidr, strict=False)
+        network = _ip.ip_network(cidr, strict=False)
     except ValueError:
         raise HTTPException(400, f"Invalid CIDR: {cidr!r}")
+    if network.prefixlen >= 31:
+        raise HTTPException(
+            400,
+            f"{cidr!r} is a single link/host ({network.prefixlen}), not a network that can be swept. "
+            "Enter the whole network, e.g. 192.168.10.0/24.",
+        )
+
+    # Interface: blank / "auto" = let the scanner pick; otherwise it must name a
+    # real local NIC (catches the old `interface="auto"` trap + typos).
+    iface = interface.strip()
+    if iface.lower() in ("", "auto", "any", "default"):
+        iface = ""
+    if iface:
+        local_ifaces = get_local_interfaces()
+        if local_ifaces:  # only validate when we can actually see the NICs
+            if iface not in {i["name"] for i in local_ifaces}:
+                available = ", ".join(f"{i['name']} ({i['address']})" for i in local_ifaces)
+                raise HTTPException(
+                    400,
+                    f"Interface {iface!r} not found on this host. Available: {available}. "
+                    "Leave the field blank to auto-detect.",
+                )
+
     is_enabled = 1 if enabled == "on" else 0
     await db.execute(
         "INSERT INTO subnets (name, cidr, interface, enabled) VALUES (?, ?, ?, ?)",
-        (name.strip(), str(_ip.ip_network(cidr, strict=False)), interface.strip() or None, is_enabled),
+        (name.strip(), str(network), iface or None, is_enabled),
     )
     await db.commit()
     return RedirectResponse("/settings", status_code=303)
@@ -649,6 +677,20 @@ async def rescan_subnet(cidr: str = Form(...), db: aiosqlite.Connection = Depend
         raise HTTPException(400, f"Invalid CIDR: {cidr!r}")
     current = [c for c in await load_suppressed_subnets(db) if c != cidr]
     await save_suppressed_subnets(db, current)
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/subnets/rescan-all")
+async def rescan_all_subnets(db: aiosqlite.Connection = Depends(get_db)):
+    """Global "Rescan networks": re-include every auto-detected /24.
+
+    Auto subnets are re-discovered live on every render (``get_default_subnets``),
+    so the only persistent state is the suppression list — clearing it brings back
+    everything that is attached again.  Manual subnets are never touched.  This is
+    the "rescan" the help text promises when there is no specific stale row left to
+    act on (e.g. the user deleted every auto network).
+    """
+    await save_suppressed_subnets(db, [])
     return RedirectResponse("/settings", status_code=303)
 
 

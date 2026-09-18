@@ -48,10 +48,23 @@
   <!-- Subnets management -->
   <div class="mt-8 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
     <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
-      <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Subnets</h2>
-      <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
-        Networks to sweep during recovery and diagnostics. Local /24s are auto-detected;
-        add manual overrides (e.g. a /28 on a VLAN) here. If an auto-detected network looks stale (left over from a previous problem), <span class="font-medium">delete</span> it to stop sweeping it, then <span class="font-medium">rescan</span> to re-include it.
+      <div class="flex items-center justify-between gap-4">
+        <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Subnets</h2>
+        <form method="post" action="/settings/subnets/rescan-all"
+              onsubmit="return confirm('Re-include every auto-detected network? This restores any auto networks you had deleted. Manual subnets are not affected.')">
+          <button type="submit"
+            class="inline-flex items-center px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white text-xs font-medium rounded-lg transition">
+            &#8635; Rescan networks
+          </button>
+        </form>
+      </div>
+      <p class="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        Networks the healer sweeps during recovery and diagnostics.
+        <span class="font-medium text-slate-700 dark:text-slate-300">Local /24s are detected automatically</span>;
+        add a manual row (e.g. a /28 on a VLAN) for a network that is not auto-detected.
+        Use <span class="font-medium">delete</span> to stop sweeping a stale auto network and
+        <span class="font-medium">rescan</span> to bring that one back — or hit
+        <span class="font-medium">Rescan networks</span> above to re-detect and re-include all of them at once.
       </p>
     </div>
 
@@ -121,16 +134,30 @@
         <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Friendly label (e.g. Home Wi-Fi, VLAN 20)</p>
       </div>
       <div>
-        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">CIDR</label>
+        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">CIDR (network)</label>
         <input name="cidr" required placeholder="192.168.10.0/24"
                class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
-        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Network CIDR — use /24, not /32</p>
+        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+          The whole network, ending in <span class="font-mono">.0</span>.
+          <span class="font-mono">/24</span>&thinsp;&asymp;&thinsp;256 addresses (a typical home/office LAN);
+          <span class="font-mono">/28</span>&thinsp;&asymp;&thinsp;16 (a small VLAN);
+          <span class="font-mono">/32</span> is a single IP and can&rsquo;t be swept.
+        </p>
       </div>
       <div>
         <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Interface</label>
-        <input name="interface" placeholder="Leave blank for automatic detection"
+        <input name="interface" list="iface-options" placeholder="Leave blank for auto-detect"
                class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
-        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Egress NIC (e.g. enp6s0, eth0, en0)</p>
+        <datalist id="iface-options">
+          {% for i in interfaces %}
+          <option value="{{ i.name }}">{{ i.address }}</option>
+          {% endfor %}
+        </datalist>
+        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+          Leave <span class="font-medium">blank</span> to auto-detect, or pick a NIC from the
+          dropdown{% if interfaces %} ({{ interfaces | length }} detected){% else %} (none detected){% endif %}.
+          Only set it if this network sits on a specific NIC.
+        </p>
       </div>
       <button type="submit"
               class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">

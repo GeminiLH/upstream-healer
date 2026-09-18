@@ -610,6 +610,39 @@ def get_default_subnets() -> list[dict]:
     return found
 
 
+def get_local_interfaces() -> list[dict]:
+    """List locally-attached IPv4 interfaces as ``[{name, address, cidr}]``.
+
+    Reads ``ip -4 -o addr`` and returns one entry per interface (deduped by name;
+    the first address wins) — used to *suggest* and *validate* egress NIC names
+    in the Settings subnet form.  ``lo`` is skipped.  Returns ``[]`` when ``ip``
+    is unavailable (e.g. a Windows dev box), so callers fall back to "no
+    validation possible" rather than failing.  Unlike :func:`get_default_subnets`
+    (which keeps only /24 primaries), this lists *every* interface that has an
+    IPv4 address, so a /28 VLAN NIC still shows up as a suggestion.
+    """
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "-o", "addr"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:  # noqa: BLE001 - no `ip` (Windows) etc. -> no suggestions
+        return []
+
+    found: list[dict] = []
+    seen: set[str] = set()
+    for line in (result.stdout or "").splitlines():
+        match = re.match(r"^\d+:\s+(\S+)\s+inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)\b", line)
+        if not match:
+            continue
+        name, addr, prefix = match.group(1), match.group(2), match.group(3)
+        if name == "lo" or name in seen:
+            continue
+        seen.add(name)
+        found.append({"name": name, "address": addr, "cidr": f"{addr}/{prefix}"})
+    return found
+
+
 async def load_suppressed_subnets(db=None) -> list[str]:
     """Return auto-subnet CIDRs the user has deleted via the settings page.
 

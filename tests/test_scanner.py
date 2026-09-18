@@ -10,6 +10,7 @@ from app.services.scanner import (
     check_host_reachable,
     find_ip_by_mac,
     get_default_subnets,
+    get_local_interfaces,
     get_local_ip_for_network,
     ip_in_subnets,
     list_subnets,
@@ -303,6 +304,32 @@ class TestGetDefaultSubnets:
     def test_empty_when_ip_fails(self):
         with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
             assert get_default_subnets() == []
+
+
+class TestGetLocalInterfaces:
+    def test_lists_every_ipv4_interface_deduped(self):
+        # Unlike get_default_subnets (only /24), this should surface a /28 VLAN NIC
+        # too — it is a valid egress suggestion.  Loops out 127.x and ``lo``.
+        lines = [
+            "1: lo    inet 127.0.0.1/8 scope host lo",
+            "2: eth0    inet 192.168.10.5/24 brd 192.168.10.255 scope global eth0",
+            "3: eth0    inet 192.168.11.5/24 scope global eth0",
+            "4: vlan20  inet 10.20.0.3/28 brd 10.20.0.15 scope global vlan20",
+            "5: ens2    inet 169.254.1.9/16 scope link ens2",
+        ]
+        out = chr(10).join(lines)
+
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            got = get_local_interfaces()
+        names = [i["name"] for i in got]
+        assert names == ["eth0", "vlan20", "ens2"]  # eth0 deduped, lo skipped
+        by_name = {i["name"]: i for i in got}
+        assert by_name["eth0"] == {"name": "eth0", "address": "192.168.10.5", "cidr": "192.168.10.5/24"}
+        assert by_name["vlan20"]["cidr"] == "10.20.0.3/28"  # non-/24 still listed
+
+    def test_empty_when_ip_unavailable(self):
+        with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
+            assert get_local_interfaces() == []
 
 
 class _FakeCursor:
