@@ -179,6 +179,25 @@
 
       <div id="scan-result" class="hidden mt-5">
         <div id="scan-status" class="mb-2 text-sm"></div>
+        <div id="scan-hosts-wrap" class="hidden mb-3">
+          <span class="text-xs uppercase tracking-wider text-slate-400 dark:text-slate-500">
+            Hosts seen on the swept network(s): <span id="scan-hosts-count"></span>
+          </span>
+          <div class="mt-2 overflow-x-auto">
+            <table class="min-w-full text-sm">
+              <thead class="bg-slate-50 dark:bg-slate-900">
+                <tr class="text-left text-xs uppercase text-slate-500 dark:text-slate-400">
+                  <th class="px-3 py-2">Hostname</th>
+                  <th class="px-3 py-2">IP</th>
+                  <th class="px-3 py-2">MAC</th>
+                  <th class="px-3 py-2">Info</th>
+                </tr>
+              </thead>
+              <tbody id="scan-hosts" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="mt-2 text-xs uppercase tracking-wider text-slate-400 dark:text-slate-500">Raw output</div>
         <pre id="scan-output"
           class="bg-slate-900 text-slate-100 text-xs font-mono p-4 rounded-lg overflow-auto max-h-96 whitespace-pre-wrap"></pre>
       </div>
@@ -197,6 +216,21 @@
     const resultEl = document.getElementById('scan-result');
     const statusEl = document.getElementById('scan-status');
     const outputEl = document.getElementById('scan-output');
+    const hostsWrap = document.getElementById('scan-hosts-wrap');
+    const hostsBody = document.getElementById('scan-hosts');
+    const hostsCount = document.getElementById('scan-hosts-count');
+
+    function esc(v) {
+      const d = document.createElement('div');
+      d.textContent = v == null ? '' : String(v);
+      return d.innerHTML;
+    }
+
+    function clearHosts() {
+      hostsBody.innerHTML = '';
+      hostsCount.textContent = '';
+      hostsWrap.classList.add('hidden');
+    }
 
     function _selectedSubnetId() {
       // Manual rows have a numeric id; auto rows have data-cidr but no id.
@@ -226,6 +260,7 @@
       statusEl.className = 'mb-2 text-sm text-slate-500 dark:text-slate-400';
       resultEl.classList.remove('hidden');
       outputEl.textContent = '…';
+      clearHosts();
       try {
         const res = await fetch('/api/diagnostic/scan', {
           method: 'POST',
@@ -243,13 +278,25 @@
           statusEl.textContent = `${method}: ${data.error}`;
           statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
         } else if (data.found_ip) {
-          statusEl.textContent = `Found ${mac} at ${data.found_ip} (via ${data.found_via})`;
+          const fh = (data.hosts || []).find((h) => h.ip === data.found_ip);
+          statusEl.textContent = `Found ${mac} at ${data.found_ip}` +
+            (fh && fh.hostname ? ` (${fh.hostname})` : '') + ` (via ${data.found_via})`;
           statusEl.className = 'mb-2 text-sm text-emerald-600 dark:text-emerald-400';
         } else {
           statusEl.textContent = `No match for ${mac} (${method} finished)`;
           statusEl.className = 'mb-2 text-sm text-amber-600 dark:text-amber-400';
         }
         outputEl.textContent = data.output || '(no output)';
+        const hosts = data.hosts || [];
+        hostsBody.innerHTML = hosts.map((h) =>
+          `<tr class="text-slate-700 dark:text-slate-200">
+            <td class="px-3 py-1.5 font-mono">${h.hostname ? esc(h.hostname) : '<span class="text-slate-400 dark:text-slate-600">—</span>'}</td>
+            <td class="px-3 py-1.5 font-mono">${esc(h.ip)}</td>
+            <td class="px-3 py-1.5 font-mono">${esc(h.mac)}</td>
+            <td class="px-3 py-1.5 text-xs text-slate-500 dark:text-slate-400">${esc(h.detail)}</td>
+          </tr>`).join('');
+        hostsCount.textContent = `(${hosts.length})`;
+        hostsWrap.classList.toggle('hidden', !hosts.length);
       } catch (err) {
         statusEl.textContent = `Request failed: ${err}`;
         statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';

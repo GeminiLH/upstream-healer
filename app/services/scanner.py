@@ -82,13 +82,66 @@ async def run_scan(
         if not error:
             found_ip = _match_mac_in_output(target_mac, output, subnets=subnets)
 
-    return {
+    result = {
         "method": method,
         "found_ip": found_ip,
         "found_via": method if found_ip else None,
         "output": output,
         "error": error,
+        # Structured view of the sweep for the UI (IP / MAC / hostname).
+        "hosts": await resolve_hostnames(_parse_scan_output(output, subnets=subnets)),
     }
+    return result
+
+
+def _parse_scan_output(output: str, subnets: Optional[list[str]] = None) -> list[dict]:
+    """Parse responder lines into ``[{ip, mac, detail}]`` (deduped, subnet-scoped).
+
+    Both scanner output shapes share the same first two columns (IP, MAC):
+    arp-scan's ``ip  mac  vendor`` and scapy's synthetic ``ip  mac  (via net)``.
+    ``detail`` keeps whatever trailing columns exist.  When ``subnets`` is
+    given, responders outside them are dropped (same rule as the raw filter).
+    """
+    hosts: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for line in (output or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            ipaddress.ip_address(parts[0])
+        except ValueError:
+            continue  # banner / summary / note line
+        if subnets and not ip_in_subnets(parts[0], subnets):
+            continue
+        key = (parts[0], normalize_mac(parts[1]))
+        if key in seen:
+            continue
+        seen.add(key)
+        hosts.append({"ip": parts[0], "mac": normalize_mac(parts[1]), "detail": " ".join(parts[2:])})
+    return hosts
+
+
+async def resolve_hostnames(hosts: list[dict], limit: int = 256) -> list[dict]:
+    """Best-effort reverse lookups so the UI can show ``hostname`` per host.
+
+    Mirrors what ``ip neigh`` does: NSS resolution (files, then DNS/PTR).
+    Runs in the thread pool — a slow or wedged resolver must not stall the
+    event loop; failures simply leave ``hostname`` as ``None``.
+    """
+    import socket
+
+    async def _one(host: dict) -> None:
+        try:
+            host["hostname"] = (await asyncio.to_thread(socket.gethostbyaddr, host["ip"])).hostname
+        except Exception:  # noqa: BLE001 - best-effort; display falls back to IP
+            host["hostname"] = None
+
+    if hosts:
+        await asyncio.gather(*(_one(h) for h in hosts[:limit]))
+    for h in hosts:
+        h.setdefault("hostname", None)
+    return hosts
 
 
 def _match_mac_in_output(target_mac: str, output: str, subnets: Optional[list[str]] = None) -> Optional[str]:

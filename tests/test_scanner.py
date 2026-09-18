@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.services.scanner import (
+    _parse_scan_output,
     check_host_reachable,
     find_ip_by_mac,
     get_default_subnets,
@@ -14,10 +15,11 @@ from app.services.scanner import (
     list_subnets,
     load_suppressed_subnets,
     normalize_mac,
-    save_suppressed_subnets,
+    resolve_hostnames,
     run_arp_scan,
     run_scan,
     run_scapy_scan,
+    save_suppressed_subnets,
 )
 
 
@@ -521,6 +523,68 @@ class TestRunArpScanWithSubnets:
         assert error is None
         assert mock_run.call_count == 2
         assert "10.0.0.5" in output and "10.1.0.5" in output
+
+
+class TestParseScanOutput:
+    def test_parses_arp_scan_lines(self):
+        out = (
+            "Starting arp-scan 1.10.0 with 256 hosts\n"
+            "192.168.86.1  aa:bb:cc:dd:ee:01  D-LINK\n"
+            "192.168.86.2  aa:bb:cc:dd:ee:02\n"
+            "14 packets received by filter, 0 packets dropped by kernel\n"
+        )
+        got = _parse_scan_output(out)
+        assert [g["ip"] for g in got] == ["192.168.86.1", "192.168.86.2"]
+        assert got[0]["mac"] == "aa:bb:cc:dd:ee:01"
+        assert got[0]["detail"] == "D-LINK"
+
+    def test_scopes_to_subnets_and_dedupes(self):
+        out = (
+            "10.0.0.5  aa:bb:cc:dd:ee:ff\n"
+            "10.0.0.5  aa:bb:cc:dd:ee:ff\n"
+            "192.168.86.9  11:22:33:44:55:66\n"
+        )
+        got = _parse_scan_output(out, subnets=["10.0.0.0/24"])
+        assert len(got) == 1
+        assert got[0]["ip"] == "10.0.0.5"
+
+    def test_scapy_via_lines(self):
+        out = "192.168.86.10  aa:bb:cc:dd:ee:ff  (via 192.168.86.0/24)\n"
+        got = _parse_scan_output(out)
+        assert got[0]["ip"] == "192.168.86.10"
+        assert got[0]["detail"].startswith("(via")
+
+
+class TestResolveHostnames:
+    async def test_fills_hostname_from_reverse_lookup(self):
+        import types
+
+        calls = []
+
+        def fake(addr):
+            calls.append(addr)
+            return types.SimpleNamespace(hostname="box.lan", aliases=[], ipaddr_list=[addr])
+
+        with patch("socket.gethostbyaddr", side_effect=fake):
+            got = await resolve_hostnames([{"ip": "10.0.0.5", "mac": "aa"}])
+        assert got[0]["hostname"] == "box.lan"
+        assert calls == ["10.0.0.5"]
+
+    async def test_lookup_failure_leaves_none(self):
+        import socket
+
+        with patch("socket.gethostbyaddr", side_effect=socket.gaierror("nope")):
+            got = await resolve_hostnames([{"ip": "10.0.0.5", "mac": "aa"}])
+        assert got[0]["hostname"] is None
+
+
+class TestRunScanHosts:
+    async def test_result_includes_structured_hosts(self):
+        table = "192.168.86.5  aa:bb:cc:dd:ee:ff  VMWARE\n192.168.86.9  11:22:33:44:55:66\n"
+        with patch("app.services.scanner.run_arp_scan", return_value=(None, table, None)), \
+                patch("app.services.scanner.resolve_hostnames", new=AsyncMock(side_effect=lambda hosts: hosts)):
+            result = await run_scan("aa:bb:cc:dd:ee:ff", "arp-scan")
+        assert [h["ip"] for h in result["hosts"]] == ["192.168.86.5", "192.168.86.9"]
 
 
 class TestMatchMacInOutputSubnetScope:
