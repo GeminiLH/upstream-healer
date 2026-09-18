@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import logging
 import re
 import subprocess
@@ -556,7 +557,41 @@ def get_default_subnets() -> list[dict]:
     return found
 
 
-async def list_subnets(db=None) -> list[dict]:
+async def load_suppressed_subnets(db=None) -> list[str]:
+    """Return auto-subnet CIDRs the user has deleted via the settings page.
+
+    Stored as a JSON list under the ``suppressed_subnets`` settings key.
+    Suppressed auto subnets are excluded from scans (see
+    :func:`list_subnets`) but can be re-included with "rescan".
+    """
+    if db is None:
+        return []
+    try:
+        async with db.execute(
+            "SELECT value FROM settings WHERE key = 'suppressed_subnets'"
+        ) as cursor:
+            rows = await cursor.fetchall()
+    except Exception:  # noqa: BLE001 - missing table etc. shouldn't abort scans
+        return []
+    if not rows:
+        return []
+    try:
+        return [str(c) for c in json.loads(rows[0]["value"] or "[]")]
+    except (ValueError, TypeError):
+        return []
+
+
+async def save_suppressed_subnets(db, cidrs: list[str]) -> None:
+    """Persist the suppressed auto-subnet CIDRs (idempotent upsert)."""
+    await db.execute(
+        "INSERT INTO settings (key, value) VALUES ('suppressed_subnets', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (json.dumps(sorted(set(cidrs))),),
+    )
+    await db.commit()
+
+
+async def list_subnets(db=None, include_suppressed: bool = False) -> list[dict]:
     """Return the effective list of subnets to scan.
 
     Merges enabled rows from the ``subnets`` table (when ``db`` is given) with
@@ -564,6 +599,10 @@ async def list_subnets(db=None) -> list[dict]:
     rows win for a given CIDR (their name/interface is preferred); auto rows fill
     in the rest.  Order: enabled manual rows first, then auto rows.  Called once
     per scan so a newly-plugged-in interface is picked up without a restart.
+
+    Auto subnets the user deleted on the settings page (the
+    ``suppressed_subnets`` setting) are excluded unless
+    ``include_suppressed`` is set.  Manual rows are never suppressed.
     """
     manual: list[dict] = []
     if db is not None:
@@ -579,12 +618,16 @@ async def list_subnets(db=None) -> list[dict]:
         except Exception:  # noqa: BLE001 - a missing table etc. shouldn't abort a scan
             logger.exception("list_subnets: could not read subnets table")
 
+    suppressed = set(await load_suppressed_subnets(db))
     auto = get_default_subnets()
     seen = {m["cidr"] for m in manual}
     for a in auto:
-        if a["cidr"] not in seen:
-            manual.append(a)
-            seen.add(a["cidr"])
+        if a["cidr"] in seen:
+            continue
+        if a["cidr"] in suppressed and not include_suppressed:
+            continue
+        manual.append(a)
+        seen.add(a["cidr"])
     return manual
 
 

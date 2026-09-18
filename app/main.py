@@ -16,9 +16,12 @@ from app.services.notifications import send_event
 from app.services.scanner import (
     check_host_reachable,
     find_ip_by_mac,
+    get_default_subnets,
     list_subnets,
+    load_suppressed_subnets,
     normalize_mac,
     run_scan,
+    save_suppressed_subnets,
 )
 
 logging.basicConfig(
@@ -527,6 +530,26 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get
         conf = {r["key"]: r["value"] for r in await cur.fetchall()}
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cur:
         subnets = [dict(r) for r in await cur.fetchall()]
+    # Auto-detected local /24s are not DB rows — merge them in (manual rows win
+    # per CIDR) so the settings page can manage them: delete (suppress) and
+    # rescan (re-include).  Suppressed ones still render, dimmed.
+    suppressed = await load_suppressed_subnets(db)
+    for s in subnets:
+        s["source"] = "manual"
+        s["suppressed"] = False
+    seen = {s["cidr"] for s in subnets}
+    for a in get_default_subnets():
+        if a["cidr"] in seen:
+            continue
+        subnets.append({
+            "id": None,
+            "name": "(auto)",
+            "cidr": a["cidr"],
+            "interface": a["interface"],
+            "enabled": 0 if a["cidr"] in suppressed else 1,
+            "source": "auto",
+            "suppressed": a["cidr"] in suppressed,
+        })
     return templates.TemplateResponse(
         "settings.html",
         {"request": request, "conf": conf, "subnets": subnets},
@@ -570,6 +593,46 @@ async def delete_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(get_d
     # hosts.subnet_id is ON DELETE SET NULL, so pinning references become NULL.
     await db.execute("DELETE FROM subnets WHERE id = ?", (subnet_id,))
     await db.commit()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/subnets/suppress")
+async def suppress_subnet(cidr: str = Form(...), db: aiosqlite.Connection = Depends(get_db)):
+    """Delete an *auto-detected* subnet: suppress it from all scans.
+
+    Auto subnets are not DB rows, so "delete" records the CIDR in the
+    ``suppressed_subnets`` setting (excluded by ``list_subnets``).  The row
+    stays on the page, dimmed, with a rescan button to bring it back.
+    """
+    import ipaddress as _ip
+
+    try:
+        cidr = str(_ip.ip_network(cidr.strip(), strict=False))
+    except ValueError:
+        raise HTTPException(400, f"Invalid CIDR: {cidr!r}")
+    current = await load_suppressed_subnets(db)
+    if cidr not in current:
+        current.append(cidr)
+    await save_suppressed_subnets(db, current)
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/settings/subnets/rescan")
+async def rescan_subnet(cidr: str = Form(...), db: aiosqlite.Connection = Depends(get_db)):
+    """Re-include a deleted auto subnet; detection re-runs on the re-render.
+
+    ``get_default_subnets()`` is live (read from ``ip -4 addr`` on every
+    request), so un-suppressing + redirecting *is* the rescan — if the
+    interface is still attached the subnet reappears as enabled.
+    """
+    import ipaddress as _ip
+
+    try:
+        cidr = str(_ip.ip_network(cidr.strip(), strict=False))
+    except ValueError:
+        raise HTTPException(400, f"Invalid CIDR: {cidr!r}")
+    current = [c for c in await load_suppressed_subnets(db) if c != cidr]
+    await save_suppressed_subnets(db, current)
     return RedirectResponse("/settings", status_code=303)
 
 

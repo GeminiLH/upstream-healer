@@ -81,3 +81,68 @@ def test_routes_registered_subnets():
     assert "/settings/subnets" in paths
     assert "/settings/subnets/{subnet_id}/toggle" in paths
     assert "/settings/subnets/{subnet_id}/delete" in paths
+    # Auto subnets are not DB rows; they are managed by CIDR instead.
+    assert "/settings/subnets/suppress" in paths
+    assert "/settings/subnets/rescan" in paths
+
+async def _read_setting(s, key):
+    import aiosqlite
+
+    async with aiosqlite.connect(s.db_path) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+        return None if row is None else row["value"]
+
+
+def test_subnet_suppress_and_rescan_roundtrip(temp_db_file):
+    """Delete (suppress) an auto subnet, verify it leaves the effective list,
+    rescan it, verify it is back — exactly the stale-subnet workflow."""
+    import json
+    from unittest.mock import patch
+
+    from app.services.scanner import list_subnets
+
+    client = TestClient(app)
+
+    async def _check(include): await list_subnets(None)
+
+    resp = client.post("/settings/subnets/suppress", data={"cidr": "192.168.99.0/24"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert json.loads(_read_sync(temp_db_file, "suppressed_subnets")) == ["192.168.99.0/24"]
+
+    with patch("app.main.get_default_subnets",
+               return_value=[{"cidr": "192.168.99.0/24", "interface": "enp9", "source": "auto"}]):
+        resp = client.get("/settings")
+    assert resp.status_code == 200
+    assert "192.168.99.0/24" in resp.text  # still shown
+    assert "rescan" in resp.text
+
+    resp = client.post("/settings/subnets/rescan", data={"cidr": "192.168.99.0/24"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert json.loads(_read_sync(temp_db_file, "suppressed_subnets")) == []
+
+
+def _read_sync(s, key):
+    import asyncio
+    import aiosqlite
+
+    async def _get():
+        async with aiosqlite.connect(s.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
+                row = await cur.fetchone()
+            return None if row is None else row["value"]
+
+    return asyncio.run(_get())
+
+
+def test_settings_page_renders_auto_subnets(temp_db_file):
+    from unittest.mock import patch
+
+    with patch("app.main.get_default_subnets",
+               return_value=[{"cidr": "10.9.0.0/24", "interface": "enp9", "source": "auto"}]):
+        resp = TestClient(app).get("/settings")
+    assert resp.status_code == 200
+    assert "10.9.0.0/24" in resp.text
+    assert "(auto)" in resp.text

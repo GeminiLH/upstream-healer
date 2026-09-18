@@ -12,7 +12,9 @@ from app.services.scanner import (
     get_local_ip_for_network,
     ip_in_subnets,
     list_subnets,
+    load_suppressed_subnets,
     normalize_mac,
+    save_suppressed_subnets,
     run_arp_scan,
     run_scan,
     run_scapy_scan,
@@ -301,12 +303,72 @@ class TestGetDefaultSubnets:
             assert get_default_subnets() == []
 
 
+class _FakeCursor:
+    """Test double: awaitable AND usable as an async context, like aiosqlite's cursor."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __await__(self):
+        async def _coro():
+            return self
+
+        return _coro().__await__()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return None
+
+    async def fetchall(self):
+        return self._rows
+
+
+class _SuppressedDb:
+    """Test double of an aiosqlite connection for the suppressed-subnet helpers."""
+
+    def __init__(self, rows=None):
+        self.rows = rows or []
+        self.last_sql = None
+        self.last_params = None
+        self.committed = False
+
+    def execute(self, sql, params=None):
+        self.last_sql = sql
+        self.last_params = params
+        return _FakeCursor(self.rows)
+
+    async def commit(self):
+        self.committed = True
+
+
+class TestSuppressedSubnets:
+    async def test_load_empty_when_key_absent(self):
+        assert await load_suppressed_subnets(_SuppressedDb()) == []
+
+    async def test_save_then_load_roundtrip(self):
+        import json
+
+        db = _SuppressedDb()
+        await save_suppressed_subnets(db, ["10.0.0.0/24", "10.1.0.0/24"])
+        assert json.loads(db.last_params[0]) == ["10.0.0.0/24", "10.1.0.0/24"]
+        assert db.committed
+        db.rows = [{"value": db.last_params[0]}]
+        assert await load_suppressed_subnets(db) == ["10.0.0.0/24", "10.1.0.0/24"]
+
+    async def test_load_tolerates_bad_json(self):
+        assert await load_suppressed_subnets(_SuppressedDb([{"value": "not-json"}])) == []
+
+
 class TestListSubnets:
     class _FakeDb:
-        def __init__(self, rows):
+        def __init__(self, rows, suppressed=None):
             self._rows = rows
+            self._suppressed = suppressed or []
 
         def execute(self, sql, params=None):
+            self._sql = sql
             return self
 
         async def __aenter__(self):
@@ -316,6 +378,10 @@ class TestListSubnets:
             return None
 
         async def fetchall(self):
+            if "suppressed_subnets" in self._sql:
+                import json as _json
+
+                return [{"value": _json.dumps(self._suppressed)}]
             return self._rows
 
     async def test_merges_manual_and_auto(self):
@@ -342,6 +408,31 @@ class TestListSubnets:
         with patch("app.services.scanner.get_default_subnets", return_value=auto):
             got = await list_subnets(self._FakeDb(rows))
         assert len(got) == 1
+        assert got[0]["source"] == "manual"
+
+    async def test_suppressed_auto_subnet_is_excluded(self):
+        """An auto subnet the user deleted on the settings page must drop out
+        of the effective scan list (and of every scan, since they all go
+        through list_subnets); manual rows are unaffected."""
+        rows = [{"id": 1, "name": "manual", "cidr": "192.168.70.0/24", "interface": None}]
+        auto = [
+            {"cidr": "192.168.86.0/24", "interface": "enp6s0", "source": "auto"},
+            {"cidr": "192.168.99.0/24", "interface": "enp6s1", "source": "auto"},
+        ]
+        db = self._FakeDb(rows, suppressed=["192.168.99.0/24"])
+        with patch("app.services.scanner.get_default_subnets", return_value=auto):
+            got = await list_subnets(db)
+            assert [g["cidr"] for g in got] == ["192.168.70.0/24", "192.168.86.0/24"]
+            got_all = await list_subnets(db, include_suppressed=True)
+            assert [g["cidr"] for g in got_all] == ["192.168.70.0/24", "192.168.86.0/24", "192.168.99.0/24"]
+
+    async def test_manual_row_wins_over_suppressed_auto_same_cidr(self):
+        rows = [{"id": 1, "name": "lan", "cidr": "10.0.0.0/24", "interface": "eth0"}]
+        auto = [{"cidr": "10.0.0.0/24", "interface": "eth0", "source": "auto"}]
+        db = self._FakeDb(rows, suppressed=["10.0.0.0/24"])
+        with patch("app.services.scanner.get_default_subnets", return_value=auto):
+            got = await list_subnets(db)
+        assert [g["cidr"] for g in got] == ["10.0.0.0/24"]
         assert got[0]["source"] == "manual"
 
 
