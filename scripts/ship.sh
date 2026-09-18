@@ -56,17 +56,23 @@ step "2/5 commit"
 [ ${#PATHS[@]} -eq 0 ] && PATHS=(.)
 $GIT add -- "${PATHS[@]}" </dev/null
 if $GIT diff --cached --quiet </dev/null; then
-  echo "nothing staged after 'git add' — nothing to ship, aborting" >&2
-  exit 2
+  say "nothing to commit — resuming: will wait on the pipeline for current HEAD, then deploy"
+  SKIP_PUSH=1
+else
+  $GIT commit -m "$MSG" </dev/null
+  SKIP_PUSH=0
 fi
-$GIT commit -m "$MSG" </dev/null
 SHA=$($GIT rev-parse HEAD </dev/null)
-say "committed ${SHA:0:7}"
+say "HEAD = ${SHA:0:7}"
 
 # ---------------- 3. push to gitlab (primary) ----------------
 step "3/5 push → gitlab"
-timeout 180 $GIT push gitlab HEAD:main </dev/null
-say "pushed ${SHA:0:7}"
+if [ "$SKIP_PUSH" = 1 ]; then
+  say "no new commit — push skipped (re-run/resume)"
+else
+  timeout 180 $GIT push gitlab HEAD:main </dev/null
+  say "pushed ${SHA:0:7}"
+fi
 # ---------------- 4. wait for the pipeline's auto jobs ----------------
 # NB: poll the JOBS, not the pipeline status — with pending manual jobs the
 # pipeline status is "manual" forever.
@@ -78,7 +84,7 @@ TOKEN="${!GITLAB_TOKEN_VAR:-}"
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT_ID"
 
 PID=""
-for _ in $(seq 1 30); do
+for _ in $(seq 1 60); do
   PID=$(WANT="$SHA" curl -s -m 10 -H "PRIVATE-TOKEN: $TOKEN" "$API/pipelines?ref=main&per_page=5" \
     | python3 -c '
 import sys, json, os
@@ -91,7 +97,7 @@ except Exception:
   [ -n "$PID" ] && break
   sleep 5
 done
-[ -n "$PID" ] || { echo "no pipeline for ${SHA:0:7} appeared within 150s" >&2; exit 1; }
+[ -n "$PID" ] || { echo "no pipeline for ${SHA:0:7} appeared within 5 min (runner lag?)" >&2; exit 1; }
 say "pipeline $PID created — watching auto jobs (10s cadence)"
 
 DD=""
