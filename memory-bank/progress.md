@@ -123,6 +123,14 @@ rendering the new width + hint text and still posting `name/cidr/interface` to
 
 ## Done (recent history)
 
+- **`412bda5` (2026-09-17)**: memory-bank commit (primary-repo rule + NFS
+  gotchas) → pipeline 160 (`lint` / `unit_tests` / `build_image` all green) →
+  `deploy_dev` job 811 **success** (34s); dev UI live (HTTP 200 on
+  `192.168.86.38:8787`).
+- **Fast ship workflow added: `scripts/ship.sh`** (2026-09-17) — one command
+  for tests → commit → push gitlab → auto jobs → `deploy_dev`, ~6 min
+  end-to-end (replaces the hand-rolled poll loops; see decisions.md).
+
 - Scapy route-bug fix (`00062a6`) is deployed to dev (pipeline 151). Live-verify
   on the dev box when convenient: pick a host pinned to a subnet and run a *scapy*
   diagnostic scan — it must sweep and return the full responder table (no
@@ -134,6 +142,10 @@ rendering the new width + hint text and still posting `name/cidr/interface` to
 
 ## Conventions (keep these when editing)
 
+- **Ship workflow = `bash scripts/ship.sh`** (tests → commit → push gitlab →
+  auto jobs → `deploy_dev`, ~6 min, non-interactive). Do not re-invent the
+  poll loops by hand — and never poll the *pipeline status* for completion
+  (it sticks at `manual` with the pending manual jobs); poll the jobs.
 - CLI: argparse subcommands; success → JSON to stdout; failure → message +
   non-zero exit.
 - Timestamps: use `parse_timestamp`/`format_timestamp` from `app/config.py`.

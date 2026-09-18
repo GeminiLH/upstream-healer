@@ -90,11 +90,25 @@ collection with `ValidationError: extra_forbidden`.
 - Pipeline stages (pipeline #36 on HEAD `0311e56e`, verified 2026-09-15):
   `lint`, `unit_tests`, `build_image` → `deploy_dev` → `dev_down` (all
   success); manual jobs: `deploy_test`, `deploy_production`, `dev_debug`.
-- **Post-commit workflow**: push to `gitlab/main` → poll
-  `GET /api/v4/projects/4/pipelines?ref=main&per_page=1` until `status` is a
-  finished state (success/failed/canceled) → list jobs, report failures with
-  `trace` → manual deploy jobs require explicit user confirmation before
-  triggering.
+- **Fast ship workflow — use `scripts/ship.sh` (2026-09-17):**
+  `scripts/ship.sh -m "<msg>" [paths...]` runs pytest + ruff (fail fast) →
+  commit → `git push gitlab HEAD:main` → waits for the auto jobs
+  (`lint` / `unit_tests` / `build_image`, 10s cadence) → **plays
+  `deploy_dev`** (sandbox dev box, safe by default; `--no-deploy` to stop
+  after the green auto jobs) → reports with a trace tail on any failure.
+  Total wall time ≈ 6 min. Invoke as `bash scripts/ship.sh …` (chmod is
+  blocked on the NFS share). Runs fully non-interactive (all git guard
+  env/flags from the gotchas below are baked in).
+  - ⚠️ **Poll the JOBS, never the pipeline status, to detect "auto done":**
+    with the pending manual jobs (`deploy_test` / `deploy_production` /
+    `dev_down` / `dev_debug`) the pipeline status sticks at `manual`
+    *forever* — a "wait until finished" poller spins indefinitely (cost
+    ~20 min in one session, 2026-09-17).
+  - `deploy_test` / `deploy_production` remain **manual + explicit user
+    confirmation only** — the ship script never touches them.
+  - Token: `GITLAB_PIPELINE_TOKEN` from the git-ignored `.env.local` —
+    sufficient for pipeline/job reads and `POST /api/v4/projects/4/jobs/:id/play`
+    (verified for `deploy_dev`, job 811 → success in 34s).
 - **Manual jobs can be triggered with the pipeline token** (verified
   2026-09-15, `dev_debug` job 638 → success):
   `POST /api/v4/projects/4/jobs/:id/play` with `GITLAB_PIPELINE_TOKEN`.
