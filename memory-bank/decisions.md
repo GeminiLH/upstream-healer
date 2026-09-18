@@ -61,20 +61,24 @@ Access is in the repo-root **`.env.local`** file (git-ignored; loaded with
 `set -a; . ./.env.local; set +a`). **Never commit it**, never print its values
 in logs or the memory bank.
 
-**Token semantics (verified 2026-09-18 — do not guess):** `.env.local` defines
-two tokens. `GITLAB_READ_TOKEN` is the one for API work — it passes
-`GET /projects/:id` AND plays manual jobs. `GITLAB_PIPELINE_TOKEN` lists
-pipelines but gets **403 on `/projects/:id`** (runner-oriented token).
-`ship.sh` therefore prefers `GITLAB_READ_TOKEN`. Two traps that cost 10+ min
-of debugging: (1) an **empty** token surfaces as `404 Project Not Found`, *not*
-401/403 — so fail-fast preflight `GET /api/v4/projects/:id == 200` before any
-poll loop, and never treat a 404 as "nothing there"; (2) `${!VAR}` indirect
-expansion with an unset VAR is a fatal bash error that left `TOKEN` empty for
-the whole script — read token variables directly. Also: on this Pi GitLab
-instance, *pipeline creation* can lag the push by 1–6 min (observed 1 min and
-5.5 min for the same flow); `ship.sh` tolerates it with a 10-min appear window
-and is **resumable** — re-running with nothing to commit skips commit+push and
-resumes pipeline watch + deploy for the current HEAD.
+**Token semantics (verified 2026-09-18 — do not guess/swap):** `.env.local`
+defines two tokens with *opposite* abilities. `GITLAB_READ_TOKEN` is the
+`Cline_API` PAT, scope `read_api` — every project-scoped GET we poll works
+(`/projects/:id`, pipeline lists, job status, trace) but **POST play → 403
+`insufficient_scope`**. `GITLAB_PIPELINE_TOKEN` is a job token (no user behind
+it) — **the only one that can play manual jobs** (every `deploy_dev` play so
+far has used it — jobs 811/819/835) but project GETs → 403. So: all *reads*
+use the read token, the *play* POST uses the pipeline token — that is how
+`ship.sh` is wired. Traps that cost 10+ min of debugging: (1) an **empty**
+token surfaces as `404 Project Not Found`, *not* 401/403 — so fail-fast
+preflight `GET /api/v4/projects/:id == 200` before any poll loop, and never
+treat a 404 as "nothing there"; (2) `${!VAR}` indirect expansion with an unset
+VAR is a fatal bash error that left the token empty for the whole script —
+read token variables directly. Also: on this Pi GitLab instance, *pipeline
+creation* can lag the push by 1–6 min (observed 1 min and 5.5 min for the same
+flow); `ship.sh` tolerates it with a 10-min appear window and is **resumable**
+— re-running with nothing to commit skips commit+push and resumes pipeline
+watch + deploy for the current HEAD.
 ⚠️ Do NOT rename it back to `.env`: `Settings` (app/config.py) declares
 `model_config = {"env_file": ".env"}` with pydantic's `extra="forbid"`, so any
 foreign key in `.env` (like these tokens) breaks the app AND all test

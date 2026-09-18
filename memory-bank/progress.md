@@ -130,8 +130,9 @@ rendering the new width + hint text and still posting `name/cidr/interface` to
 - **Fast ship workflow added: `scripts/ship.sh`** (2026-09-17) — one command
   for tests → commit → push gitlab → auto jobs → `deploy_dev`, ~6 min
   end-to-end (replaces the hand-rolled poll loops; see decisions.md). Hardened
-  2026-09-18: token selection (`GITLAB_READ_TOKEN`), API preflight, 10-min
-  pipeline-appear window, loud play-failure, resumable re-runs.
+  2026-09-18: token split (read token for polls, pipeline token for the play
+  POST), API preflight, 10-min pipeline-appear window, loud play-failure,
+  resumable re-runs.
 
 - Scapy route-bug fix (`00062a6`) is deployed to dev (pipeline 151). Live-verify
   on the dev box when convenient: pick a host pinned to a subnet and run a *scapy*

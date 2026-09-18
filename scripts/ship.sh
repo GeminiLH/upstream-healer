@@ -25,13 +25,19 @@ export GIT_ASKPASS=true
 export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=20}"
 GIT="git -c core.pager=cat"
 # ---------------- gitlab api config ----------------
-# .env.local (uncommitted) defines both token vars. Which one works where:
-#   GITLAB_READ_TOKEN        — API reads (/projects, /pipelines) AND job play
-#   GITLAB_PIPELINE_TOKEN    — pipelines LIST works, but /projects -> 403
-# Direct variable reads only: ${!VAR} indirect expansion crashed a debug run
-# (bash "invalid indirect expansion") and poisoned TOKEN for the whole script.
+# .env.local (uncommitted) defines both token vars. Which one does what
+# (VERIFIED 2026-09-18 — do NOT swap):
+#   GITLAB_READ_TOKEN      — "Cline_API" PAT, scope read_api: every project-
+#                            scoped GET works; POST play -> 403 insufficient_scope
+#   GITLAB_PIPELINE_TOKEN  — job token (no user): the ONLY one that can POST
+#                            /projects/:id/jobs/:id/play (plays deploy_dev);
+#                            project GETs -> 403, so never use it for reads.
+# => all reads/polls use TOKEN, the play POST uses PLAY_TOKEN.
+# Direct variable reads only: ${!VAR} indirect expansion with an unset VAR is
+# a fatal bash error that once poisoned the token for the whole script.
 if [ -f .env.local ]; then set -a; . ./.env.local; set +a; fi
-TOKEN="${GITLAB_READ_TOKEN:-${GITLAB_PIPELINE_TOKEN:-}}"
+TOKEN="${GITLAB_READ_TOKEN:-}"
+PLAY_TOKEN="${GITLAB_PIPELINE_TOKEN:-}"
 GITLAB_URL="${GITLAB_URL:-http://192.168.86.38:32769}"
 GITLAB_PROJECT_ID="${GITLAB_PROJECT_ID:-4}"
 
@@ -85,6 +91,9 @@ fi
 # pipeline status is "manual" forever.
 step "4/5 pipeline auto jobs for ${SHA:0:7}"
 [ -n "$TOKEN" ] || { echo "no gitlab token: set GITLAB_READ_TOKEN in .env.local (repo root)" >&2; exit 1; }
+if [ "$DEPLOY" = 1 ]; then
+  [ -n "$PLAY_TOKEN" ] || { echo "no play token: set GITLAB_PIPELINE_TOKEN in .env.local (repo root)" >&2; exit 1; }
+fi
 API="$GITLAB_URL/api/v4/projects/$GITLAB_PROJECT_ID"
 
 # preflight: one cheap API call so a bad token/URL fails in 1s, not 5 min of
@@ -156,7 +165,7 @@ done
 # ---------------- 5. deploy_dev (manual play) ----------------
 if [ "$DEPLOY" = 1 ] && [ -n "$DD" ]; then
   step "5/5 deploy_dev (job $DD) — playing manual job"
-  PLAYRESP=$(curl -s -m 15 -w '\n%{http_code}' -X POST -H "PRIVATE-TOKEN: $TOKEN" "$API/jobs/$DD/play")
+  PLAYRESP=$(curl -s -m 15 -w '\n%{http_code}' -X POST -H "PRIVATE-TOKEN: $PLAY_TOKEN" "$API/jobs/$DD/play")
   PLAYCODE=$(echo "$PLAYRESP" | tail -1)
   case "$PLAYCODE" in
     2*|3*) say "deploy_dev job $DD played" ;;
