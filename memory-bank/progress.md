@@ -1,30 +1,48 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-18 — **fast-ship workflow live and verified**: `scripts/ship.sh`
-> (committed `edaed88`, deployed via pipeline 165) ships in ~2.5 min end-to-end.
-> `3bc45e1` (the feature commit) is live on dev; all other commits are tooling.
+> Snapshot: 2026-09-18 — **subnet + diagnostic batch (F1–F4) shipped & pushed.**
 > **Verify before acting**: `git status`, `git log -5`, then
-> `python3 -m pytest tests/ -q`.
+> `python3 -m pytest tests/ -q` (currently 170 passed, ruff clean).
 
 ## Current state
 
 - Branch: `main` (tracking `gitlab/main`; GitLab is the primary repo, see
-  decisions.md; a bare `git push` goes to `gitlab`).
-- HEAD: `edaed88` — the final `ship.sh` hardening (robust dev-UI check);
-  **pipeline 165 all-green**, `deploy_dev` job 851 **success**, dev UI
-  `192.168.86.38:8787` → HTTP 200 (verified independently of the ship run).
-- Working tree was clean until this snapshot edit. (Predecessors today:
-  `de0d337` token split + docs, `2831277` hardening, `3bc45e1` ship.sh v1 +
-  memory-bank — all shipped and deployed to dev.)
-- Leftovers: pipelines 161/162 still carry *unplayed* manual `deploy_dev`
-  jobs (old SHAs, app code identical to what is live) — safe to ignore/abort.
+  decisions.md; push explicitly with `git push gitlab main` — never bare).
+- HEAD: `50e9d31` == `gitlab/main` (verified via `git fetch gitlab`;
+  `git rev-list --left-right --count gitlab/main...HEAD` → `0 0`). Working
+  tree clean except three git-ignored scratch files (`.diag.txt`, `.wcm2.txt`,
+  `.wctmp.txt`). **Health: 170 tests pass, ruff clean** (verified on system
+  `python3` 3.13; the repo `.venv` is a non-working Windows venv on this NFS
+  share — see context.md).
+- The subnet/diagnostic batch that shipped since the 2026-09-17 snapshot
+  (all pushed to gitlab/main, all covered by tests):
+  - `8e2f674` **F1** — *actively sweep only selected subnets; never leak
+    unselected networks.* Rewrote the scapy/arp-scan selection path in
+    `app/services/scanner.py`; the monitor + diagnostic now sweep exactly the
+    subnets the user selected (or the merged auto+manual set) and never bleed
+    into unselected networks. + `app/main.py`, `diagnostic.html`, +tests.
+  - `d10a393` **F2** — *manage auto-detected subnets in Settings.* Added
+    per-CIDR **rescan** (re-include a previously-suppressed auto network) and
+    **suppress/delete** (stop sweeping a stale auto network) to the Subnets
+    card in `settings.html`; new `/settings/subnets/rescan` + `/suppress`
+    handlers in `app/main.py`; suppression storage in `scanner.py`. +tests.
+  - `0bfc2e5` **F3** — *show hostnames in diagnostic results.* Scanner does a
+    reverse-DNS lookup on responders; `diagnostic.html` renders a structured
+    hosts table (not a raw dump). +tests.
+  - `50e9d31` **F4** — *framework-compat fix.* Migrated `TemplateResponse`
+    calls to the new signature (bumped `fastapi` 0.115.6 → 0.141.1, pinned
+    `starlette` 0.49.3), and suppressed the
+    `anyio.abc.BlockingPortal` **DeprecationWarning** via a `filterwarnings`
+    line in `pytest.ini` (this is the startup/test warning you may still see
+    if the pin drifts). Touched `app/main.py`, `pytest.ini`, `requirements.txt`.
+- The **Settings widen+clarify** task (previously the "Next task") is now
+  **done** — `settings.html` is `max-w-3xl` and the three subnet fields carry
+  the clarifying hints (see decisions.md "UI / templates"). Nothing is queued
+  in the notes; awaiting the next user request.
+- Leftovers from earlier: old manual `deploy_*` jobs on stale pipelines —
   `deploy_test` / `deploy_production` / `dev_down` / `dev_debug` in every
   recent pipeline remain `manual` — **trigger only on explicit user
   confirmation**.
-- **Health: 152 tests pass, ruff clean** (run inside every ship, last: 165).
-- The multi-subnet feature + scapy route-bug fix (`00062a6`) remain deployed;
-  the Settings-page widening ("next task" below) is still open — when it
-  ships, run it through `scripts/ship.sh` like everything else.
 
 ## Multi-subnet design + file map
 
@@ -65,15 +83,22 @@
   `host_form.html` (subnet select). No new nav link — subnets live in Settings.
 
 
-## Next task (UI polish — Settings screen)
+## Next task — (none queued)
+
+> The Settings-screen task below was **completed** (see the F-batch entries in
+> "Current state" and the diff of `app/templates/settings.html`). It is recorded
+> here only for history. **Nothing is currently queued — ask the user what to
+> build next** before starting new feature work.
+
+### (done) UI polish — Settings screen
 
 User request (2026-09-16, mid-task): *"make the settings screen wider for entering
 new subnets, but also clarify what information you expect in the fields, including
 what interfaces you expect. There is no reason to keep the screen narrow, but it
-should size for a phone."*
-
-**Target file: `app/templates/settings.html`** (template-only; no backend change).
-Three pieces:
+should size for a phone."* — **DONE**: page is `max-w-3xl`; the three subnet
+fields now carry clarifying hints (Name = friendly label; CIDR = "use /24, not
+/32"; Interface = "leave blank for automatic detection" + NIC examples). Three
+pieces:
 
 1. **Widen the page.** The whole page is wrapped in `<div class="max-w-xl">`
    (line 5) = max 576px — that is the bottleneck. Change to `max-w-3xl` or
