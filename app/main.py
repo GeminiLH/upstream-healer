@@ -94,9 +94,15 @@ async def dashboard(request: Request, db: aiosqlite.Connection = Depends(get_db)
             event["created_at_display"] = format_timestamp(event["created_at"])
 
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
-        {"request": request, "hosts": hosts, "events": events, "now": current_time(),
-         "overall_status": overall_status, "overall_status_label": overall_status_label},
+        {
+            "hosts": hosts,
+            "events": events,
+            "now": current_time(),
+            "overall_status": overall_status,
+            "overall_status_label": overall_status_label,
+        },
     )
 
 
@@ -116,7 +122,9 @@ async def host_events(host_id: int, request: Request, db: aiosqlite.Connection =
             event["created_at_display"] = format_timestamp(event["created_at"])
 
     return templates.TemplateResponse(
-        "host_events.html", {"request": request, "host": dict(host), "events": events}
+        request,
+        "host_events.html",
+        {"host": dict(host), "events": events},
     )
 
 
@@ -139,9 +147,9 @@ async def add_host_form(request: Request, db: aiosqlite.Connection = Depends(get
     async with db.execute("SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1 ORDER BY name") as cur:
         subnets = [dict(r) for r in await cur.fetchall()]
     return templates.TemplateResponse(
+        request,
         "host_form.html",
         {
-            "request": request,
             "host": None,
             "proxy_hosts": proxy_hosts,
             "subnets": subnets,
@@ -211,9 +219,9 @@ async def edit_host_form(host_id: int, request: Request, db: aiosqlite.Connectio
     async with db.execute("SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1 ORDER BY name") as cur:
         subnets = [dict(r) for r in await cur.fetchall()]
     return templates.TemplateResponse(
+        request,
         "host_form.html",
         {
-            "request": request,
             "host": dict(host),
             "proxy_hosts": proxy_hosts,
             "subnets": subnets,
@@ -344,18 +352,23 @@ async def notifications_page(request: Request, db: aiosqlite.Connection = Depend
             ch["rules"] = {r["event_type"]: r["enabled"] for r in await cur.fetchall()}
 
     return templates.TemplateResponse(
+        request,
         "notifications.html",
-        {"request": request, "channels": channels, "event_types": [
-            "unreachable", "scan_started", "ip_found", "updated", "recovered", "failed", "manual"
-        ]},
+        {
+            "channels": channels,
+            "event_types": [
+                "unreachable", "scan_started", "ip_found", "updated", "recovered", "failed", "manual"
+            ],
+        },
     )
 
 
 @app.get("/notifications/add/telegram", response_class=HTMLResponse)
 async def add_telegram_form(request: Request):
     return templates.TemplateResponse(
+        request,
         "channel_telegram.html",
-        {"request": request, "channel": None},
+        {"channel": None},
     )
 
 
@@ -376,8 +389,9 @@ async def edit_telegram_form(
     channel = dict(channel)
     channel["config"] = json.loads(channel["config"])
     return templates.TemplateResponse(
+        request,
         "channel_telegram.html",
-        {"request": request, "channel": channel},
+        {"channel": channel},
     )
 
 
@@ -441,8 +455,9 @@ async def edit_telegram(
 @app.get("/notifications/add/email", response_class=HTMLResponse)
 async def add_email_form(request: Request):
     return templates.TemplateResponse(
+        request,
         "channel_email.html",
-        {"request": request, "channel": None},
+        {"channel": None},
     )
 
 
@@ -551,8 +566,9 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get
             "suppressed": a["cidr"] in suppressed,
         })
     return templates.TemplateResponse(
+        request,
         "settings.html",
-        {"request": request, "conf": conf, "subnets": subnets},
+        {"conf": conf, "subnets": subnets},
     )
 
 
@@ -704,9 +720,9 @@ async def diagnostic_page(request: Request, db: aiosqlite.Connection = Depends(g
     ]
 
     return templates.TemplateResponse(
+        request,
         "diagnostic.html",
         {
-            "request": request,
             "npm_hosts": npm_hosts,
             "npm_available": npm.available,
             "scan_types": scan_types,
