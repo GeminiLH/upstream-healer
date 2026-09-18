@@ -607,6 +607,7 @@ class ScanRequest(BaseModel):
     target_mac: str = Field(..., description="MAC address to look for (normalised server-side)")
     method: str = Field("arp-scan", description="'arp-scan' or 'scapy'")
     subnet_id: int = Field(0, description="Optional subnet id to scope the scan; 0 = all known subnets")
+    subnet_cidr: str = Field("", description="Optional CIDR for auto-detected subnets (they have no DB id)")
 
 
 @app.get("/diagnostic", response_class=HTMLResponse)
@@ -709,6 +710,14 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
             row = await cur.fetchone()
             if row:
                 subnet_ids = [row["cidr"]]
+    if not subnet_ids and body.subnet_cidr.strip():
+        # Auto-detected subnets have no DB id — the UI targets them by CIDR.
+        try:
+            import ipaddress as _ip
+
+            subnet_ids = [str(_ip.ip_network(body.subnet_cidr.strip(), strict=False))]
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid subnet CIDR: {body.subnet_cidr!r}")
     if not subnet_ids:
         subnet_ids = [s["cidr"] for s in await list_subnets(db)]
 

@@ -217,9 +217,12 @@
       }
       const method = methodEl.value;
       const subnetId = _selectedSubnetId();
+      // Auto-detected subnets have no DB id; the server scopes by CIDR.
+      const subnetCidr = subnetEl ? ((subnetEl.selectedOptions[0] || {}).dataset?.cidr || "") : "";
+      const scope = subnetId ? subnetId : subnetCidr;
       runBtn.disabled = true;
       runLabel.textContent = 'Running…';
-      statusEl.textContent = `Running ${method} for ${mac}${subnetId ? ' on subnet ' + subnetId : ''}…`;
+      statusEl.textContent = `Running ${method} for ${mac}${scope ? ' on ' + scope : ''}…`;
       statusEl.className = 'mb-2 text-sm text-slate-500 dark:text-slate-400';
       resultEl.classList.remove('hidden');
       outputEl.textContent = '…';
@@ -227,7 +230,7 @@
         const res = await fetch('/api/diagnostic/scan', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target_mac: mac, method: method, subnet_id: subnetId }),
+          body: JSON.stringify({ target_mac: mac, method: method, subnet_id: subnetId, subnet_cidr: subnetCidr }),
         });
         const data = await res.json();
         if (!res.ok) {

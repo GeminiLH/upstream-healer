@@ -1,6 +1,8 @@
 """Smoke tests for the FastAPI app (lifespan is NOT triggered, no network)."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -33,6 +35,33 @@ def test_scan_endpoint_rejects_empty_mac(temp_db_file):
     resp = client.post("/api/diagnostic/scan", json={"target_mac": "   ", "method": "arp-scan"})
     assert resp.status_code == 400
     assert "target_mac is required" in resp.json()["detail"]
+
+
+def test_scan_endpoint_scopes_to_subnet_cidr(temp_db_file):
+    """Auto-detected subnets have no DB id — the UI targets them by CIDR."""
+    client = TestClient(app)
+    with patch(
+        "app.main.run_scan",
+        new=AsyncMock(
+            return_value={"method": "arp-scan", "found_ip": None, "found_via": None, "output": "", "error": None}
+        ),
+    ) as mock_scan:
+        resp = client.post(
+            "/api/diagnostic/scan",
+            json={"target_mac": "aa:bb:cc:dd:ee:ff", "method": "arp-scan", "subnet_id": 0, "subnet_cidr": "192.168.86.0/24"},
+        )
+    assert resp.status_code == 200
+    assert mock_scan.call_args.kwargs.get("subnets") == ["192.168.86.0/24"]
+
+
+def test_scan_endpoint_rejects_invalid_subnet_cidr(temp_db_file):
+    client = TestClient(app)
+    resp = client.post(
+        "/api/diagnostic/scan",
+        json={"target_mac": "aa:bb:cc:dd:ee:ff", "method": "arp-scan", "subnet_cidr": "not-a-cidr"},
+    )
+    assert resp.status_code == 400
+    assert "Invalid subnet CIDR" in resp.json()["detail"]
 
 
 def test_health_endpoint():

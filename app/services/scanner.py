@@ -106,68 +106,199 @@ def _match_mac_in_output(target_mac: str, output: str, subnets: Optional[list[st
 
 
 def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], str, Optional[str]]:
-    """Run ``arp-scan -l`` and report the raw table.
+    """Actively sweep the requested networks with ``arp-scan``.
 
     Returns ``(found_ip, raw_output, error)`` where ``found_ip`` is ``None``
-    (there is no single "the" target for a full list) and ``raw_output`` is the
-    combined stdout/stderr. ``error`` is set only when the binary is missing or
-    the process fails to run. Cheap, synchronous: wraps the subprocess call so
-    a test can drive it from a thread pool or a TestClient without an event
-    loop of its own.
+    (there is no single "the" target for a full list).
 
-    ``subnets`` (a list of CIDRs) optionally constrains the sweep to specific
-    local networks via ``-i``.  For each subnet we look up the local interface
-    that owns it (via :func:`get_local_ip_for_network` + :func:`get_default_subnets`);
-    if a subnet has no local interface we skip it with a note in the output.
-    When ``subnets`` is ``None`` we keep the historic ``-l`` (all interfaces).
+    * ``subnets`` (list of CIDRs): each network with a local interface is
+      swept with ``arp-scan -q --retry=3 -i <iface> <cidr>``.  Networks with
+      no local interface are skipped with a note, and the output is filtered
+      to responders inside the requested networks — an unselected network
+      can never leak its hosts into the results (the old implicit no-``-i``
+      fall-back swept the default interface and surfaced exactly that).
+      When *nothing* is scannable the sweep is skipped entirely and
+      ``error`` says why, instead of scanning an unselected network.
+    * ``subnets=None``: every auto-discovered local /24 is swept (falling
+      back to the primary IP's /24, then the historic passive
+      ``arp-scan -l`` table dump if the box exposes no /24 at all).
+
+    Cheap, synchronous: wraps the subprocess calls so a test can drive it
+    from a thread pool or a TestClient without an event loop of its own.
     """
-    interfaces: list[str] = []
     notes: list[str] = []
+    sweeps: list[tuple[str, str]] = []  # (iface, cidr)
+    requested: list[str] = []
+
     if subnets:
         discovered = {d["cidr"]: d["interface"] for d in get_default_subnets()}
         for cidr in subnets:
             try:
-                network = ipaddress.ip_network(cidr, strict=False)
+                network = ipaddress.ip_network((cidr or "").strip(), strict=False)
             except ValueError:
                 notes.append(f"(skipped unparseable subnet {cidr!r})")
                 continue
-            iface = discovered.get(str(network))
-            if iface:
-                if iface not in interfaces:
-                    interfaces.append(iface)
-            elif network.prefixlen >= 31:
-                # A /32 (single host) or /31 (point-to-point) is not a network
-                # we can ARP-sweep — it has no usable broadcast.  Say so rather
-                # than the misleading "no local interface" (the interface usually
-                # *is* local; the host is just a single address, not a subnet).
+            cidr_norm = str(network)
+            if not any(cidr_norm == r for r in requested):
+                requested.append(cidr_norm)
+            if network.prefixlen >= 31:
                 notes.append(
-                    f"(skipped {cidr}: single host, not an ARP-swept network — "
+                    f"(skipped {cidr_norm}: single host, not an ARP-swept network — "
                     "add its /24 instead if you meant to scan the whole LAN)"
                 )
+                continue
+            iface = discovered.get(cidr_norm)
+            if not iface:
+                _, iface = get_local_ip_for_network(cidr_norm)
+            if iface:
+                if (iface, cidr_norm) not in sweeps:
+                    sweeps.append((iface, cidr_norm))
             else:
-                notes.append(f"(skipped {cidr}: no local interface)")
+                notes.append(f"(skipped {cidr_norm}: no local interface)")
 
-    cmd: list[str] = ["arp-scan", "-l", "-q", "--retry=3"]
-    for iface in interfaces:
-        cmd.extend(["-i", iface])
+        if not sweeps:
+            reasons = " ".join(
+                n.strip("()").strip() for n in notes
+            )
+            return None, "\n".join(notes).strip(), (
+                "No scannable subnets to sweep"
+                + (f" ({reasons})" if reasons else "")
+                + ". Add a manual subnet with an egress interface to sweep a "
+                "non-local network via that NIC."
+            )
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=45,
-        )
-    except FileNotFoundError:
-        return None, "", "arp-scan binary not found"
-    except Exception as exc:  # noqa: BLE001
-        return None, "", f"arp-scan failed: {exc}"
-    output = (proc.stdout or "") + (proc.stderr or "")
+        chunks, error = _run_sweeps(sweeps)
+        output = _filter_and_dedupe("\n\n".join(chunks), requested)
+        if not output:
+            output = "(arp-scan produced no output — no hosts responded)"
+        if notes:
+            output = "\n".join(notes) + ("\n" + output if output else "")
+        return None, output, error
+
+    # No explicit subnets: sweep every locally-attached network.
+    discovered = {d["cidr"]: d["interface"] for d in get_default_subnets()}
+    auto_cidrs = list(discovered)
+    if auto_cidrs:
+        _plan_sweeps(auto_cidrs, discovered, notes, sweeps)
+    else:
+        primary = _get_primary_ip()
+        if primary:
+            _plan_sweeps([".".join(primary.split(".")[:3]) + ".0/24"], {}, notes, sweeps)
+
+    if not sweeps:
+        # Last resort (e.g. Windows dev box: no `ip`, no arp-scan targets):
+        # the historic passive ARP-table dump of all interfaces.
+        try:
+            proc = subprocess.run(
+                ["arp-scan", "-l", "-q", "--retry=3"],
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+        except FileNotFoundError:
+            return None, "", "arp-scan binary not found"
+        except Exception as exc:  # noqa: BLE001
+            return None, "", f"arp-scan failed: {exc}"
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if not output.strip():
+            output = "(arp-scan produced no output — no hosts responded)"
+        return None, output, None
+
+    chunks, error = _run_sweeps(sweeps)
+    output = _filter_and_dedupe("\n\n".join(chunks), None)
+    if not output:
+        output = "(arp-scan produced no output — no hosts responded)"
     if notes:
-        output = "\n".join(notes) + ("\n" + output if output.strip() else "")
-    if not output.strip():
-        output = "(arp-scan produced no output)"
-    return None, output, None
+        output = "\n".join(notes) + ("\n" + output if output else "")
+    return None, output, error
+
+
+def _run_sweeps(
+    sweeps: list[tuple[str, str]],
+) -> tuple[list[str], Optional[str]]:
+    """Execute each ``(iface, cidr)`` sweep; return ``(non_empty_outputs, error)``.
+
+    One failing sweep is recorded in ``error`` but the remaining sweeps still
+    run — a wedged NIC must not hide the other networks.
+    """
+    chunks: list[str] = []
+    error: Optional[str] = None
+    for iface, cidr in sweeps:
+        cmd = ["arp-scan", "-q", "--retry=3", "-i", iface, cidr]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        except FileNotFoundError:
+            return [], "arp-scan binary not found"
+        except Exception as exc:  # noqa: BLE001 - per-sweep isolation
+            error = f"arp-scan failed: {exc}"
+            continue
+        out = (proc.stdout or "") + (proc.stderr or "")
+        if out.strip():
+            chunks.append(out.rstrip())
+    return chunks, error
+
+
+def _plan_sweeps(
+    cidrs: list[str],
+    discovered: dict[str, str],
+    notes: list[str],
+    sweeps: list[tuple[str, str]],
+) -> None:
+    """Append scannable ``(iface, cidr)`` pairs to ``sweeps``.
+
+    A network is scannable when a local interface owns it: either the
+    auto-discovery map (``discovered``) or the kernel route
+    (``get_local_ip_for_network``).  Everything else earns a note.
+    """
+    for cidr in cidrs:
+        try:
+            network = ipaddress.ip_network((cidr or "").strip(), strict=False)
+        except ValueError:
+            notes.append(f"(skipped unparseable subnet {cidr!r})")
+            continue
+        cidr_norm = str(network)
+        if network.prefixlen >= 31:
+            notes.append(
+                f"(skipped {cidr_norm}: single host, not an ARP-swept network — "
+                "add its /24 instead if you meant to scan the whole LAN)"
+            )
+            continue
+        iface = discovered.get(cidr_norm)
+        if not iface:
+            _, iface = get_local_ip_for_network(cidr_norm)
+        if iface:
+            if (iface, cidr_norm) not in sweeps:
+                sweeps.append((iface, cidr_norm))
+        else:
+            notes.append(f"(skipped {cidr_norm}: no local interface)")
+
+
+def _filter_and_dedupe(output: str, cidrs: Optional[list[str]]) -> str:
+    """Keep only responder lines inside ``cidrs`` (when given); dedupe rows.
+
+    A responder line is one whose first field is an IP address.  Banner,
+    interface and summary lines pass through untouched.  When ``cidrs`` is
+    ``None`` nothing is filtered (the all-local-networks sweep keeps all).
+    """
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                ipaddress.ip_address(parts[0])
+            except ValueError:
+                kept.append(line)  # banner / summary / interface line
+                continue
+            if cidrs and not ip_in_subnets(parts[0], cidrs):
+                continue  # off-network responder: never display unselected nets
+        if line in seen:
+            continue
+        seen.add(line)
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def run_scapy_scan(

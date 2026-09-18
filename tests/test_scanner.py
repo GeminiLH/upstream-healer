@@ -19,6 +19,18 @@ from app.services.scanner import (
 )
 
 
+class _FakeProc:
+    """Stand-in for a ``subprocess.run`` result: ``stdout`` / ``stderr`` only.
+
+    Defined up front because the scan tests below patch ``subprocess.run`` and
+    need it; sweep command assertions read ``mock_run.call_args_list``.
+    """
+
+    def __init__(self, stdout, stderr=""):
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 class TestNormalizeMac:
     @pytest.mark.parametrize(
         "raw,expected",
@@ -66,23 +78,43 @@ class TestFindIpByMac:
 
 
 class TestRunArpScan:
-    def test_returns_raw_output(self):
-        proc = _FakeProc("192.168.86.5  aa:bb:cc:dd:ee:ff  VMWARE, INC.\n")
-        with patch("app.services.scanner.subprocess.run", return_value=proc):
+    def test_none_sweeps_locally_attached_networks(self):
+        """subnets=None actively sweeps each auto-discovered /24 (the historic
+        passive `-l` table dump missed every host on a quiet box)."""
+        with patch(
+            "app.services.scanner.get_default_subnets",
+            return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
+        ), patch(
+            "app.services.scanner.subprocess.run", return_value=_FakeProc("10.0.0.5  aa:bb  X\n")
+        ) as mock_run:
             found_ip, output, error = run_arp_scan()
         assert found_ip is None  # a full list has no single target
-        assert "192.168.86.5" in output
         assert error is None
+        assert "10.0.0.5" in output
+        assert mock_run.call_args[0][0] == ["arp-scan", "-q", "--retry=3", "-i", "eth1", "10.0.0.0/24"]
+
+    def test_none_falls_back_to_passive_list_when_no_local_networks(self):
+        # No /24s, no primary IP (e.g. Windows dev box): historic `arp-scan -l`.
+        with patch("app.services.scanner.get_default_subnets", return_value=[]), \
+             patch("app.services.scanner._get_primary_ip", return_value=None), \
+             patch("app.services.scanner.subprocess.run", return_value=_FakeProc("x")) as mock_run:
+            run_arp_scan()
+        assert "-l" in mock_run.call_args[0][0]
 
     def test_binary_missing_reports_error(self):
-        with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
+        with patch("app.services.scanner.get_default_subnets", return_value=[]), \
+             patch("app.services.scanner._get_primary_ip", return_value=None), \
+             patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
             found_ip, output, error = run_arp_scan()
         assert found_ip is None
         assert output == ""
         assert error is not None
 
     def test_empty_output_gets_placeholder(self):
-        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("   \n")):
+        with patch(
+            "app.services.scanner.get_default_subnets",
+            return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
+        ), patch("app.services.scanner.subprocess.run", return_value=_FakeProc("   \n")):
             _, output, error = run_arp_scan()
         assert error is None
         assert "no output" in output
@@ -207,12 +239,6 @@ class TestRunScan:
         assert result["found_via"] is None
 
 
-class _FakeProc:
-    def __init__(self, stdout, stderr=""):
-        self.stdout = stdout
-        self.stderr = stderr
-
-
 class _FakeScapyPkt:
     def __init__(self, psrc, hwsrc):
         self.psrc = psrc
@@ -320,19 +346,13 @@ class TestListSubnets:
 
 
 class TestRunArpScanWithSubnets:
-    def test_no_subnets_means_historic_all_interfaces(self):
-        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("x")) as mock_run:
-            run_arp_scan()
-        assert "-i" not in mock_run.call_args[0][0]
-
-    def test_known_subnet_adds_interface_flag(self):
+    def test_known_subnet_sweeps_with_interface_and_target(self):
         with patch(
             "app.services.scanner.get_default_subnets",
             return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
         ),              patch("app.services.scanner.subprocess.run", return_value=_FakeProc("x")) as mock_run:
             run_arp_scan(subnets=["10.0.0.0/24"])
-        args = mock_run.call_args[0][0]
-        assert "-i" in args and "eth1" in args
+        assert mock_run.call_args[0][0] == ["arp-scan", "-q", "--retry=3", "-i", "eth1", "10.0.0.0/24"]
 
     def test_unknown_subnet_is_skipped_with_note(self):
         with patch(
@@ -350,19 +370,66 @@ class TestRunArpScanWithSubnets:
             return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
         ),              patch("app.services.scanner.subprocess.run", return_value=_FakeProc("10.0.0.5  aa:bb  X\n")):
             _, output, error = run_arp_scan(subnets=["not-a-cidr"])
-        assert error is None
+        assert error is not None
+        assert "No scannable subnets" in error
         assert "(skipped unparseable subnet" in output
 
-    def test_host_only_subnet_is_noted_not_really_skipped(self):
-        """A /32 (a single host, not a network) is not ARP-sweepable.  We should
-        emit a *specific* note rather than the misleading "no local interface",
-        which implies the interface is missing when it is usually present."""
+    def test_only_nonlocal_subnet_errors_without_sweeping(self):
+        """Selecting a subnet this box is not attached to must NOT silently
+        fall back to sweeping the default interface — that is how hosts of an
+        unselected network used to leak into the results."""
         with patch("app.services.scanner.get_default_subnets", return_value=[]), \
-                patch("app.services.scanner.subprocess.run", return_value=_FakeProc("10.0.0.5  aa:bb  X\n")):
-            _, output, error = run_arp_scan(subnets=["192.168.70.0/32"])
+                patch("app.services.scanner.get_local_ip_for_network", return_value=(None, None)), \
+                patch("app.services.scanner.subprocess.run", return_value=_FakeProc("")) as mock_run:
+            _, output, error = run_arp_scan(subnets=["192.168.70.0/24"])
+        assert error is not None
+        assert "No scannable subnets" in error
+        assert "no local interface" in output
+        mock_run.assert_not_called()  # no arp-scan may run against an unselected net
+
+    def test_output_is_filtered_to_requested_networks(self):
+        """A responder on another local network must not appear when only a
+        specific subnet was requested."""
+        out = (
+            "Starting arp-scan 1.10.0 with 256 hosts\n"
+            "192.168.86.5  aa:bb:cc:dd:ee:ff  Vendor\n"
+            "10.0.0.5  aa:bb:cc:dd:ee:ff  Vendor\n"
+            "14 packets received by filter, 0 packets dropped by kernel\n"
+        )
+        with patch(
+            "app.services.scanner.get_default_subnets",
+            return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
+        ),              patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            _, output, error = run_arp_scan(subnets=["10.0.0.0/24"])
         assert error is None
+        assert "10.0.0.5" in output
+        assert "192.168.86.5" not in output  # unselected network never leaks
+        assert "packets received" in output  # summary lines pass through
+
+    def test_host_only_subnet_is_noted_and_errors(self):
+        """A /32 (a single host, not a network) is not ARP-sweptable: specific
+        note, no misleading 'no local interface', and a hard error."""
+        with patch("app.services.scanner.get_default_subnets", return_value=[]), \
+                patch("app.services.scanner.subprocess.run", return_value=_FakeProc("10.0.0.5  aa:bb  X\n")) as mock_run:
+            _, output, error = run_arp_scan(subnets=["192.168.70.0/32"])
+        assert error is not None
         assert "single host" in output
         assert "no local interface" not in output
+        mock_run.assert_not_called()
+
+    def test_two_subnets_sweep_separately(self):
+        out = "10.0.0.5  aa:bb  X\n10.1.0.5  aa:bb  Y\n"
+        with patch(
+            "app.services.scanner.get_default_subnets",
+            return_value=[
+                {"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"},
+                {"cidr": "10.1.0.0/24", "interface": "eth1", "source": "auto"},
+            ],
+        ),              patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)) as mock_run:
+            _, output, error = run_arp_scan(subnets=["10.0.0.0/24", "10.1.0.0/24"])
+        assert error is None
+        assert mock_run.call_count == 2
+        assert "10.0.0.5" in output and "10.1.0.5" in output
 
 
 class TestMatchMacInOutputSubnetScope:
