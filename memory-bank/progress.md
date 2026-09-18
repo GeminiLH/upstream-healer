@@ -1,32 +1,30 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-16 — **scapy route-bug fixed + deployed to dev (pipeline 151,
-> `00062a6`); now on UI polish** (the Settings screen is narrow and the "add
-> subnet" form fields are self-evident to devs but not to the user — widening it
-> + adding clear per-field hints is the next task, see "Next task" below).
+> Snapshot: 2026-09-18 — **fast-ship workflow live and verified**: `scripts/ship.sh`
+> (committed `edaed88`, deployed via pipeline 165) ships in ~2.5 min end-to-end.
+> `3bc45e1` (the feature commit) is live on dev; all other commits are tooling.
 > **Verify before acting**: `git status`, `git log -5`, then
 > `python3 -m pytest tests/ -q`.
 
 ## Current state
 
-- Branch: `main` (tracking `gitlab/main` — re-pointed on 2026-09-17 after it
-  silently tracked `origin/main`; the NFS mount blocked git's config write, so
-  `.git/config` was edited directly. GitLab is the primary repo, see decisions.md;
-  a bare `git push` now goes to `gitlab`.)
-- HEAD: `00062a6` (the scapy route-bug fix) — pushed to gitlab/main, **pipeline 151
-  all-green**: `lint` / `unit_tests` (152 pass) / `build_image` all success, and
-  **`deploy_dev` success** (live on the dev box `192.168.86.38:8787`).
-- Just before it: `89ff442` (test-hermeticity fix, pipeline 149) ← `d6abef0`
-  (the multi-subnet feature — scanner, monitor, database, main, templates, tests).
-- **Health: 152 tests pass, ruff clean** (verified live: `unit_tests` job 752).
-- The multi-subnet live smoke test (throwaway DB via `TestClient`) covered:
-  `GET /settings` → 200 (Subnets card), `POST /settings/subnets` → 303,
-  invalid CIDR → 400, `GET /diagnostic` renders `#scan-subnet`, `GET/POST
-  /hosts/add` carry `subnet_id`.
-- **Manual jobs in pipeline 151** (`deploy_test` / `deploy_production` /
-  `dev_down` / `dev_debug`) are still `manual` — **trigger only on explicit user
-  confirmation** (the scapy fix is live on dev; the user has *not* asked for
-  test/prod yet).
+- Branch: `main` (tracking `gitlab/main`; GitLab is the primary repo, see
+  decisions.md; a bare `git push` goes to `gitlab`).
+- HEAD: `edaed88` — the final `ship.sh` hardening (robust dev-UI check);
+  **pipeline 165 all-green**, `deploy_dev` job 851 **success**, dev UI
+  `192.168.86.38:8787` → HTTP 200 (verified independently of the ship run).
+- Working tree was clean until this snapshot edit. (Predecessors today:
+  `de0d337` token split + docs, `2831277` hardening, `3bc45e1` ship.sh v1 +
+  memory-bank — all shipped and deployed to dev.)
+- Leftovers: pipelines 161/162 still carry *unplayed* manual `deploy_dev`
+  jobs (old SHAs, app code identical to what is live) — safe to ignore/abort.
+  `deploy_test` / `deploy_production` / `dev_down` / `dev_debug` in every
+  recent pipeline remain `manual` — **trigger only on explicit user
+  confirmation**.
+- **Health: 152 tests pass, ruff clean** (run inside every ship, last: 165).
+- The multi-subnet feature + scapy route-bug fix (`00062a6`) remain deployed;
+  the Settings-page widening ("next task" below) is still open — when it
+  ships, run it through `scripts/ship.sh` like everything else.
 
 ## Multi-subnet design + file map
 
