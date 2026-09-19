@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
@@ -13,12 +14,15 @@ from app.database import init_db
 from app.services.monitor import monitor
 from app.services.npm import NPMClient
 from app.services.notifications import send_event
+from app.services.mdns import discover_hostnames
 from app.services.scanner import (
+    apply_hostnames,
     check_host_reachable,
     find_ip_by_mac,
     get_default_subnets,
     get_local_interfaces,
     list_subnets,
+    load_known_hostnames,
     load_suppressed_subnets,
     normalize_mac,
     run_scan,
@@ -842,12 +846,28 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
     if not subnet_ids:
         subnet_ids = [s["cidr"] for s in await list_subnets(db)]
 
+    # Kick off mDNS hostname discovery concurrently with the (blocking) ARP
+    # sweep so the multicast window overlaps the scan instead of adding to it.
+    mdns_task = asyncio.create_task(discover_hostnames())
     result = await run_scan(body.target_mac, method, subnets=subnet_ids or None)
     result["subnets"] = subnet_ids
     logger.info(
         f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac)} "
         f"subnets={subnet_ids} found_ip={result['found_ip']} error={result['error']}"
     )
+    # Layer real hostnames onto the swept hosts (curated DB name, then mDNS,
+    # then the usually-empty reverse-DNS result).  Best-effort: a discovery
+    # hiccup must never fail the scan itself.
+    try:
+        mdns_names = await mdns_task
+    except Exception:  # noqa: BLE001 - discovery failure is non-fatal
+        mdns_names = ({}, {})
+    try:
+        known_names = await load_known_hostnames(db)
+    except Exception:  # noqa: BLE001
+        known_names = {}
+    hosts = result.get("hosts") or []
+    result["hosts"] = apply_hostnames(hosts, mdns=mdns_names, known=known_names)
     return result
 
 

@@ -144,6 +144,73 @@ async def resolve_hostnames(hosts: list[dict], limit: int = 256) -> list[dict]:
     return hosts
 
 
+async def load_known_hostnames(db) -> dict[str, str]:
+    """Map ``normalized_mac -> name`` for every monitored host in the DB.
+
+    These are the names the user curated on the hosts page.  They take priority
+    over auto-discovered (mDNS / reverse-DNS) names so a saved name like
+    ``vault`` is never silently replaced by a generic advertised one.  A
+    ``None`` ``db`` (a bare worker thread with no connection) yields ``{}``.
+    """
+    if db is None:
+        return {}
+    out: dict[str, str] = {}
+    try:
+        async with db.execute("SELECT name, mac_address FROM hosts") as cursor:
+            for row in await cursor.fetchall():
+                mac = normalize_mac(row["mac_address"] or "")
+                name = (row["name"] or "").strip()
+                if mac and name:
+                    out[mac] = name
+    except Exception:  # noqa: BLE001 - a missing/odd table shouldn't abort a scan
+        return {}
+    return out
+
+
+def apply_hostnames(
+    hosts: list[dict],
+    mdns: Optional[tuple[dict[str, str], dict[str, str]]] = None,
+    known: Optional[dict[str, str]] = None,
+) -> list[dict]:
+    """Assign a ``hostname`` to each swept host from every available source.
+
+    Priority (highest first): a monitored host's curated DB name (matched by
+    MAC), then an mDNS/avahi advertised name (by IP, then by MAC), then the
+    reverse-DNS value ``resolve_hostnames`` already stored on the host.  A host
+    with no matching name keeps ``hostname=None`` (the UI renders ``—``).
+
+    Returns the hosts ordered named-first, the rest in their original relative
+    order — a sensible display order for the diagnostic table.
+    """
+    mdns_ip: dict[str, str] = {}
+    mdns_mac: dict[str, str] = {}
+    if mdns:
+        mdns_ip = mdns[0] or {}
+        mdns_mac = mdns[1] or {}
+    known = known or {}
+
+    for h in hosts:
+        ip = (h.get("ip") or "").strip()
+        mac = normalize_mac(h.get("mac") or "")
+        h["hostname"] = (
+            known.get(mac)
+            or (mdns_ip.get(ip) if ip else None)
+            or (mdns_mac.get(mac) if mac else None)
+            or h.get("hostname")
+        ) or None
+
+    def _key(h: dict):
+        try:
+            # ``int()`` (not ``.int``) works across Python versions for both
+            # IPv4 and IPv6 addresses; it gives a stable numeric sort order.
+            ip_num = int(ipaddress.ip_address(h.get("ip") or "0.0.0.0"))
+        except ValueError:
+            ip_num = 0
+        return (0 if h.get("hostname") else 1, ip_num)
+
+    return sorted(hosts, key=_key)
+
+
 def _match_mac_in_output(target_mac: str, output: str, subnets: Optional[list[str]] = None) -> Optional[str]:
     """Return the IP for ``target_mac`` in an arp-scan table, or ``None``.
 

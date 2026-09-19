@@ -7,6 +7,7 @@ import pytest
 
 from app.services.scanner import (
     _parse_scan_output,
+    apply_hostnames,
     check_host_reachable,
     find_ip_by_mac,
     get_default_subnets,
@@ -14,6 +15,7 @@ from app.services.scanner import (
     get_local_ip_for_network,
     ip_in_subnets,
     list_subnets,
+    load_known_hostnames,
     load_suppressed_subnets,
     normalize_mac,
     resolve_hostnames,
@@ -639,3 +641,100 @@ class TestFindIpByMacSubnets:
             assert await find_ip_by_mac("aa:bb:cc:dd:ee:ff") == "10.0.0.5"
         assert arp.call_args.kwargs.get("subnets") is None
         scapy.assert_not_called()
+
+class _KnownHostsCursor:
+    """Async stand-in for an aiosqlite cursor yielding a fixed set of rows."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def fetchall(self):
+        return self._rows
+
+
+class _KnownHostsDb:
+    """A db object whose ``execute`` returns a cursor over fixed rows."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def execute(self, *args, **kwargs):
+        return _KnownHostsCursor(self._rows)
+
+
+class TestLoadKnownHostnames:
+    async def test_none_db(self):
+        assert await load_known_hostnames(None) == {}
+
+    async def test_maps_normalized_mac_to_name(self):
+        db = _KnownHostsDb(
+            [
+                {"name": "vault", "mac_address": "46:DC:21:61:26:93"},
+                {"name": "jellyfin", "mac_address": "a0:ad:9f:85:d7:cb"},
+            ]
+        )
+        assert await load_known_hostnames(db) == {
+            "46:dc:21:61:26:93": "vault",
+            "a0:ad:9f:85:d7:cb": "jellyfin",
+        }
+
+    async def test_skips_blank_rows(self):
+        db = _KnownHostsDb(
+            [
+                {"name": "", "mac_address": "aa:bb:cc:dd:ee:ff"},
+                {"name": "ghost", "mac_address": ""},
+                {"name": "ok", "mac_address": "11:22:33:44:55:66"},
+            ]
+        )
+        assert await load_known_hostnames(db) == {"11:22:33:44:55:66": "ok"}
+
+    async def test_db_error_returns_empty(self):
+        class _BoomDb:
+            def execute(self, *args, **kwargs):
+                raise RuntimeError("no hosts table")
+
+        assert await load_known_hostnames(_BoomDb()) == {}
+
+
+class TestApplyHostnames:
+    def test_known_name_wins_over_mdns_and_ptr(self):
+        hosts = [{"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "ptr-name"}]
+        mdns = ({"10.0.0.5": "mdns-by-ip"}, {"aa:bb:cc:dd:ee:ff": "mdns-by-mac"})
+        out = apply_hostnames(hosts, mdns=mdns, known={"aa:bb:cc:dd:ee:ff": "vault"})
+        assert out[0]["hostname"] == "vault"
+
+    def test_mdns_by_ip_beats_ptr(self):
+        hosts = [{"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "ptr-name"}]
+        out = apply_hostnames(hosts, mdns=({"10.0.0.5": "mdns-by-ip"}, {}), known={})
+        assert out[0]["hostname"] == "mdns-by-ip"
+
+    def test_mdns_by_mac_when_ip_not_matched(self):
+        hosts = [{"ip": "10.0.0.99", "mac": "aa:bb:cc:dd:ee:ff", "hostname": None}]
+        mdns = ({"10.0.0.5": "some-other-host"}, {"aa:bb:cc:dd:ee:ff": "by-mac"})
+        out = apply_hostnames(hosts, mdns=mdns, known={})
+        assert out[0]["hostname"] == "by-mac"
+
+    def test_ptr_kept_when_nothing_matches(self):
+        hosts = [{"ip": "10.0.0.99", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "ptr-name"}]
+        out = apply_hostnames(hosts, mdns=({}, {}), known={})
+        assert out[0]["hostname"] == "ptr-name"
+
+    def test_none_when_nothing_matches(self):
+        hosts = [{"ip": "10.0.0.99", "mac": "aa:bb:cc:dd:ee:ff", "hostname": None}]
+        out = apply_hostnames(hosts)
+        assert out[0]["hostname"] is None
+
+    def test_named_hosts_sorted_first(self):
+        hosts = [
+            {"ip": "10.0.0.9", "mac": "00:00:00:00:00:01", "hostname": None},
+            {"ip": "10.0.0.2", "mac": "00:00:00:00:00:02", "hostname": None},
+        ]
+        out = apply_hostnames(hosts, mdns=({"10.0.0.9": "niner"}, {}))
+        assert [h["ip"] for h in out] == ["10.0.0.9", "10.0.0.2"]
+
