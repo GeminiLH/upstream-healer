@@ -364,7 +364,7 @@ is stale/disproven — do not re-implement.
   `max-w-xl`; widening it to `max-w-3xl`/`4xl` is the whole fix. A Tailwind
   max-width is a *ceiling* — on a phone the content is `width:100%` + `px-4`
   padding, so one change gives "wider on desktop, full-width on a phone" with no
-  media query. The form's `grid grid-cols-1 sm:grid-cols-4` already stacks to one
+  media query. The form's `grid grid-cols-1 sm:grid-cols-2` already stacks to one
   column on phones, and the subnets table sits in `overflow-x-auto` (scrolls), so
   no phone-specific work is needed.
 

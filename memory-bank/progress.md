@@ -1,6 +1,6 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-18 — **subnet + diagnostic batch (F1–F4) shipped & pushed.**
+> Snapshot: 2026-09-18 — **settings-page layout polish shipped & pushed** (future-remote note moved to the bottom; add-subnet form reflowed to Name / CIDR+Interface / button).
 > **Verify before acting**: `git status`, `git log -5`, then
 > `python3 -m pytest tests/ -q` (currently 178 passed, ruff clean).
 
@@ -8,11 +8,11 @@
 
 - Branch: `main` (tracking `gitlab/main`; GitLab is the primary repo, see
   decisions.md; push explicitly with `git push gitlab main` — never bare).
-- HEAD: `6bf798e` == `gitlab/main` (verified via `git fetch gitlab`;
-  `git rev-list --left-right --count gitlab/main...HEAD` → `0 0`). Working tree
-  clean. **Health: 178 tests pass, ruff clean** (verified on system
-  `python3` 3.13; the repo `.venv` is a non-working Windows venv on this NFS
-  share — see context.md).
+- HEAD / sync: `gitlab/main` fast-forwarded to `fdc11c6` (the settings-page
+  layout polish — this bank update lands in a follow-up commit after it).
+  **Health: 178 tests pass, ruff clean** (verified on system `python3` 3.13; the
+  repo `.venv` is a non-working Windows venv on this NFS share — see context.md).
+  Only worktree leftover: the pre-existing stray `5}` deletion (see decisions.md).
 - The subnet/diagnostic batch that shipped since the 2026-09-17 snapshot
   (all pushed to gitlab/main, all covered by tests):
   - `8e2f674` **F1** — *actively sweep only selected subnets; never leak
@@ -148,7 +148,7 @@ pieces:
    the user asks, but the same pattern applies.)
 
 2. **Clarify the "add subnet" form** (the `POST /settings/subnets` form, ~line 101,
-   `grid grid-cols-1 sm:grid-cols-4`). The 3 fields map to
+   `grid grid-cols-1 sm:grid-cols-2`). The 3 fields map to
    `app/main.py::add_subnet` (line 537):
    - **Name** (`name`, `required`, `Form(...)`) — *free-text friendly label*; what
      the user calls the network. Shown in the table + the host/diagnostic subnet
@@ -172,7 +172,7 @@ pieces:
    **Do NOT rename the form fields** (`name`/`cidr`/`interface`) or the
    `action="/settings/subnets"` — the handler reads them by those names.
 
-3. **Responsive/phone sizing.** Keep the form's `grid-cols-1 sm:grid-cols-4`
+3. **Responsive/phone sizing.** Keep the form's `grid-cols-1 sm:grid-cols-2`
    (already stacks to 1 column on phones; stays correct once the page is wider).
    The subnets **table** already sits in `overflow-x-auto` (scrolls on phones).
 
