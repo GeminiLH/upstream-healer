@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS host_state (
     quiet_mode TEXT,
     FOREIGN KEY (host_id) REFERENCES hosts(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS mdns_names (
+    mac TEXT PRIMARY KEY,
+    hostname TEXT NOT NULL,
+    updated_at TEXT
+);
 """
 
 DEFAULT_SETTINGS = {

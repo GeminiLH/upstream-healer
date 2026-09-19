@@ -13,6 +13,8 @@ import re
 import subprocess
 from typing import Optional
 
+from app.config import current_time
+
 logger = logging.getLogger("healer.scanner")
 
 
@@ -167,15 +169,77 @@ async def load_known_hostnames(db) -> dict[str, str]:
     return out
 
 
+async def remember_mdns_names(db, mac_map: dict[str, str]) -> None:
+    """Persist freshly-seen mDNS names (``{mac: hostname}``) for future scans.
+
+    mDNS is racy — a device re-announces on its own cadence, so any single
+    discovery window catches only a subset.  By caching each name by MAC we
+    make the table deterministic after the first sighting: a device stays named
+    on later scans even when it happens not to re-announce that instant.  Live
+    discoveries overwrite a stale cached name (and curated DB names always win
+    at apply time, see :func:`apply_hostnames`).  A ``None`` ``db`` is a no-op
+    (a bare worker thread with no connection).
+    """
+    if db is None or not mac_map:
+        return
+    now = current_time().isoformat()
+    for mac, name in mac_map.items():
+        mac = normalize_mac(mac or "")
+        name = (name or "").strip()
+        if not mac or not name:
+            continue
+        try:
+            await db.execute(
+                """
+                INSERT INTO mdns_names (mac, hostname, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(mac) DO UPDATE SET
+                    hostname = excluded.hostname,
+                    updated_at = excluded.updated_at
+                """,
+                (mac, name, now),
+            )
+        except Exception as exc:  # noqa: BLE001 - caching must never fail a scan
+            logger.debug("remember_mdns_names: could not store %s: %s", mac, exc)
+    try:
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("remember_mdns_names: commit failed: %s", exc)
+
+
+async def load_mdns_names(db) -> dict[str, str]:
+    """Map ``normalized_mac -> hostname`` from the mDNS cache.
+
+    The accumulated set of names learned on prior scans (see
+    :func:`remember_mdns_names`).  A ``None`` ``db`` or a missing/odd table
+    yields ``{}``.
+    """
+    if db is None:
+        return {}
+    out: dict[str, str] = {}
+    try:
+        async with db.execute("SELECT mac, hostname FROM mdns_names") as cursor:
+            for row in await cursor.fetchall():
+                mac = normalize_mac(row["mac"] or "")
+                name = (row["hostname"] or "").strip()
+                if mac and name:
+                    out[mac] = name
+    except Exception:  # noqa: BLE001 - a missing/odd table shouldn't abort a scan
+        return {}
+    return out
+
+
 def apply_hostnames(
     hosts: list[dict],
     mdns: Optional[tuple[dict[str, str], dict[str, str]]] = None,
     known: Optional[dict[str, str]] = None,
+    cached: Optional[dict[str, str]] = None,
 ) -> list[dict]:
     """Assign a ``hostname`` to each swept host from every available source.
 
     Priority (highest first): a monitored host's curated DB name (matched by
-    MAC), then an mDNS/avahi advertised name (by IP, then by MAC), then the
+    MAC), then an mDNS/avahi name discovered *this* scan (by IP, then by MAC),
+    then the persistent mDNS cache (by MAC, from prior scans), then the
     reverse-DNS value ``resolve_hostnames`` already stored on the host.  A host
     with no matching name keeps ``hostname=None`` (the UI renders ``—``).
 
@@ -188,6 +252,7 @@ def apply_hostnames(
         mdns_ip = mdns[0] or {}
         mdns_mac = mdns[1] or {}
     known = known or {}
+    cached = cached or {}
 
     for h in hosts:
         ip = (h.get("ip") or "").strip()
@@ -196,6 +261,7 @@ def apply_hostnames(
             known.get(mac)
             or (mdns_ip.get(ip) if ip else None)
             or (mdns_mac.get(mac) if mac else None)
+            or (cached.get(mac) if mac else None)
             or h.get("hostname")
         ) or None
 

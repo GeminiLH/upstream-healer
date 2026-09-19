@@ -23,8 +23,10 @@ from app.services.scanner import (
     get_local_interfaces,
     list_subnets,
     load_known_hostnames,
+    load_mdns_names,
     load_suppressed_subnets,
     normalize_mac,
+    remember_mdns_names,
     run_scan,
     save_suppressed_subnets,
 )
@@ -862,12 +864,24 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
         mdns_names = await mdns_task
     except Exception:  # noqa: BLE001 - discovery failure is non-fatal
         mdns_names = ({}, {})
+    # Cache any freshly-seen mDNS names by MAC so a device stays named on later
+    # scans even when it does not re-announce that instant (mDNS is racy).
+    try:
+        await remember_mdns_names(db, mdns_names[1] or {})
+    except Exception:  # noqa: BLE001 - caching must never fail the scan
+        pass
     try:
         known_names = await load_known_hostnames(db)
     except Exception:  # noqa: BLE001
         known_names = {}
+    try:
+        cached_names = await load_mdns_names(db)
+    except Exception:  # noqa: BLE001
+        cached_names = {}
     hosts = result.get("hosts") or []
-    result["hosts"] = apply_hostnames(hosts, mdns=mdns_names, known=known_names)
+    result["hosts"] = apply_hostnames(
+        hosts, mdns=mdns_names, known=known_names, cached=cached_names
+    )
     return result
 
 

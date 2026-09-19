@@ -48,9 +48,12 @@ _SERVICE_TYPES: tuple[str, ...] = (
 )
 
 # Default mDNS listen window (seconds).  An advertising device's initial
-# multicast burst lands within a couple of seconds; 6s comfortably captures the
-# usual set.  It runs concurrently with the ARP sweep, so it adds little.
-MDNS_DISCOVERY_TIMEOUT = 6.0
+# multicast burst lands within a couple of seconds, but devices re-announce on
+# their own cadence, so a longer window lets zeroconf fire a couple of browse
+# queries and catches a bigger, steadier set.  It runs concurrently with the
+# (usually longer) ARP sweep, so it adds little end-to-end latency; and anything
+# missed is captured by the persistent per-MAC name cache (scanner).
+MDNS_DISCOVERY_TIMEOUT = 8.0
 
 # Some devices prefix the instance name with their MAC (``0469F88FEE99@...``)
 # or embed it in brackets (``flash [dc:a6:32:02:59:63]``); both let us join to

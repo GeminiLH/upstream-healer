@@ -16,8 +16,10 @@ from app.services.scanner import (
     ip_in_subnets,
     list_subnets,
     load_known_hostnames,
+    load_mdns_names,
     load_suppressed_subnets,
     normalize_mac,
+    remember_mdns_names,
     resolve_hostnames,
     run_arp_scan,
     run_scan,
@@ -737,4 +739,83 @@ class TestApplyHostnames:
         ]
         out = apply_hostnames(hosts, mdns=({"10.0.0.9": "niner"}, {}))
         assert [h["ip"] for h in out] == ["10.0.0.9", "10.0.0.2"]
+
+    def test_cached_name_used_when_no_live_or_known(self):
+        hosts = [{"ip": "10.0.0.99", "mac": "aa:bb:cc:dd:ee:ff", "hostname": None}]
+        out = apply_hostnames(hosts, mdns=({}, {}), known={}, cached={"aa:bb:cc:dd:ee:ff": "vault"})
+        assert out[0]["hostname"] == "vault"
+
+    def test_live_mdns_beats_cached(self):
+        hosts = [{"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff", "hostname": None}]
+        out = apply_hostnames(
+            hosts,
+            mdns=({}, {"aa:bb:cc:dd:ee:ff": "live"}),
+            cached={"aa:bb:cc:dd:ee:ff": "stale"},
+        )
+        assert out[0]["hostname"] == "live"
+
+    def test_known_beats_cached(self):
+        hosts = [{"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff", "hostname": None}]
+        out = apply_hostnames(
+            hosts,
+            mdns=({}, {}),
+            known={"aa:bb:cc:dd:ee:ff": "vault"},
+            cached={"aa:bb:cc:dd:ee:ff": "mdns"},
+        )
+        assert out[0]["hostname"] == "vault"
+
+    def test_cached_beats_ptr(self):
+        hosts = [{"ip": "10.0.0.99", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "ptr-name"}]
+        out = apply_hostnames(hosts, mdns=({}, {}), cached={"aa:bb:cc:dd:ee:ff": "mdns"})
+        assert out[0]["hostname"] == "mdns"
+
+
+class TestMdnsNameCache:
+    async def _db(self):
+        import aiosqlite
+
+        db = await aiosqlite.connect(":memory:")
+        db.row_factory = aiosqlite.Row
+        await db.execute(
+            "CREATE TABLE mdns_names (mac TEXT PRIMARY KEY, hostname TEXT NOT NULL, updated_at TEXT)"
+        )
+        await db.commit()
+        return db
+
+    async def test_remember_none_db_is_noop(self):
+        assert await remember_mdns_names(None, {"aa:bb:cc:dd:ee:ff": "x"}) is None
+
+    async def test_load_none_db_is_empty(self):
+        assert await load_mdns_names(None) == {}
+
+    async def test_remember_then_load_roundtrip(self):
+        db = await self._db()
+        try:
+            await remember_mdns_names(
+                db,
+                {"AA:BB:CC:DD:EE:FF": "Apple TV", "11:22:33:44:55:66": "Printer"},
+            )
+            assert await load_mdns_names(db) == {
+                "aa:bb:cc:dd:ee:ff": "Apple TV",
+                "11:22:33:44:55:66": "Printer",
+            }
+        finally:
+            await db.close()
+
+    async def test_remember_overwrites_existing_name(self):
+        db = await self._db()
+        try:
+            await remember_mdns_names(db, {"aa:bb:cc:dd:ee:ff": "Old Name"})
+            await remember_mdns_names(db, {"aa:bb:cc:dd:ee:ff": "New Name"})
+            assert await load_mdns_names(db) == {"aa:bb:cc:dd:ee:ff": "New Name"}
+        finally:
+            await db.close()
+
+    async def test_skips_blank_mac_or_name(self):
+        db = await self._db()
+        try:
+            await remember_mdns_names(db, {"": "no-mac", "aa:bb:cc:dd:ee:ff": "   "})
+            assert await load_mdns_names(db) == {}
+        finally:
+            await db.close()
 
