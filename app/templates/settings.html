@@ -35,16 +35,6 @@
     </button>
   </form>
 
-  <div class="mt-8 bg-amber-50 border border-amber-100 rounded-xl p-5 text-sm text-amber-900">
-    <p class="font-medium mb-1">Future remote access</p>
-    <p>
-      The UI currently listens on all interfaces (port 8787).
-      When you set up the VPN between houses, simply access it over the VPN.
-      No public exposure is required. You can later add a reverse-proxy rule in NPM with IP restriction or mutual TLS if
-      needed.
-    </p>
-  </div>
-
   <!-- Subnets management -->
   <div class="mt-8 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
     <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -126,44 +116,60 @@
     {% endif %}
 
     <form method="post" action="/settings/subnets"
-          class="px-6 py-5 border-t border-slate-200 dark:border-slate-700 grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-      <div>
-        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Name</label>
-        <input name="name" required placeholder="Home Wi-Fi"
-               class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
-        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Friendly label (e.g. Home Wi-Fi, VLAN 20)</p>
+          class="px-6 py-5 border-t border-slate-200 dark:border-slate-700">
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Name</label>
+          <input name="name" required placeholder="Home Wi-Fi"
+                 class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+          <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Friendly label (e.g. Home Wi-Fi, VLAN 20)</p>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">CIDR (network)</label>
+            <input name="cidr" required placeholder="192.168.10.0/24"
+                   class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
+            <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+              The whole network, ending in <span class="font-mono">.0</span>.
+              <span class="font-mono">/24</span>&thinsp;&asymp;&thinsp;256 addresses (a typical home/office LAN);
+              <span class="font-mono">/28</span>&thinsp;&asymp;&thinsp;16 (a small VLAN);
+              <span class="font-mono">/32</span> is a single IP and can&rsquo;t be swept.
+            </p>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Interface</label>
+            <input name="interface" list="iface-options" placeholder="Leave blank for auto-detect"
+                   class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
+            <datalist id="iface-options">
+              {% for i in interfaces %}
+              <option value="{{ i.name }}">{{ i.address }}</option>
+              {% endfor %}
+            </datalist>
+            <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+              Leave <span class="font-medium">blank</span> to auto-detect, or pick a NIC from the
+              dropdown{% if interfaces %} ({{ interfaces | length }} detected){% else %} (none detected){% endif %}.
+              Only set it if this network sits on a specific NIC.
+            </p>
+          </div>
+        </div>
       </div>
-      <div>
-        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">CIDR (network)</label>
-        <input name="cidr" required placeholder="192.168.10.0/24"
-               class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
-        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
-          The whole network, ending in <span class="font-mono">.0</span>.
-          <span class="font-mono">/24</span>&thinsp;&asymp;&thinsp;256 addresses (a typical home/office LAN);
-          <span class="font-mono">/28</span>&thinsp;&asymp;&thinsp;16 (a small VLAN);
-          <span class="font-mono">/32</span> is a single IP and can&rsquo;t be swept.
-        </p>
+      <div class="mt-4 flex justify-end">
+        <button type="submit"
+                class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">
+          Add subnet
+        </button>
       </div>
-      <div>
-        <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Interface</label>
-        <input name="interface" list="iface-options" placeholder="Leave blank for auto-detect"
-               class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 font-mono">
-        <datalist id="iface-options">
-          {% for i in interfaces %}
-          <option value="{{ i.name }}">{{ i.address }}</option>
-          {% endfor %}
-        </datalist>
-        <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
-          Leave <span class="font-medium">blank</span> to auto-detect, or pick a NIC from the
-          dropdown{% if interfaces %} ({{ interfaces | length }} detected){% else %} (none detected){% endif %}.
-          Only set it if this network sits on a specific NIC.
-        </p>
-      </div>
-      <button type="submit"
-              class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">
-        Add subnet
-      </button>
     </form>
+  </div>
+
+  <div class="mt-8 bg-amber-50 border border-amber-100 rounded-xl p-5 text-sm text-amber-900">
+    <p class="font-medium mb-1">Future remote access</p>
+    <p>
+      The UI currently listens on all interfaces (port 8787).
+      When you set up the VPN between houses, simply access it over the VPN.
+      No public exposure is required. You can later add a reverse-proxy rule in NPM with IP restriction or mutual TLS if
+      needed.
+    </p>
   </div>
 
 </div>
