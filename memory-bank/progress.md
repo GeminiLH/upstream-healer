@@ -1,8 +1,8 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-18 — **settings-page layout polish shipped & pushed** (future-remote note moved to the bottom; add-subnet form reflowed to Name / CIDR+Interface / button).
+> Snapshot: 2026-09-19 — **mDNS hostname resolution shipped to dev** (real device names in the diagnostic table + a persistent per-MAC name cache so the set is stable across scans; `10d12fa` + `fa191e2`, deployed via `deploy_dev`).
 > **Verify before acting**: `git status`, `git log -5`, then
-> `python3 -m pytest tests/ -q` (currently 178 passed, ruff clean).
+> `python3 -m pytest tests/ -q` (currently 211 passed, ruff clean).
 
 ## Current state
 
@@ -13,6 +13,18 @@
   **Health: 178 tests pass, ruff clean** (verified on system `python3` 3.13; the
   repo `.venv` is a non-working Windows venv on this NFS share — see context.md).
   Only worktree leftover: the pre-existing stray `5}` deletion (see decisions.md).
+- **mDNS hostname resolution (DONE — `10d12fa` + `fa191e2`, deployed to dev via
+  `deploy_dev`):** the diagnostic scan now resolves real hostnames, layered
+  (highest first): a monitored host's curated DB name → a live mDNS/avahi name
+  (zeroconf browse, 8 s window, run concurrently with the ARP sweep) → a
+  persistent per-MAC name cache (`mdns_names` table) → reverse-DNS. New
+  `app/services/mdns.py` (best-effort; degrades to empty maps);
+  `scanner.load_known_hostnames/remember_mdns_names/load_mdns_names`;
+  `apply_hostnames` sorted named-first. `zeroconf==0.151.3` in `requirements.txt`.
+  Live-verified on the dev box: Apple TV / MacBook Air / WD NAS / the box get
+  named, and the cache holds them across repeat scans (a name only disappears
+  when the device is absent from *that* ARP sweep — expected, not a cache miss).
+  211 tests green, ruff clean.
 - The subnet/diagnostic batch that shipped since the 2026-09-17 snapshot
   (all pushed to gitlab/main, all covered by tests):
   - `8e2f674` **F1** — *actively sweep only selected subnets; never leak
