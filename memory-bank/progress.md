@@ -2,16 +2,15 @@
 
 > Snapshot: 2026-09-18 — **subnet + diagnostic batch (F1–F4) shipped & pushed.**
 > **Verify before acting**: `git status`, `git log -5`, then
-> `python3 -m pytest tests/ -q` (currently 170 passed, ruff clean).
+> `python3 -m pytest tests/ -q` (currently 178 passed, ruff clean).
 
 ## Current state
 
 - Branch: `main` (tracking `gitlab/main`; GitLab is the primary repo, see
   decisions.md; push explicitly with `git push gitlab main` — never bare).
-- HEAD: `50e9d31` == `gitlab/main` (verified via `git fetch gitlab`;
-  `git rev-list --left-right --count gitlab/main...HEAD` → `0 0`). Working
-  tree clean except three git-ignored scratch files (`.diag.txt`, `.wcm2.txt`,
-  `.wctmp.txt`). **Health: 170 tests pass, ruff clean** (verified on system
+- HEAD: `6bf798e` == `gitlab/main` (verified via `git fetch gitlab`;
+  `git rev-list --left-right --count gitlab/main...HEAD` → `0 0`). Working tree
+  clean. **Health: 178 tests pass, ruff clean** (verified on system
   `python3` 3.13; the repo `.venv` is a non-working Windows venv on this NFS
   share — see context.md).
 - The subnet/diagnostic batch that shipped since the 2026-09-17 snapshot
@@ -35,7 +34,7 @@
     `anyio.abc.BlockingPortal` **DeprecationWarning** via a `filterwarnings`
     line in `pytest.ini` (this is the startup/test warning you may still see
     if the pin drifts). Touched `app/main.py`, `pytest.ini`, `requirements.txt`.
-  - **(uncommitted — do not claim shipped)** *Settings subnet UX polish*, three
+  - **(shipped — in `6bf798e`)** *Settings subnet UX polish*, three
     fixes on the Subnets card in `settings.html` from direct user feedback:
     (1) a global **"Rescan networks"** button + `/settings/subnets/rescan-all`
     (clears the suppression list so all auto /24s come back) — the missing
@@ -46,7 +45,7 @@
     unknown NIC is 400'd with the available list); (3) **lay-person CIDR help**
     (`/24`≈256, `/28`≈16, `/32`=single IP, must end in `.0`) + `add_subnet` rejects
     `/31`+. Touched `app/main.py`, `scanner.py`, `settings.html`, `tests/*`.
-    178 tests green, ruff clean; **not yet `git push gitlab main` / `ship.sh`.**
+    178 tests green, ruff clean; **shipped** (`git push gitlab main` + `ship.sh` → deploy_dev).
 - The **Settings widen+clarify** task (previously the "Next task") is now
   **done** — `settings.html` is `max-w-3xl` and the three subnet fields carry
   the clarifying hints (see decisions.md "UI / templates").
@@ -94,12 +93,40 @@
   `host_form.html` (subnet select). No new nav link — subnets live in Settings.
 
 
-## Next task — (none queued)
+## Next task — Diagnostics page polish (2026-09-18)
 
-> The Settings-screen task below was **completed** (see the F-batch entries in
-> "Current state" and the diff of `app/templates/settings.html`). It is recorded
-> here only for history. **Nothing is currently queued — ask the user what to
-> build next** before starting new feature work.
+Four items on `/diagnostic` were queued. **Three are done this batch** (committed +
+shipped to `deploy_dev`); the scanner-sweep error is **parked** pending in-container
+validation on the batcave (user: "we will come back to this").
+
+1. **NPM DB results → collapsible (DONE).** The proxy-host table is wrapped in a
+   `<details>` (collapsed by default) with an "Expand N host(s)" summary.
+2. **Merge the scanner-type card into "Run a Scan" (DONE).** The redundant
+   "Available Scanner Types" card is deleted; per-method docs now render as a helper
+   line under the Scanner `<select>` (updates on change — JS `METHOD_DESCS`).
+3. **"Run a Scan" formatting/consistency (DONE).** Fields top-align (`items-start`);
+   the Run button bottom-aligns with the controls (`sm:self-end`); the active
+   known-host button stays highlighted while its MAC is in the Target MAC field
+   (`.kh-active` + `aria-pressed`, driven by `normMac`); subnet label → "Subnet to
+   sweep" (dropped the "Which networks to sweep" sub-line); dropped the redundant
+   "Manually run the ARP scanner…" summary line.
+4. **Scanner sweep returns `"enp6s0" is not a valid numeric value` (PARKED).** A
+   scapy route/iface-resolution error on a full-CIDR sweep (see `decisions.md` →
+   "Scanner / multi-subnet gotchas", the `int("enp6s0")` note). **Not fixed here** —
+   validate in the `deploy_dev` container on the batcave, then revisit. **3 paths
+   into the app's scanner** (all in-container on `192.168.86.38`):
+   - **Diagnostic UI:** `:8787/diagnostic` → pick `arp-scan`/`scapy`, a known MAC,
+     the auto `/24` (or "All known"), **Run scan** → `POST /api/diagnostic/scan` →
+     `run_scan(...)` → `run_arp_scan` / `run_scapy_scan`. (This is the path that
+     surfaced the error.)
+   - **Recovery monitor (automatic):** `app/services/monitor.py:269`
+     `_start_recovery` → `find_ip_by_mac(mac, subnets=...)` → `_scan_with_arp_scan` /
+     `_scan_with_scapy` (fires when a monitored host flaps down; scope = pinned
+     subnet, else `list_subnets`).
+   - **Direct (lowest-level):** `docker exec upstream-healer python -c "from
+     app.services.scanner import run_scapy_scan, run_arp_scan; print(run_scapy_scan(
+     'aa:bb:cc:dd:ee:ff', subnets=['192.168.86.0/24']))"` → prints the exact
+     `(ip, output, error)` 3-tuple (and the same one-liner for `run_arp_scan`).
 
 ### (done) UI polish — Settings screen
 

@@ -194,6 +194,20 @@ collection with `ValidationError: extra_forbidden`.
   (emitted as `ERROR:`), which **aborts the entire sweep** — zero responders.
   Passing `iface=` per `srp` call keeps the default resolution path intact.
   Regression: `tests/test_scanner.py::TestRunScapyScan::test_per_sweep_failure_is_isolated`.
+- **TASK 4 PARKED (2026-09-18) — the `"enp6s0" is not a valid numeric value`
+  sweep error is NOT fixed yet.** The user deferred it ("we will come back to
+  this"). It's a scapy route/iface-resolution error surfacing from a full-CIDR sweep;
+  it overlaps the `conf.iface` note above and the CIDR-in-`pdst` handling in
+  `run_scapy_scan`. **Validate in the `deploy_dev` container on the batcave**
+  (192.168.86.38) — the NFS-workstation sandbox can't sweep (Flatpak: no `ip`/
+  `arp-scan` inside the sandbox; host copies are only reachable under `/run/host`).
+  Three paths into the app's scanner: (1) Diagnostic UI → `POST
+  /api/diagnostic/scan` → `run_scan` → `run_arp_scan`/`run_scapy_scan` (the path
+  that surfaced the error); (2) recovery monitor (`monitor.py:269`) →
+  `find_ip_by_mac(subnets=...)` → `_scan_with_arp_scan`/`_scan_with_scapy`;
+  (3) direct `docker exec upstream-healer python -c "from app.services.scanner
+  import run_scapy_scan; print(run_scapy_scan('aa:bb:cc:dd:ee:ff',
+  subnets=['192.168.86.0/24']))"` → prints the exact `(ip, output, error)`.
 - **`run_scapy_scan` sweeps each subnet in its own try/except.** One subnet
   failing to sweep (route resolution, no route, permission) logs a warning and
   `continue`s — it no longer fails the whole multi-subnet run. (This is the

@@ -40,7 +40,14 @@
         No proxy hosts found in the NPM database.
       </div>
     {% else %}
-      <div class="overflow-x-auto">
+      <details class="group">
+        <summary class="cursor-pointer select-none px-6 py-3 flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+          <svg class="w-4 h-4 text-slate-400 dark:text-slate-500 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+          </svg>
+          <span>Expand {{ npm_hosts|length }} host{{ 's' if npm_hosts|length != 1 }}</span>
+        </summary>
+      <div class="overflow-x-auto border-t border-slate-200 dark:border-slate-700">
         <table class="min-w-full divide-y divide-slate-200 dark:divide-slate-700">
           <thead class="bg-slate-50 dark:bg-slate-900">
             <tr>
@@ -83,39 +90,8 @@
           </tbody>
         </table>
       </div>
+      </details>
     {% endif %}
-  </div>
-
-  <!-- Scanner Types Section -->
-  <div class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
-    <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
-      <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">
-        Available Scanner Types
-      </h2>
-    </div>
-    <div class="p-6">
-      {% if scan_types %}
-        <div class="flex flex-wrap gap-3">
-          {% for scanner in scan_types %}
-          <div class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900">
-            <svg class="w-4 h-4 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-            </svg>
-            <span class="text-sm font-medium text-slate-700 dark:text-slate-300">{{ scanner }}</span>
-          </div>
-          {% endfor %}
-        </div>
-        <div class="mt-4 text-sm text-slate-500 dark:text-slate-400">
-          <p>The system uses the following scanner types to discover devices on the LAN:</p>
-          <ul class="mt-2 space-y-1">
-            <li><span class="font-medium text-slate-700 dark:text-slate-300">arp-scan</span> — Fast and reliable on Linux. Uses the <code class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-xs">arp-scan</code> binary to scan the local network.</li>
-            <li><span class="font-medium text-slate-700 dark:text-slate-300">scapy</span> — Python-based fallback. Uses the <code class="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-xs">scapy</code> library to send ARP requests.</li>
-          </ul>
-        </div>
-      {% else %}
-        <p class="text-sm text-slate-500 dark:text-slate-400">No scanner types configured.</p>
-      {% endif %}
-    </div>
   </div>
 
   <!-- Run a Scan Section -->
@@ -124,12 +100,7 @@
       <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Run a Scan</h2>
     </div>
     <div class="p-6">
-      <p class="text-sm text-slate-500 dark:text-slate-400 mb-4">
-        Manually run the ARP scanner and view the raw output. Pick a scanner and a MAC
-        address, then run it — the full output is shown below.
-      </p>
-
-      <div class="flex flex-col sm:flex-row gap-4 items-start sm:items-end">
+      <div class="flex flex-col sm:flex-row gap-4 items-start">
         <div>
           <label for="scan-method" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Scanner</label>
           <select id="scan-method" class="form-control">
@@ -142,7 +113,7 @@
           <input type="text" id="scan-mac" placeholder="aa:bb:cc:dd:ee:ff" class="w-full" />
         </div>
         <div>
-          <label for="scan-subnet" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Subnet</label>
+          <label for="scan-subnet" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Subnet to sweep</label>
           <select id="scan-subnet" class="form-control">
             <option value="0">All known subnets</option>
             {% for s in subnets %}
@@ -152,24 +123,24 @@
               </option>
             {% endfor %}
           </select>
-          <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Which networks to sweep.</p>
         </div>
         <button id="scan-run" type="button"
-          class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed">
+          class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed sm:self-end">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H12" />
           </svg>
           <span id="scan-run-label">Run scan</span>
         </button>
       </div>
+      <p id="scan-method-desc" class="mt-2 text-xs text-slate-500 dark:text-slate-400"></p>
 
       {% if hosts %}
         <div class="mt-4">
           <span class="text-xs uppercase tracking-wider text-slate-400 dark:text-slate-500">Known hosts — click to prefill:</span>
           <div class="mt-2 flex flex-wrap gap-2">
             {% for h in hosts %}
-              <button type="button" data-mac="{{ h.mac_address }}" data-name="{{ h.name }}"
-                class="text-xs px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:border-brand-400 transition">
+              <button type="button" data-mac="{{ h.mac_address }}" data-name="{{ h.name }}" aria-pressed="false"
+                class="kh-btn text-xs px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:border-brand-400 transition">
                 {{ h.name }}
               </button>
             {% endfor %}
@@ -206,6 +177,28 @@
 
 </div>
 
+<style>
+  /* Known-host prefill buttons: highlight the one whose MAC is in the Target
+     MAC field (toggled by JS below). `!important` beats the Tailwind utilities
+     on the same element; works in both light and dark mode. */
+  .kh-btn {
+    transition: background-color 0.15s ease, border-color 0.15s ease,
+      color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .kh-btn.kh-active {
+    border-color: #0ea5e9 !important;
+    background-color: #e0f2fe !important;
+    color: #075985 !important;
+    box-shadow: 0 0 0 1px #0ea5e9;
+  }
+  .dark .kh-btn.kh-active {
+    border-color: #38bdf8 !important;
+    background-color: rgba(12, 74, 110, 0.5) !important;
+    color: #bae6fd !important;
+    box-shadow: 0 0 0 1px #38bdf8;
+  }
+</style>
+
 <script>
   (function () {
     const methodEl = document.getElementById('scan-method');
@@ -219,11 +212,44 @@
     const hostsWrap = document.getElementById('scan-hosts-wrap');
     const hostsBody = document.getElementById('scan-hosts');
     const hostsCount = document.getElementById('scan-hosts-count');
+    const methodDescEl = document.getElementById('scan-method-desc');
 
     function esc(v) {
       const d = document.createElement('div');
       d.textContent = v == null ? '' : String(v);
       return d.innerHTML;
+    }
+
+    const METHOD_DESCS = {
+      'arp-scan': 'Fast and reliable on Linux — sweeps the subnet with the arp-scan binary.',
+      'scapy': 'Python-based fallback — sends ARP requests directly via scapy.',
+    };
+
+    function syncMethodDesc() {
+      if (!methodDescEl) return;
+      const text = METHOD_DESCS[methodEl.value] || '';
+      methodDescEl.textContent = text;
+      methodDescEl.style.display = text ? '' : 'none';
+    }
+
+    // Canonicalise a MAC the same way the backend does (lowercase, colon
+    // separated); a 32-hex Intel EUI-64 value reduces to its last 12 hex.
+    function normMac(v) {
+      if (!v) return '';
+      let s = String(v).toLowerCase().replace(/[^0-9a-f]/g, '');
+      if (s.length === 32) s = s.slice(-12);
+      if (s.length !== 12) return s;
+      return s.replace(/(.{2})(?=.)/g, '$1:');
+    }
+
+    // Highlight the known-host button whose MAC matches the Target MAC field.
+    function syncKnownHosts() {
+      const target = normMac(macEl.value);
+      document.querySelectorAll('.kh-btn').forEach((btn) => {
+        const active = !!target && target === normMac(btn.getAttribute('data-mac'));
+        btn.classList.toggle('kh-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
     }
 
     function clearHosts() {
@@ -307,9 +333,16 @@
       }
     });
 
-    document.querySelectorAll('[data-mac]').forEach((btn) => {
-      btn.addEventListener('click', () => { macEl.value = btn.getAttribute('data-mac'); });
+    document.querySelectorAll('.kh-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        macEl.value = btn.getAttribute('data-mac');
+        syncKnownHosts();
+      });
     });
+    macEl.addEventListener('input', syncKnownHosts);
+    methodEl.addEventListener('change', syncMethodDesc);
+    syncMethodDesc();
+    syncKnownHosts();
   })();
 </script>
 {% endblock %}
