@@ -1,6 +1,6 @@
 # Architecture — Upstream Healer
 
-> Last updated: 2026-09-17.
+> Last updated: 2026-09-19.
 
 ## Repository
 
@@ -21,7 +21,8 @@ upstream-healer/
 │   ├── database.py      # SQLite schema (CREATE TABLE IF NOT EXISTS) + migrations + get_db dep
 │   ├── services/
 │   │   ├── monitor.py       # Monitor: background loop, per-host checks, recovery flow
-│   │   ├── scanner.py       # MAC→IP discovery: arp-scan first, scapy fallback; reachability check
+│   │   ├── scanner.py       # MAC→IP discovery: arp-scan→scapy sweep; hostnames; mDNS name cache
+│   │   ├── mdns.py          # mDNS/avahi browse (zeroconf): live hostnames, runs alongside the sweep
 │   │   ├── npm.py           # NPMClient: NPM MariaDB access via docker; proxy_host updates
 │   │   └── notifications.py # EVENT_TYPES; send_event → telegram + email channels
 │   ├── templates/       # Jinja2: base, dashboard, host_form, host_events, notifications,
@@ -79,6 +80,9 @@ Tables: `hosts` (identity = MAC + port, unique), `settings`, `notification_chann
 ## Web surface (`app/main.py`)
 
 - Dashboard + host CRUD + notifications + settings pages (templates)
-- `/api/...` JSON endpoints; `/diagnostic` (HTML) + `/api/diagnostic`
-  (JSON) expose NPM availability, proxy_host rows, and — in the current WIP —
-  SQLite host rows for comparison.
+- `/api/...` JSON endpoints; `/diagnostic` (HTML) + `/api/diagnostic` (JSON)
+  expose NPM availability, proxy_host rows, and SQLite host rows.
+- **Diagnostic hostname flow**: `run_scan` runs the ARP sweep (arp-scan→scapy)
+  alongside `mdns.browse_mdns()` (8 s window, returns `{ip:name, mac:name}`);
+  `apply_hostnames` layers known-DB → live-mDNS → cached-mDNS (`mdns_names`) →
+  reverse-DNS and sorts named-first; `remember_mdns_names` persists new names.

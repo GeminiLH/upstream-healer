@@ -1,6 +1,6 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-09-18.
+> Last updated: 2026-09-19.
 
 ## Design decisions
 
@@ -27,6 +27,17 @@
 - **Seed retry logic**: MariaDB error codes indicating NPM is still
   migrating (`_MIGRATING_ERRNOS`) are retried up to `_SEED_RETRIES` times —
   first-attempt failure means "not finished yet", not "broken".
+- **mDNS hostname resolution + a persistent per-MAC name cache** (`10d12fa` +
+  `fa191e2`): the diagnostic scan resolves real hostnames in a layered chain,
+  highest first — a monitored host's curated DB name → a live mDNS/avahi name
+  (`app/services/mdns.py`, a `zeroconf` browse with an **8 s window** run
+  *concurrently* with the ARP sweep) → a **persistent per-MAC `mdns_names`
+  cache** → reverse-DNS PTR. The browse is *racy* (a quiet device may not answer
+  in the window), so the cache makes naming **monotonic**: names only add/update,
+  never vanish — a name disappears only when the device is absent from *that* ARP
+  sweep. `apply_hostnames` sorts named-first so the table stays visually stable.
+  `zeroconf==0.151.3`; the browse degrades to empty maps (never raises) if mDNS is
+  unavailable, so a scan is never blocked by name lookup.
 
 ## Hard rules (user directives)
 
@@ -55,7 +66,7 @@
   here the equivalents are direct MariaDB SQL over `:3306` and the manual
   `dev_debug` CI job for container state/log inspection.
 
-## CI / pipeline verification (VERIFIED WORKING — 2026-07-09, re-verified 2026-09-15)
+## CI / pipeline verification (VERIFIED WORKING — 2026-07-09, re-verified 2026-09-15 + 2026-09-19)
 
 Access is in the repo-root **`.env.local`** file (git-ignored; loaded with
 `set -a; . ./.env.local; set +a`). **Never commit it**, never print its values
@@ -106,6 +117,9 @@ collection with `ValidationError: extra_forbidden`.
   - `GET  /api/v4/projects/4/pipelines/:id/jobs` — job statuses
   - `GET  /api/v4/projects/4/jobs/:id/trace` — job log output
   - `POST /api/v4/projects/4/pipelines/:id/retry` — re-run pipeline
+  - `POST /api/v4/projects/4/jobs/:id/play` — trigger a *manual* job (this is how
+    `deploy_dev` is run from the sandbox). Verified 2026-09-19 (jobs 947/955).
+    Needs the *pipeline* token — the read token → 403 `insufficient_scope`.
 - Pipeline stages (pipeline #36 on HEAD `0311e56e`, verified 2026-09-15):
   `lint`, `unit_tests`, `build_image` → `deploy_dev` → `dev_down` (all
   success); manual jobs: `deploy_test`, `deploy_production`, `dev_debug`.
@@ -182,6 +196,13 @@ collection with `ValidationError: extra_forbidden`.
   it as missing; but re-verify that JSON shape is what NPM expects.) The schema
   *changes between NPM image releases*, so prefer introspecting `SHOW COLUMNS`
   and auto-filling over hardcoding a fixed column list.
+- **Live diagnostic-scan API contract (`POST /api/diagnostic/scan`):** the
+  deployed `ScanRequest` requires `target_mac` (str) **and** `subnet_cidr` (str)
+  together. A body with only `subnets` (a list) **422s** with `Field required`.
+  The unit tests exercise the `subnets`-list form (fine in-process) — but to
+  *script against the live API* you must send `target_mac` + `subnet_cidr`. Unit
+  tests are the source of truth for the scanner; hit `:8787` only to confirm the
+  *deployed* request shape.
 
 ## Scanner / multi-subnet gotchas
 
@@ -229,111 +250,40 @@ collection with `ValidationError: extra_forbidden`.
   specific IP (e.g. `192.168.70.0/32`) and expected a whole-LAN sweep, the real
   fix is to enter the `/24` (e.g. `192.168.70.0/24`).
 
-## Seeder / NPM-sync bug history — RESOLVED vs CURRENT (verified live in dev)
+## Seeder / NPM-sync gotchas (all resolved — read before touching `scripts/seed_dev.py`)
 
-Track these carefully; the failure mode has changed layer by layer. As of the
-introspection fix (uncommitted WIP, 2026-09-16) **both** seeder bugs (#1 cursor
-closed, #4 NOT-NULL 1364) are fixed in code; #4 awaits deploy + live
-verification. The #2 (`protocol` 1054 in `npm.py`) needs re-verification and #3
-is stale/disproven — do not re-implement.
-
-1. ✅ **RESOLVED (commit `72dd82b`, live-confirmed 2026-09-16): "Cursor closed".**
-   `_ensure_npm_defaults` originally ran its owner `INSERT` *after* the
-   `SELECT user` `with conn.cursor()` block closed the cursor. pymysql raises
-   closed-cursor misuse as a **str-args** `OperationalError` ("Cursor closed",
-   "Not yet connected") — **no `errno`** — so the seeding retry loop (which
-   only backed off on schema errnos + a few connection-marker strings) gave up
-   after one attempt and seeded **zero** rows. The heal (not a symptom) is:
-   (a) every statement now lives *inside* its `with conn.cursor()` block, and
-   (b) the retry loop treats `"closed"` / `"not connected"` /
-   `"not yet connected"` as transient. Regression: `tests/test_seed_dev.py
-   TestCursorLifecycle` uses a faithful `_ClosingCursor`/`_ClosingConn` that
-   raises "Cursor closed" post-`__exit__`; the buggy layout fails against it,
-   the fixed layout seeds all 6 hosts.
-2. ⚠️ **HISTORICAL (status: RE-VERIFY — may have been fixed in the WIP that
-   later became part of the deployed build):** the earlier 1054
-   (`"Unknown column 'protocol'"`) from `app/services/npm.py` `get_all_hosts`.
-   ⚠️ Do NOT assume this is fixed just because the seeder progressed — the
-   seeder writing rows and the healer's `get_all_hosts` reading them are
-   *independent* code paths. Confirm `get_all_hosts`'s SELECT uses only real
-   columns before trusting the diagnostic page.
-3. ❌ **STALE / DISPROVEN — do NOT re-implement this.** The prior note
-   "the `proxy_host` INSERT omits `owner_user_id`/`access_list_id`/
-   `certificate_id` (NOT NULL) → cannot be null". That was a *previous*
-   code state. The current `scripts/seed_dev.py` INSERT **already supplies all
-   three** via an explicit column list (owner resolved from the NPM `user`
-   table, access_list + certificate bootstrapped). The live DB confirms the
-   seeder now gets *past* this INSERT. Do not re-add/rewrite these.
-4. ✅ **FIXED (in code, uncommitted — awaiting deploy + live verification):**
-   **1364, NOT-NULL with no default** — the *next* layer after the cursor fix.
-   On the live dev NPM (`jc21/nginx-proxy-manager`), the seeder's **first**
-   INSERT (`user` owner) failed with
-   `(1364, "Field 'avatar' doesn't have a default value")` → seed gave up →
-   `user`/`access_list`/`certificate`/`proxy_host` all stayed **0 rows** → the
-   `:8787/diagnostic` page showed "No proxy hosts found". The real schema
-   (introspected via `SHOW COLUMNS` on the live dev DB) has these
-   NOT-NULL-with-no-default columns the seed **omitted** (the 1364 fires on
-   `avatar` first, in definition order — the rest are the same class):
-   - `user`: **`avatar`** (varchar(255)). (`roles` is supplied as `'["admin"]'` —
-     unverified shape, not the cause of 1364.)
-   - `proxy_host`: **`advanced_config`** (text), **`meta`** (longtext).
-   - `certificate`: **`meta`** (longtext).
-   - `access_list`: `meta` (longtext) — the seed already passes `"{}"`, so no
-     change needed there.
-   **The fix** (`scripts/seed_dev.py`, deployed): the seeder introspects each
-   table via `SHOW COLUMNS` *before* its INSERT and auto-fills any
-   NOT-NULL-with-no-default column the INSERT doesn't already supply, using
-   `_KNOWN_COLUMNS_WITH_DEFAULTS` (`user.avatar=''`, `certificate.meta='{}'`,
-   `proxy_host.advanced_config='{}'`+`meta='{}'`, `access_list.meta='{}'`),
-   falling back to `""` for a truly unknown new column. This is robust against
-   NPM renaming or adding required columns across image releases — the fill is
-   derived from the live schema, not a hardcoded column list. 1364 is NOT
-   treated as transient (a stable schema won't fix itself with time), so the
-   pass fails fast rather than retrying ~30s. Regression:
-   `tests/test_seed_dev.py TestSchemaIntrospection` (7 tests).
-
-5. **FIXED + DEPLOYED — the full set of NPM schema blockers (resolved
-   2026-09-16, live-verified against `192.168.86.38:3306`):** deploying the
-   introspection fix surfaced *four more* schema blockers, one per deploy,
-   because the seed is a per-table atomic pass and each INSERT fails the
-   whole pass. All now fixed, committed, deployed, and **live-verified**
-   (the seeder created all 6 proxy_host rows + owner + access_list +
-   certificate; idempotent re-run reuses them; zero duplicates):
-   - **1064 SQL syntax** — the owner-creation used
-     `CREATE USER (email=…, password=…, realm=…)`, a *privileged* MySQL
-     statement that does NOT accept an INSERT-style parenthesized column list
-     (syntax error). It was also redundant (the `user` row is already
-     INSERTed in the same transaction) — **removed** it.
-   - **`No module named 'bcrypt'`** — `requirements.txt` lacked `bcrypt`, so
-     the owner's password hash came back empty (no password login). **Added**
-     `bcrypt==4.2.1`.
-   - **1048 then 1292 on `certificate`** — the fallback cert (NPM's built-in
-     id 0 is absent on a pristine sandbox; the seed creates its own) seeded
-     `domain_names=NULL` (1048) then `expires_on=''` (1292). Live schema:
-     `expires_on datetime NOT NULL`, `domain_names longtext NOT NULL CHECK
-     (json_valid(domain_names))`, `meta longtext NOT NULL CHECK
-     (json_valid(meta))`. **Fixed** to `domain_names="[]"` (valid JSON),
-     `expires_on="2999-12-31 23:59:59"` (a `__sql__` datetime literal — not
-     NULL and not `''`), `meta="{}"`.
-   - **4025 on `proxy_host.domain_names`** — that column is ALSO
-     `longtext CHECK (json_valid(domain_names))` (a JSON *array*, not a bare
-     hostname). The seed passed the plain domain string. **Fixed** with
-     `_proxy_host_domain()` (decode: `["host"]`→`host`, `"host"`→`host`,
-     plain→as-is, malformed→as-is) for existing-row matching, and
-     `json.dumps([domain])` for the INSERT.
-   Regression: `TestSchemaIntrospection::test_fallback_certificate_…` (pins
-   the cert values) + `TestProxyHostDomainJson` (pins the helper + the
-   JSON-array INSERT shape). 117 tests pass, ruff clean.
-   **Takeaway:** the dev NPM (`jc21/nginx-proxy-manager`) schema is stricter
-   than the seed assumed in four places. The introscopic `_fills_for` +
-   explicit JSON values now handle all of them, and the live-verified deploy
-   is the ground truth (do not trust a bare value assumption again).
-6. **Dev sandbox NPM DB state** (`nginx-db-1`): schema migrated, but `user`,
-   `access_list`, `certificate` are **empty** (setup wizard never ran on the
-   dev box). That is *expected* and is why the seeder must bootstrap a dev
-   admin row; it is not the bug itself (see #4 for the real blocker). Direct
-   SQL from this workstation works: `pymysql` → `192.168.86.38:3306`
-   (user `proxymanager`, sandbox password — see compose defaults).
+The seeder's failures surfaced layer by layer and are all **fixed, deployed, and
+live-verified** (creates all 6 proxy_host rows + owner + access_list + certificate;
+idempotent re-run reuses them, zero duplicates). Keep these gotchas when editing:
+- **Cursor-lifecycle errors carry NO numeric errno.** A pymysql "Cursor closed" /
+  "Not yet connected" is a *str-args* `OperationalError` with no `errno`, unlike real
+  SQL failures (1364 missing-column, 1054 unknown-column, 1146 missing-table,
+  1048 null-into-NOT-NULL put the code in `exc.args[0]`). Retry/backoff MUST also
+  match the *string* form — or lifecycle errors look non-retryable and the seeder
+  silently seeds 0 rows. Regression: `TestCursorLifecycle` (`_ClosingCursor`/`_ClosingConn`).
+- **Run every statement *inside* its `with conn.cursor()` block** (the "Cursor
+  closed" fix, `72dd82b`) and treat `"closed"`/`"not connected"` as transient.
+- **NOT-NULL-with-no-default columns must be explicitly supplied on INSERT** (strict
+  mode; a NULL also fails them). The schema *changes between NPM image releases*, so
+  the seeder **introspects `SHOW COLUMNS` before each INSERT** and auto-fills any such
+  column the INSERT omits (`_fills_for` / `_KNOWN_COLUMNS_WITH_DEFAULTS`:
+  `user.avatar=''`, `certificate.meta='{}'`, `proxy_host.advanced_config`+`meta='{}'`,
+  `access_list.meta='{}'`; `""` for a truly unknown new column). 1364 is NOT transient
+  (a stable schema won't fix itself) → the pass fails fast, not a ~30s retry.
+- **JSON-check columns need valid JSON, not bare strings.** `certificate`/`proxy_host`
+  `domain_names` are `longtext CHECK (json_valid(…))`: the fallback cert seeds
+  `domain_names="[]"`, `expires_on="2999-12-31 23:59:59"` (a `__sql__` datetime, not
+  NULL/`''`), `meta="{}"`; `proxy_host.domain_names` is a JSON *array* — use
+  `_proxy_host_domain()` for matching + `json.dumps([domain])` on INSERT.
+- **NPM bootstrap specifics:** the owner `user` row is a plain INSERT (the old
+  `CREATE USER (…)` was a syntax error AND redundant — removed); `bcrypt==4.2.1` is
+  required for the password hash; the sandbox DB has empty `user`/`access_list`/
+  `certificate` (wizard never ran) so the seeder bootstraps a dev admin. Regression:
+  `TestSchemaIntrospection` + `TestProxyHostDomainJson`. (`npm.get_all_hosts` is an
+  *independent* read path — confirm its SELECT uses only real columns.)
+- **Do NOT re-implement** the disproven note that the `proxy_host` INSERT omits
+  `owner_user_id`/`access_list_id`/`certificate_id` — the current INSERT already
+  supplies all three.
 
 ## UI / templates
 

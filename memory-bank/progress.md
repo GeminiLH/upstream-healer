@@ -8,11 +8,10 @@
 
 - Branch: `main` (tracking `gitlab/main`; GitLab is the primary repo, see
   decisions.md; push explicitly with `git push gitlab main` — never bare).
-- HEAD / sync: `gitlab/main` fast-forwarded to `fdc11c6` (the settings-page
-  layout polish — this bank update lands in a follow-up commit after it).
-  **Health: 178 tests pass, ruff clean** (verified on system `python3` 3.13; the
-  repo `.venv` is a non-working Windows venv on this NFS share — see context.md).
-  Only worktree leftover: the pre-existing stray `5}` deletion (see decisions.md).
+- HEAD / sync: `gitlab/main` at `af4a760` (bank note); latest functional code
+  `fa191e2` (mDNS name cache). **211 tests pass, ruff clean** (system `python3`
+  3.13; the repo `.venv` is a non-working Windows venv on this NFS share — see
+  context.md). Worktree clean.
 - **mDNS hostname resolution (DONE — `10d12fa` + `fa191e2`, deployed to dev via
   `deploy_dev`):** the diagnostic scan now resolves real hostnames, layered
   (highest first): a monitored host's curated DB name → a live mDNS/avahi name
@@ -105,94 +104,21 @@
   `host_form.html` (subnet select). No new nav link — subnets live in Settings.
 
 
-## Next task — Diagnostics page polish (2026-09-18)
+## Diagnostics page — DONE (shipped; latest work is the mDNS hostname feature)
 
-Four items on `/diagnostic` were queued. **Three are done this batch** (committed +
-shipped to `deploy_dev`); the scanner-sweep error is **parked** pending in-container
-validation on the batcave (user: "we will come back to this").
+All the `/diagnostic` polish from 2026-09-16/18 is shipped + deployed — it builds
+the foundation the **mDNS hostname feature** (see Current state) sits on:
+- **Collapsible NPM proxy-host table** + merged scanner-type card + a tightened
+  "Run a Scan" layout (the three F-style UI fixes).
+- **Settings screen** widened to `max-w-3xl` with clarified subnet fields
+  (Name = friendly label; CIDR = whole `/24`; Interface = "leave blank for auto").
+- **Scapy `enp6s0` route bug fixed** (`00062a6`, deployed): a *scapy* diagnostic
+  scan now returns the full responder table — no more `int("enp6s0")` `ERROR:`.
 
-1. **NPM DB results → collapsible (DONE).** The proxy-host table is wrapped in a
-   `<details>` (collapsed by default) with an "Expand N host(s)" summary.
-2. **Merge the scanner-type card into "Run a Scan" (DONE).** The redundant
-   "Available Scanner Types" card is deleted; per-method docs now render as a helper
-   line under the Scanner `<select>` (updates on change — JS `METHOD_DESCS`).
-3. **"Run a Scan" formatting/consistency (DONE).** Fields top-align (`items-start`);
-   the Run button bottom-aligns with the controls (`sm:self-end`); the active
-   known-host button stays highlighted while its MAC is in the Target MAC field
-   (`.kh-active` + `aria-pressed`, driven by `normMac`); subnet label → "Subnet to
-   sweep" (dropped the "Which networks to sweep" sub-line); dropped the redundant
-   "Manually run the ARP scanner…" summary line.
-4. **Scanner sweep returns `"enp6s0" is not a valid numeric value` (PARKED).** A
-   scapy route/iface-resolution error on a full-CIDR sweep (see `decisions.md` →
-   "Scanner / multi-subnet gotchas", the `int("enp6s0")` note). **Not fixed here** —
-   validate in the `deploy_dev` container on the batcave, then revisit. **3 paths
-   into the app's scanner** (all in-container on `192.168.86.38`):
-   - **Diagnostic UI:** `:8787/diagnostic` → pick `arp-scan`/`scapy`, a known MAC,
-     the auto `/24` (or "All known"), **Run scan** → `POST /api/diagnostic/scan` →
-     `run_scan(...)` → `run_arp_scan` / `run_scapy_scan`. (This is the path that
-     surfaced the error.)
-   - **Recovery monitor (automatic):** `app/services/monitor.py:269`
-     `_start_recovery` → `find_ip_by_mac(mac, subnets=...)` → `_scan_with_arp_scan` /
-     `_scan_with_scapy` (fires when a monitored host flaps down; scope = pinned
-     subnet, else `list_subnets`).
-   - **Direct (lowest-level):** `docker exec upstream-healer python -c "from
-     app.services.scanner import run_scapy_scan, run_arp_scan; print(run_scapy_scan(
-     'aa:bb:cc:dd:ee:ff', subnets=['192.168.86.0/24']))"` → prints the exact
-     `(ip, output, error)` 3-tuple (and the same one-liner for `run_arp_scan`).
-
-### (done) UI polish — Settings screen
-
-User request (2026-09-16, mid-task): *"make the settings screen wider for entering
-new subnets, but also clarify what information you expect in the fields, including
-what interfaces you expect. There is no reason to keep the screen narrow, but it
-should size for a phone."* — **DONE**: page is `max-w-3xl`; the three subnet
-fields now carry clarifying hints (Name = friendly label; CIDR = "use /24, not
-/32"; Interface = "leave blank for automatic detection" + NIC examples). Three
-pieces:
-
-1. **Widen the page.** The whole page is wrapped in `<div class="max-w-xl">`
-   (line 5) = max 576px — that is the bottleneck. Change to `max-w-3xl` or
-   `max-w-4xl`. The outer `base.html` `<main>` is already `max-w-6xl`, so only
-   this inner wrapper constrains it. `max-w-xl`/`3xl` are fine on phone because
-   max-width is a *ceiling* — on a narrow viewport the content is `width:100%` +
-   `px-4` padding, so this "widens on desktop, still full-width on a phone" with
-   no media query. (`host_form.html` also uses `max-w-xl` — out of scope unless
-   the user asks, but the same pattern applies.)
-
-2. **Clarify the "add subnet" form** (the `POST /settings/subnets` form, ~line 101,
-   `grid grid-cols-1 sm:grid-cols-2`). The 3 fields map to
-   `app/main.py::add_subnet` (line 537):
-   - **Name** (`name`, `required`, `Form(...)`) — *free-text friendly label*; what
-     the user calls the network. Shown in the table + the host/diagnostic subnet
-     dropdowns. e.g. `Home Wi-Fi`, `VLAN 20`, `Guest`. Not validated.
-   - **CIDR** (`cidr`, `required`, `Form(...)`) — the **network CIDR**
-     `<network>/<prefix>`. Validated with `ipaddress.ip_network(cidr, strict=False)`
-     (line 549) — `strict=False` accepts non-zero host bits (`192.168.70.5/24` →
-     normalised to `192.168.70.0/24`). **Emphasise in the hint: enter the whole
-     network (`…0/24`), not a single host (`…5/32`).** A `/32` is one IP with no
-     broadcast → can't be ARP-swept; the scanner now explains that (decisions.md "Scanner /
-     multi-subnet gotchas" — the /32 bullet).
-   - **Interface** (`interface`, optional, `Form("")` default, stored `None` if
-     blank — line 555). The **egress NIC name** ARP/scapy packets leave via.
-     Real values = `ip -o -4 addr` names like `enp6s0`, `eth0`, `en0`.
-     **CRITICAL UX bug to fix:** the current placeholder is `auto`, but
-     `interface="auto"` is treated as a *literal* NIC name and fails ("no such
-     device")! Leave **blank** = auto (the scanner picks the local iface for that
-     CIDR via `get_default_subnets`). Change the placeholder to `leave blank for
-     auto` (or add a helper line) and note example local interface names.
-
-   **Do NOT rename the form fields** (`name`/`cidr`/`interface`) or the
-   `action="/settings/subnets"` — the handler reads them by those names.
-
-3. **Responsive/phone sizing.** Keep the form's `grid-cols-1 sm:grid-cols-2`
-   (already stacks to 1 column on phones; stays correct once the page is wider).
-   The subnets **table** already sits in `overflow-x-auto` (scrolls on phones).
-
-**Validation** (no tests touch templates — render check only): `ruff` clean; a
-throwaway `TestClient` `GET /settings` (see `temp_db_file` in `tests/conftest.py`)
-rendering the new width + hint text and still posting `name/cidr/interface` to
-`/settings/subnets`; then commit → push → spawn pipeline → auto jobs →
-`deploy_dev` **on the explicit user-confirmation pattern** (deploy_dev is manual).
+The scanner is exercised three ways in-container (Diagnostic UI, the recovery
+monitor, direct `docker exec`); the `/32`-not-a-network, the `auto`-interface
+placeholder, and the `POST /api/diagnostic/scan` request contract all live in
+`decisions.md`.
 
 ## Done (recent history)
 
