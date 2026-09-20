@@ -14,6 +14,7 @@ import subprocess
 from typing import Optional
 
 from app.config import current_time
+from app.services import diag_log
 
 logger = logging.getLogger("healer.scanner")
 
@@ -71,6 +72,7 @@ async def run_scan(
     """
     target_mac = normalize_mac(target_mac)
     method = (method or "arp-scan").strip().lower()
+    diag_log.emit("run_scan", f"method={method}", f"target={target_mac}", f"subnets={subnets}")
     loop = asyncio.get_running_loop()
 
     if method == "scapy":
@@ -355,6 +357,12 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
             reasons = " ".join(
                 n.strip("()").strip() for n in notes
             )
+            diag_log.emit(
+                "arp-scan plan",
+                f"requested={requested}",
+                f"discovered={discovered}",
+                f"notes={notes}",
+            )
             return None, "\n".join(notes).strip(), (
                 "No scannable subnets to sweep"
                 + (f" ({reasons})" if reasons else "")
@@ -363,6 +371,7 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
             )
 
         chunks, error = _run_sweeps(sweeps)
+        diag_log.emit("arp-scan plan", f"requested={requested}", f"sweeps={sweeps}", f"notes={notes}")
         output = _filter_and_dedupe("\n\n".join(chunks), requested)
         if not output:
             output = "(arp-scan produced no output — no hosts responded)"
@@ -383,6 +392,7 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
     if not sweeps:
         # Last resort (e.g. Windows dev box: no `ip`, no arp-scan targets):
         # the historic passive ARP-table dump of all interfaces.
+        diag_log.emit("arp-scan plan", f"auto discovered={discovered}", f"notes={notes}", "mode=passive arp-scan -l")
         try:
             proc = subprocess.run(
                 ["arp-scan", "-l", "-q", "--retry=3"],
@@ -391,15 +401,25 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
                 timeout=45,
             )
         except FileNotFoundError:
+            diag_log.emit("arp-scan", "binary not found (passive -l)")
             return None, "", "arp-scan binary not found"
         except Exception as exc:  # noqa: BLE001
+            diag_log.exc("arp-scan", exc, "passive -l")
             return None, "", f"arp-scan failed: {exc}"
+        diag_log.proc("arp-scan", ["arp-scan", "-l", "-q", "--retry=3"], proc)
         output = (proc.stdout or "") + (proc.stderr or "")
         if not output.strip():
             output = "(arp-scan produced no output — no hosts responded)"
         return None, output, None
 
     chunks, error = _run_sweeps(sweeps)
+    diag_log.emit(
+        "arp-scan plan",
+        "mode=all-local",
+        f"discovered={discovered}",
+        f"sweeps={sweeps}",
+        f"notes={notes}",
+    )
     output = _filter_and_dedupe("\n\n".join(chunks), None)
     if not output:
         output = "(arp-scan produced no output — no hosts responded)"
@@ -419,12 +439,15 @@ def _run_sweeps(
     chunks: list[str] = []
     error: Optional[str] = None
     for iface, cidr in sweeps:
+        kind = classify_subnet(cidr, iface)["kind"]
         # arp-scan is a Layer-2 (ARP broadcast) tool: it cannot reach hosts beyond
         # a tunnel/gateway (the broadcast would hit only the tunnel peer).  For
         # such networks probe at Layer 3 instead.
-        if classify_subnet(cidr, iface)["kind"] in ("tunnel", "routed"):
+        if kind in ("tunnel", "routed"):
             l3_egress = _l3_probe_egress(cidr, iface)
+            diag_log.emit("arp-scan sweep", f"cidr={cidr}", f"classified={kind}", f"egress={l3_egress}", "mode=L3 (ARP broadcast cannot cross a gateway)")
             _found, l3_output, l3_err = run_l3_probe(cidr, l3_egress, timeout=3.0)
+            diag_log.emit("arp-scan sweep", f"cidr={cidr}", f"l3_found={_found}", f"l3_error={l3_err}", f"l3_output={l3_output}")
             if l3_err:
                 error = f"L3 probe failed: {l3_err}"
             if l3_output and l3_output.strip():
@@ -434,10 +457,13 @@ def _run_sweeps(
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         except FileNotFoundError:
+            diag_log.emit("arp-scan", "binary not found", "cmd=" + " ".join(cmd))
             return [], "arp-scan binary not found"
         except Exception as exc:  # noqa: BLE001 - per-sweep isolation
+            diag_log.exc("arp-scan", exc, "cmd=" + " ".join(cmd))
             error = f"arp-scan failed: {exc}"
             continue
+        diag_log.proc("arp-scan", cmd, proc)
         out = (proc.stdout or "") + (proc.stderr or "")
         if out.strip():
             chunks.append(out.rstrip())
@@ -525,6 +551,7 @@ def run_scapy_scan(
     try:
         from scapy.all import ARP, Ether, srp, conf  # type: ignore
     except ImportError:
+        diag_log.emit("scapy", "library not installed — cannot sweep")
         return None, "", "scapy library not installed"
 
     target_mac = normalize_mac(target_mac)
@@ -545,6 +572,12 @@ def run_scapy_scan(
         if not local_ip:
             return None, "", "could not determine local IP"
         networks.append(".".join(local_ip.split(".")[:3]) + ".0/24")
+    diag_log.emit(
+        "scapy",
+        f"networks={networks}",
+        f"target={target_mac}",
+        f"explicit_interface={interface}",
+    )
 
     try:
         conf.verb = 0
@@ -581,6 +614,11 @@ def run_scapy_scan(
                             if local_ip in if_ips:
                                 egress = if_name
                                 break
+            diag_log.emit(
+                "scapy egress",
+                f"network={network}",
+                f"egress={egress or '(scapy default interface)'}",
+            )
 
             # A tunnel/routed subnet cannot be ARP-*broadcast* swept: the
             # broadcast reaches only the one tunnel peer (so every IP would show
@@ -588,8 +626,21 @@ def run_scapy_scan(
             # finds the real live hosts.
             if classify_subnet(network, interface)["kind"] in ("tunnel", "routed"):
                 l3_egress = _l3_probe_egress(network, interface)
+                diag_log.emit(
+                    "scapy sweep",
+                    f"network={network}",
+                    f"egress={l3_egress}",
+                    "mode=L3 (routed/tunnel — ARP broadcast skipped)",
+                )
                 _found, l3_output, l3_err = run_l3_probe(
                     network, l3_egress, target_mac, timeout=3.0,
+                )
+                diag_log.emit(
+                    "scapy sweep",
+                    f"network={network}",
+                    f"l3_found={_found}",
+                    f"l3_error={l3_err}",
+                    f"l3_output={l3_output}",
                 )
                 if l3_err:
                     lines.append(f"# {network}: L3 probe failed ({l3_err})")
@@ -613,9 +664,17 @@ def run_scapy_scan(
                         timeout=3, retry=2, verbose=0,
                     )
             except Exception as exc:  # noqa: BLE001 - per-network isolation
+                diag_log.exc("scapy sweep", exc, f"network={network}", f"egress={egress}")
                 logger.warning(f"scapy: sweep of {network} failed ({exc})")
                 continue
 
+            diag_log.emit(
+                "scapy sweep",
+                f"network={network}",
+                f"egress={egress}",
+                f"classified={classify_subnet(network, interface)['kind']}",
+                f"responses={len(ans)}",
+            )
             for _, received in ans:
                 mac = normalize_mac(received.hwsrc)
                 ip = received.psrc
@@ -626,8 +685,10 @@ def run_scapy_scan(
         if found_ip:
             logger.info(f"Found {target_mac} at {found_ip} via scapy")
         output = "\n".join(lines) if lines else "(no ARP responses received)"
+        diag_log.emit("scapy", f"lines={len(lines)}", f"found_ip={found_ip}", f"output={output}")
         return found_ip, output, None
     except Exception as exc:  # noqa: BLE001
+        diag_log.exc("scapy", exc, f"target={target_mac}")
         return None, "", f"scapy scan failed: {exc}"
 
 
@@ -973,16 +1034,19 @@ def _l3_alive_scapy(hosts: list[str], egress: Optional[str], timeout: float) -> 
         from scapy.all import ICMP, IP
         from scapy.sendrecv import sr
     except Exception:  # noqa: BLE001 - scapy missing/failed to import
+        diag_log.emit("l3-scapy", "import failed", f"hosts={len(hosts)}")
         return None
     try:
         packets = [IP(dst=h) / ICMP() for h in hosts]
         answered, _ = sr(packets, iface=egress, timeout=timeout, retry=1, verbose=0)
-    except Exception:  # noqa: BLE001 - can't open a socket on the iface, etc.
+    except Exception as exc:  # noqa: BLE001 - can't open a socket on the iface, etc.
+        diag_log.exc("l3-scapy", exc, f"hosts={len(hosts)}", f"egress={egress}", f"timeout={timeout}")
         return None
     alive = set()
     for reply in answered:
         if ICMP in reply and IP in reply and reply[ICMP].type == 0:
             alive.add(reply[IP].psrc)
+    diag_log.emit("l3-scapy", f"hosts={len(hosts)}", f"egress={egress}", f"alive={sorted(alive)}")
     return alive
 
 
@@ -1000,9 +1064,12 @@ def _l3_alive_nmap(cidr: str, egress: Optional[str]) -> Optional[set]:
             cmd += ["-e", egress]
         cmd.append(cidr)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        diag_log.emit("l3-nmap", f"failed: {exc!r}", "cmd=" + " ".join(cmd))
         return None
+    diag_log.proc("l3-nmap", cmd, proc)
     if proc.returncode != 0:
+        diag_log.emit("l3-nmap", f"non-zero rc={proc.returncode}")
         return None
     alive = set()
     for line in proc.stdout.splitlines():
@@ -1064,9 +1131,11 @@ def run_l3_probe(
     try:
         hosts = _usable_hosts(cidr)
     except ValueError as exc:
+        diag_log.emit("l3", f"cidr={cidr}", f"unusable: {exc}")
         return None, "", f"invalid subnet {cidr}: {exc}"
     if not hosts:
         return None, "", None
+    diag_log.emit("l3", f"cidr={cidr}", f"egress={egress}", f"usable_hosts={len(hosts)}")
 
     alive = _l3_alive_scapy(hosts, egress, timeout)
     via = "scapy ICMP"
@@ -1076,6 +1145,7 @@ def run_l3_probe(
     if alive is None:
         alive = _l3_alive_ping(hosts, egress)
         via = "ping"
+    diag_log.emit("l3", f"cidr={cidr}", f"method={via}", f"alive={sorted(alive)}")
     if not alive:
         return None, "", None
 
@@ -1105,15 +1175,24 @@ def run_nmap_scan(
         subnets = [s["cidr"] for s in get_default_subnets()]
     if not subnets:
         return None, "", None
+    diag_log.emit("nmap", f"subnets={subnets}", f"interface={interface}", f"target={target_mac}")
     try:
         subprocess.run(["nmap", "-V"], capture_output=True, text=True, timeout=10)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        diag_log.emit("nmap", "binary not installed")
         return None, "", "nmap is not installed in this container; rebuild the image with the nmap dependency to use this diagnostic."
 
     lines: list[str] = []
     for cidr in subnets:
         cls = classify_subnet(cidr, interface)
         alive = _l3_alive_nmap(cidr, cls["egress"])
+        diag_log.emit(
+            "nmap",
+            f"cidr={cidr}",
+            f"classified={cls['kind']}",
+            f"egress={cls['egress']}",
+            f"alive={sorted(alive) if alive is not None else '(run failed)'}",
+        )
         if alive is None:
             return None, "", f"nmap failed on {cidr}"
         if not alive:

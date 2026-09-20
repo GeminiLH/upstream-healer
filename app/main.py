@@ -12,6 +12,7 @@ import json
 from app.config import current_time, format_timestamp, settings, time_ago
 from app.database import init_db
 from app.services.monitor import monitor
+from app.services import diag_log
 from app.services.npm import NPMClient
 from app.services.notifications import send_event
 from app.services.mdns import discover_hostnames
@@ -848,40 +849,58 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
     if not subnet_ids:
         subnet_ids = [s["cidr"] for s in await list_subnets(db)]
 
-    # Kick off mDNS hostname discovery concurrently with the (blocking) ARP
-    # sweep so the multicast window overlaps the scan instead of adding to it.
-    mdns_task = asyncio.create_task(discover_hostnames())
-    result = await run_scan(body.target_mac, method, subnets=subnet_ids or None)
-    result["subnets"] = subnet_ids
-    logger.info(
-        f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac)} "
-        f"subnets={subnet_ids} found_ip={result['found_ip']} error={result['error']}"
-    )
-    # Layer real hostnames onto the swept hosts (curated DB name, then mDNS,
-    # then the usually-empty reverse-DNS result).  Best-effort: a discovery
-    # hiccup must never fail the scan itself.
-    try:
-        mdns_names = await mdns_task
-    except Exception:  # noqa: BLE001 - discovery failure is non-fatal
-        mdns_names = ({}, {})
-    # Cache any freshly-seen mDNS names by MAC so a device stays named on later
-    # scans even when it does not re-announce that instant (mDNS is racy).
-    try:
-        await remember_mdns_names(db, mdns_names[1] or {})
-    except Exception:  # noqa: BLE001 - caching must never fail the scan
-        pass
-    try:
-        known_names = await load_known_hostnames(db)
-    except Exception:  # noqa: BLE001
-        known_names = {}
-    try:
-        cached_names = await load_mdns_names(db)
-    except Exception:  # noqa: BLE001
-        cached_names = {}
-    hosts = result.get("hosts") or []
-    result["hosts"] = apply_hostnames(
-        hosts, mdns=mdns_names, known=known_names, cached=cached_names
-    )
+    with diag_log.scan_context(
+        target_mac=body.target_mac, method=method, subnets=subnet_ids
+    ):
+        # Kick off mDNS hostname discovery concurrently with the (blocking) ARP
+        # sweep so the multicast window overlaps the scan instead of adding to it.
+        mdns_task = asyncio.create_task(discover_hostnames())
+        result = await run_scan(body.target_mac, method, subnets=subnet_ids or None)
+        result["subnets"] = subnet_ids
+        logger.info(
+            f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac)} "
+            f"subnets={subnet_ids} found_ip={result['found_ip']} error={result['error']}"
+        )
+        # Layer real hostnames onto the swept hosts (curated DB name, then mDNS,
+        # then the usually-empty reverse-DNS result).  Best-effort: a discovery
+        # hiccup must never fail the scan itself.
+        try:
+            mdns_names = await mdns_task
+        except Exception:  # noqa: BLE001 - discovery failure is non-fatal
+            mdns_names = ({}, {})
+        # Cache any freshly-seen mDNS names by MAC so a device stays named on later
+        # scans even when it does not re-announce that instant (mDNS is racy).
+        try:
+            await remember_mdns_names(db, mdns_names[1] or {})
+        except Exception:  # noqa: BLE001 - caching must never fail the scan
+            pass
+        try:
+            known_names = await load_known_hostnames(db)
+        except Exception:  # noqa: BLE001
+            known_names = {}
+        try:
+            cached_names = await load_mdns_names(db)
+        except Exception:  # noqa: BLE001
+            cached_names = {}
+        hosts = result.get("hosts") or []
+        result["hosts"] = apply_hostnames(
+            hosts, mdns=mdns_names, known=known_names, cached=cached_names
+        )
+        diag_log.emit(
+            "hostnames",
+            f"known_names={known_names}",
+            f"mdns_live={mdns_names[0]}",
+            f"mdns_cached_source={mdns_names[1]}",
+            f"cached_names={cached_names}",
+            f"hosts={[(h.get('ip'), h.get('mac'), h.get('hostname')) for h in hosts]}",
+        )
+        diag_log.emit(
+            "result",
+            f"found_ip={result.get('found_ip')}",
+            f"found_via={result.get('found_via')}",
+            f"error={result.get('error')}",
+            f"hosts={len(hosts)}",
+        )
     return result
 
 

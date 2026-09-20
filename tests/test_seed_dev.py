@@ -207,13 +207,20 @@ class TestSeedHosts:
         db = await _connect(seed.settings)
         try:
             added = await seed.seed_hosts(db)
-            assert set(added) == {"vault", "jellyfin", "failtest", "plex", "homeassistant", "portainer"}
+            assert set(added) == {
+                "vault", "jellyfin", "failtest", "plex", "homeassistant",
+                "portainer", "batcave", "fash",
+            }
             hosts = await _host_rows(db)
-            assert set(h["name"] for h in hosts) == {"vault", "jellyfin", "failtest", "plex", "homeassistant", "portainer"}
+            assert set(h["name"] for h in hosts) == {
+                "vault", "jellyfin", "failtest", "plex", "homeassistant",
+                "portainer", "batcave", "fash",
+            }
             assert hosts[0]["mac_address"] == "46:dc:21:61:26:93"
             assert hosts[1]["port"] == 11000
             async with db.execute("SELECT host_id, status FROM host_state ORDER BY host_id") as cursor:
                 states = [dict(r) for r in await cursor.fetchall()]
+            # batcave/fash are seeded disabled, so they get no host_state row.
             assert len(states) == 6
             assert all(s["status"] == "unknown" for s in states)
         finally:
@@ -228,8 +235,8 @@ class TestSeedHosts:
             added2 = await seed.seed_hosts(db)
             assert added2 == []
             hosts = await _host_rows(db)
-            assert len(hosts) == 6
-            assert len(added1) == 6
+            assert len(hosts) == 8
+            assert len(added1) == 8
         finally:
             await db.close()
 
@@ -396,7 +403,10 @@ class TestCursorLifecycle:
         monkeypatch.setattr(seed, "_mysql_connect", lambda: conn)
 
         links = seed.ensure_proxy_hosts()
-        assert set(links) == {spec["domain"] for spec in seed.SEED_HOSTS}
+        # Domain-less hosts (batcave/fash) get no NPM proxy row.
+        assert set(links) == {
+            d for d in (spec.get("domain") for spec in seed.SEED_HOSTS) if d
+        }
         assert all(isinstance(v, int) for v in links.values())
 
 

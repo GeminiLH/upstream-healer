@@ -73,7 +73,24 @@ Notes:
 - The seeder (`scripts/seed_dev.py`) adds the `vault`, `jellyfin` and
   `failtest` hosts, creates matching NPM `proxy_host` rows and links them.
   `failtest` is a dead device on purpose — it exercises the full recovery
-  flow (unreachable → scan → NPM update → nginx reload).
+  flow (unreachable → scan → NPM update → nginx reload). It also seeds the
+  real lab devices `batcave` (the sandbox box itself) and `fash`, both
+  **disabled** on purpose: they exist as positive-test targets on the
+  diagnostic page (their names appear in scan results) without being
+  monitored — flip them on in the UI only if you actually want to watch them.
+- **Scan debug logs (dev only).** The dev compose sets
+  `UPSTREAM_HEALER_DEBUG_LOG_DIR=/logs` and bind-mounts
+  `/mnt/data/upstream-healer/logs` on the box, so every diagnostic scan
+  writes one file there (`diag_<time>_<method>_<mac>_<n>.log`) containing
+  the machine's own hostname/IPs/MACs, each sweep's classification +
+  egress, the exact tool commands with raw stdout/stderr, and any
+  exceptions — including a loud warning when the scan target is the
+  scanning machine itself (a host does not answer its own sweeps).  The
+  base `docker-compose.yml` sets none of this, so test/production runs
+  stay silent.  To enable on another host: set the variable and mount a
+  writable dir (cap/rotation: `UPSTREAM_HEALER_DEBUG_MAX_BYTES`,
+  `UPSTREAM_HEALER_DEBUG_KEEP`); `UPSTREAM_HEALER_ENV=production` acts as
+  a tripwire that keeps logging off even if the dir is set.
 - If `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_IDS` are set in the environment
   when the seeder runs, a telegram channel is created (only when none
   exists yet — UI-configured channels are never touched).

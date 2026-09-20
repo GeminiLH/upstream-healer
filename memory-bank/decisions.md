@@ -4,6 +4,27 @@
 
 ## Design decisions
 
+- **Scan debug logging: opt-in, file-based, dev-only** (2026-09-20):
+  `app/services/diag_log.py` — one log file per diagnostic scan
+  (`/api/diagnostic/scan` wraps its body in `scan_context`), recording the
+  machine's own hostname/IPs/MACs, a **WARNING when the target is the
+  scanning machine itself** (a host never answers its own ARP/ICMP
+  broadcasts — "no match on self" is partly *expected* protocol behaviour),
+  per-sweep classification + egress, exact tool commands + raw
+  stdout/stderr, exception tails. Gated by `UPSTREAM_HEALER_DEBUG_LOG_DIR`
+  (unset = fully off); `UPSTREAM_HEALER_ENV=production` tripwire; size cap
+  + rotation; never raises (10 tests). `docker-compose.dev.yml` sets it to
+  `/logs` + mounts `/mnt/data/upstream-healer/logs`; the base compose file
+  is untouched so test/prod stay silent. Emits live in the scanner at:
+  plans, `_run_sweeps`, `run_scapy_scan`, `run_l3_probe`, `_l3_alive_*`,
+  `run_nmap_scan`, `run_scan`.
+- **batcave + fash are seeded disabled** (2026-09-20): real lab devices for
+  positive diagnostic tests (batcave = the sandbox box, MAC b4:2e:99:e9:80:fc;
+  fash = dc:a6:32:02:59:63). Seeded `enabled=0` with no domain: their names
+  appear in scan results (curated-name priority), but the monitor/recovery
+  flow never touches them (no `host_state` row, no NPM proxy). `seed_hosts`
+  now honours an `enabled` key (default 1).
+
 - **NPM MariaDB credentials via container env, not config**: `NPMClient`
   discovers DB credentials from the NPM container's environment
   (`printenv | grep DB_MYSQL_`) so secrets stay out of the healer repo and

@@ -35,6 +35,9 @@ services:
     volumes:
       - healer-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
+      # Physical home for the scan logs (on the box, outside the Docker
+      # volumes): survives `down` and is easy to tail/copy from.
+      - /mnt/data/upstream-healer/logs:/logs
     environment:
       - TZ=America/New_York
       # Fallback NPM MySQL settings. The primary path reads DB_MYSQL_*
@@ -45,6 +48,11 @@ services:
       - NPM_DB_USER=${NPM_DEV_DB_USER:-proxymanager}
       - NPM_DB_PASSWORD=${NPM_DEV_DB_PASSWORD:-devhealer123}
       - NPM_DB_NAME=proxy_manager
+      # Scanner debug logging — dev only: writes one file per diagnostic
+      # scan into /logs (see app/services/diag_log.py).  The base
+      # docker-compose.yml has NEITHER this variable nor the mount above,
+      # so test/production runs stay completely silent.
+      - UPSTREAM_HEALER_DEBUG_LOG_DIR=/logs
 
   nginx-app-1:
     # Nginx Proxy Manager app — the container the healer execs into for

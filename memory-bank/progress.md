@@ -1,13 +1,26 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-20 — **L3 (tunnel/routed) discovery is SHIPPED + pipeline
-> 181 is fixed**: `b09cd4d` failed CI on one test (scapy import-failure test —
-> the `sys.modules` cached-submodule trap, see decisions.md) → `7e6577a` made
-> the test hermetic → **pipeline 182 green** (lint / unit_tests / build_image).
-> The dev box still runs the *previous* release — `deploy_dev` on 182 is
-> `manual`, waiting on the user.
-> **Verify before acting**: `git status`, `git log -5`, then
-> `python3 -m pytest tests/ -q` (currently 255 passed, ruff clean).
+> Snapshot: 2026-09-20 — **Scan debug logging + positive-test seed shipped**
+> (commit after this note; pipeline via `scripts/ship.sh`, then
+> `deploy_dev` plays automatically). Changes: new `app/services/diag_log.py`
+> (opt-in per-scan file logs: self-identity header, self-target WARNING,
+> per-sweep classification/egress, raw tool output + exceptions; gated by
+> `UPSTREAM_HEALER_DEBUG_LOG_DIR`, prod tripwire, capped + rotated, 10
+> tests); scanner + `/api/diagnostic/scan` instrumented; dev compose mounts
+> `/mnt/data/upstream-healer/logs` → `/logs` (base compose untouched —
+> prod stays silent); seeder adds disabled `batcave` + `fash` (real devices,
+> names for the diagnostic page); seed tests updated to 8 hosts.
+> **Why now:** the user's three batcave diagnostic scans came back no-match
+> (arp-scan + "enp6s0 is not a valid numeric value" ERROR / scapy silent /
+> nmap no IP) — that ERROR is the scapy `int("enp6s0")` route bug fixed in
+> `00062a6`, i.e. batcave runs a pre-00062a6 release; deploying the new build
+> ships that fix + the L3/nmap release (b09cd4d) AND turns on logging.
+> **Next (user):** re-run the three scans; logs land in
+> `/mnt/data/upstream-healer/logs` on the box — read them to pin down what
+> actually went out (egress? routes? responses?) and which part of the
+> self-scan "no match" is expected (a host never answers its own sweeps).
+> Verify before acting: `git status`, `git log -5`,
+> `python3 -m pytest tests/ -q` (currently 265 passed, ruff clean).
 
 ## Current state
 

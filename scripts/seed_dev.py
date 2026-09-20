@@ -9,7 +9,12 @@ What it does (every step is idempotent — safe to re-run on each deploy):
 
 1. Seeds a fixed set of monitored hosts mirroring the real lab
    (vault, jellyfin, and the deliberately-dead failtest that exercises
-   the full recovery flow).
+   the full recovery flow) plus the two *real* lab devices batcave and
+   fash.  Both of those are seeded **disabled** on purpose: they exist so
+   the diagnostic page has positive-test targets with curated names, but
+   they are not monitored (monitoring the sandbox box itself would fight
+   the recovery flow — flip them on in the UI only if you actually want
+   to watch them).
 2. Best-effort: creates NPM ``proxy_host`` rows in the dev MariaDB for
    those hosts' domains and links them, so the complete recovery path
    (NPM forward-host update + graceful nginx reload) can be exercised.
@@ -91,6 +96,29 @@ SEED_HOSTS: List[Dict[str, Any]] = [
         "domain": "portainer.hylla.us",
         "port": 9443,
         "grace_minutes": 10,
+    },
+    # The dev sandbox host itself (the box the stack runs on).  Seeded
+    # disabled + domain-less (no NPM proxy for the box that hosts NPM):
+    # a positive-test target for the diagnostic page.
+    {
+        "name": "batcave",
+        "mac": "b4:2e:99:e9:80:fc",
+        "ip": "192.168.86.38",
+        "domain": "",
+        "port": 8787,
+        "grace_minutes": 10,
+        "enabled": 0,
+    },
+    # A real lab device for a positive scan test (discovered by MAC only —
+    # no known IP).  Also disabled: no service/port to health-check.
+    {
+        "name": "fash",
+        "mac": "dc:a6:32:02:59:63",
+        "ip": "",
+        "domain": "",
+        "port": 80,
+        "grace_minutes": 10,
+        "enabled": 0,
     },
 ]
 
@@ -242,11 +270,12 @@ async def seed_hosts(db: aiosqlite.Connection) -> List[str]:
         mac = normalize_mac(spec["mac"])
         if (mac, spec["port"]) in existing:
             continue
+        enabled = int(spec.get("enabled", 1))
         cursor = await db.execute(
             """INSERT INTO hosts
                (name, domain, mac_address, current_ip, port,
-                grace_minutes, notes, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                grace_minutes, enabled, notes, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 spec["name"],
                 spec["domain"],
@@ -254,15 +283,17 @@ async def seed_hosts(db: aiosqlite.Connection) -> List[str]:
                 spec["ip"],
                 spec["port"],
                 spec["grace_minutes"],
+                enabled,
                 "seeded by deploy_dev (dev sandbox)",
                 now,
                 now,
             ),
         )
-        await db.execute(
-            "INSERT INTO host_state (host_id, status, last_ip) VALUES (?, 'unknown', ?)",
-            (cursor.lastrowid, spec["ip"]),
-        )
+        if enabled:
+            await db.execute(
+                "INSERT INTO host_state (host_id, status, last_ip) VALUES (?, 'unknown', ?)",
+                (cursor.lastrowid, spec["ip"]),
+            )
         added.append(spec["name"])
     await db.commit()
     return added
