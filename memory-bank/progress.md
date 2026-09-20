@@ -15,10 +15,18 @@
 > nmap no IP) — that ERROR is the scapy `int("enp6s0")` route bug fixed in
 > `00062a6`, i.e. batcave runs a pre-00062a6 release; deploying the new build
 > ships that fix + the L3/nmap release (b09cd4d) AND turns on logging.
-> **Next (user):** re-run the three scans; logs land in
-> `/mnt/data/upstream-healer/logs` on the box — read them to pin down what
-> actually went out (egress? routes? responses?) and which part of the
-> self-scan "no match" is expected (a host never answers its own sweeps).
+> `deploy_dev` played via the GitLab API (ship.sh's background wait was
+> reaped by the tool timeout; jobs 999/1000/1001 green, job 1003
+> `deploy_dev` **succeeded** — the sandbox now runs `e650153`, which is
+> the first image containing the `00062a6` scapy route fix + the L3/nmap
+> release). **Deploy revealed:** the "no match" rows were hosts the user
+> had *already* added via the UI — `batcave` (b4:2e…, current_ip NULL) and
+> `flash` (dc:a6…, **ip 192.168.86.37**, enabled) — the page renders
+> `ip_address if ip_address else hostname`, so they showed as nameless
+> "Unresolved (nmap)" rows. The seeder added a second, disabled `batcave`
+> row (port 8787 ≠ the user row's port → duplicate; harmless — tell the
+> user it can be deleted) but NOT a fash duplicate (the user's `flash`
+> row matched the (mac, port) dedupe).
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q` (currently 265 passed, ruff clean).
 
