@@ -964,9 +964,19 @@ class TestL3AliveScapy:
         assert _l3_alive_scapy([], None, 1.0) == set()
 
     def test_import_failure_returns_none(self, monkeypatch):
-        # Forcing the ``scapy.all`` import to fail must yield None (so the caller
+        # Forcing the scapy imports to fail must yield None (so the caller
         # falls back), never an exception.
-        monkeypatch.setitem(sys.modules, "scapy", None)
+        #
+        # Every scapy module is set to ``None`` (the documented way to force an
+        # ImportError), not just the top-level package: once an earlier test in
+        # the session has imported ``scapy.all`` / ``scapy.sendrecv``, a plain
+        # ``sys.modules["scapy"] = None`` is NOT enough — the import machinery
+        # returns the already-cached submodules without re-importing the parent
+        # package, so ``from scapy.all import ...`` would succeed and the real
+        # ``sr()`` would run (2 s socket timeout; under a root CI runner it
+        # returns an empty set instead of None and this test fails).
+        for mod in ("scapy", "scapy.all", "scapy.sendrecv"):
+            monkeypatch.setitem(sys.modules, mod, None)
         assert _l3_alive_scapy(["10.0.0.5"], None, 1.0) is None
 
 
