@@ -1,6 +1,6 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-09-19.
+> Last updated: 2026-09-20.
 
 ## Design decisions
 
@@ -143,7 +143,14 @@ collection with `ValidationError: extra_forbidden`.
 - Verified endpoints (project id 4):
   - `GET  /api/v4/projects/4/pipelines?per_page=3` — latest pipelines
   - `GET  /api/v4/projects/4/pipelines/:id/jobs` — job statuses
-  - `GET  /api/v4/projects/4/jobs/:id/trace` — job log output
+  - `GET  /api/v4/projects/4/jobs/:id/trace` — job log output (plain text with
+    ANSI/`00O`-style prefixes; works with **both** tokens — re-verified
+    2026-09-20 on job 976, 59 KB). ⚠️ On this instance (gitlab-runner 19.3.1)
+    the *newer* alias `…/jobs/:id/log` **404s with both tokens** — use `/trace`.
+  - `GET  /api/v4/projects/4/jobs/:id/artifacts` — the job's artifacts zip
+    (`unit_tests` uploads `test-results.xml` JUnit `when: always`); a compact
+    source of "which test failed + message" when the trace is huge
+    (verified 2026-09-20).
   - `POST /api/v4/projects/4/pipelines/:id/retry` — re-run pipeline
   - `POST /api/v4/projects/4/jobs/:id/play` — trigger a *manual* job (this is how
     `deploy_dev` is run from the sandbox). Verified 2026-09-19 (jobs 947/955).
@@ -231,6 +238,22 @@ collection with `ValidationError: extra_forbidden`.
   *script against the live API* you must send `target_mac` + `subnet_cidr`. Unit
   tests are the source of truth for the scanner; hit `:8787` only to confirm the
   *deployed* request shape.
+- **`sys.modules["pkg"] = None` does NOT fake a *submodule* import failure once
+  it is cached (learned 2026-09-20, pipeline 181; fixed in `7e6577a`).**
+  `monkeypatch.setitem(sys.modules, "scapy", None)` only stops a *fresh* import:
+  if an earlier test in the session already imported `scapy.all` /
+  `scapy.sendrecv`, the import machinery returns the *cached submodule* without
+  re-importing the parent package, so `from scapy.all import …` still succeeds
+  and the real code path runs. `TestL3AliveScapy::test_import_failure_returns_none`
+  then "passed" locally only by luck (non-root: `sr()` raised a socket permission
+  error → caught → `None`) while **failing in CI** (root in `python:3.12-slim`
+  keeps `NET_RAW`: `sr()` opened a raw socket, burned the 2 s timeout, returned
+  `set()` → `assert set() is None` broke). **Rule: to fake an import failure, set
+  `None` for EVERY module the import names — package AND submodules** (`scapy`,
+  `scapy.all`, `scapy.sendrecv`). And treat any "failure-path" test that passes
+  only because a *different*, environment-specific exception is caught
+  (permissions, missing binary) as not hermetic — verify it under the CI
+  image's conditions, not just the dev box.
 
 ## Scanner / multi-subnet gotchas
 

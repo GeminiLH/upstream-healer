@@ -1,6 +1,6 @@
 # Architecture — Upstream Healer
 
-> Last updated: 2026-09-19.
+> Last updated: 2026-09-20.
 
 ## Repository
 
@@ -21,7 +21,8 @@ upstream-healer/
 │   ├── database.py      # SQLite schema (CREATE TABLE IF NOT EXISTS) + migrations + get_db dep
 │   ├── services/
 │   │   ├── monitor.py       # Monitor: background loop, per-host checks, recovery flow
-│   │   ├── scanner.py       # MAC→IP discovery: arp-scan→scapy sweep; hostnames; mDNS name cache
+│   │   ├── scanner.py       # MAC→IP discovery: arp-scan→scapy sweep; hostnames; mDNS name cache;
+│   │   │                    #   L3 probe for tunnel/routed subnets (scapy ICMP → nmap -sn → ping)
 │   │   ├── mdns.py          # mDNS/avahi browse (zeroconf): live hostnames, runs alongside the sweep
 │   │   ├── npm.py           # NPMClient: NPM MariaDB access via docker; proxy_host updates
 │   │   └── notifications.py # EVENT_TYPES; send_event → telegram + email channels
@@ -67,6 +68,9 @@ Tables: `hosts` (identity = MAC + port, unique), `settings`, `notification_chann
   flow; `_cleanup_old_events` prunes old events.
 - **Scanner** (`services/scanner.py`): `find_ip_by_mac` tries `arp-scan` CLI
   first, falls back to scapy; `check_host_reachable(ip, port)` for liveness.
+  Tunnel/routed subnets (no ARP broadcast) are probed at Layer 3 by
+  `run_l3_probe` (scapy ICMP → `nmap -sn` → `ping`); `run_nmap_scan` is a
+  selectable diagnostic method.
 - **NPM** (`services/npm.py`, `NPMClient`): connects to NPM's MariaDB over
   the dev Docker network; `get_all_hosts()` returns non-deleted `proxy_host`
   rows; credentials cached after first discovery (see decisions.md).

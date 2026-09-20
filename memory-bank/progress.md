@@ -1,40 +1,43 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-19 — **mDNS hostname resolution shipped to dev** (real device names in the diagnostic table + a persistent per-MAC name cache so the set is stable across scans; `10d12fa` + `fa191e2`, deployed via `deploy_dev`).
+> Snapshot: 2026-09-20 — **L3 (tunnel/routed) discovery is SHIPPED + pipeline
+> 181 is fixed**: `b09cd4d` failed CI on one test (scapy import-failure test —
+> the `sys.modules` cached-submodule trap, see decisions.md) → `7e6577a` made
+> the test hermetic → **pipeline 182 green** (lint / unit_tests / build_image).
+> The dev box still runs the *previous* release — `deploy_dev` on 182 is
+> `manual`, waiting on the user.
 > **Verify before acting**: `git status`, `git log -5`, then
 > `python3 -m pytest tests/ -q` (currently 255 passed, ruff clean).
 
 ## Current state
 
-- **Tunnel/routed discovery + nmap diagnostic (this batch — local, not yet
-  shipped):** `scanner.py` classifies each subnet (real-NIC `BROADCAST` vs
-  point-to-point/gateway via `ip -o link` flags) and sweeps tunnel/routed ones at
-  **Layer 3** (`run_l3_probe`: scapy ICMP → `nmap -sn` → `ping`), emitting `--`
-  for the unresolvable source MAC; `run_nmap_scan` + a selectable **nmap** method
-  (`main.py`), and the UI (`app/templates/diagnostic.html`) shows a **routed**
-  badge. `_l3_alive_nmap` fixed to parse `nmap -sn -oG -` (grepable). +44 tests
-  (full suite 255 green). **Verify + ship via `bash scripts/ship.sh`.** See
-  decisions.md for the rationale + tooling gotchas.
+- **L3 discovery — SHIPPED (pending deploy):** `b09cd4d` — `scanner.py`
+  classifies each subnet (real-NIC `BROADCAST` vs point-to-point/gateway via
+  `ip -o link` flags) and sweeps tunnel/routed ones at **Layer 3**
+  (`run_l3_probe`: scapy ICMP → `nmap -sn` → `ping`), emitting `--` for the
+  unresolvable source MAC; `run_nmap_scan` + a selectable **nmap** method
+  (`main.py`); the UI (`app/templates/diagnostic.html`) shows a **routed** badge;
+  `_l3_alive_nmap` parses `nmap -sn -oG -` (grepable). +44 tests → 255 green.
+  Pipeline 181 failed on `TestL3AliveScapy::test_import_failure_returns_none`
+  (the `sys.modules` cached-submodule trap — decisions.md gotchas); `7e6577a`
+  made that test hermetic and **pipeline 182 is green**. Ship to the dev box =
+  Play `deploy_dev` on 182, or `bash scripts/ship.sh` (resumes for HEAD).
 - Branch: `main` (tracking `gitlab/main`; GitLab is the primary repo, see
   decisions.md; push explicitly with `git push gitlab main` — never bare).
-- HEAD / sync: `gitlab/main` at `af4a760` (bank note); latest functional code
-  `fa191e2` (mDNS name cache). **211 tests pass, ruff clean** (system `python3`
-  3.13; the repo `.venv` is a non-working Windows venv on this NFS share — see
-  context.md). Worktree clean.
-- **mDNS hostname resolution (DONE — `10d12fa` + `fa191e2`, deployed to dev via
-  `deploy_dev`):** the diagnostic scan now resolves real hostnames, layered
-  (highest first): a monitored host's curated DB name → a live mDNS/avahi name
-  (zeroconf browse, 8 s window, run concurrently with the ARP sweep) → a
-  persistent per-MAC name cache (`mdns_names` table) → reverse-DNS. New
-  `app/services/mdns.py` (best-effort; degrades to empty maps);
-  `scanner.load_known_hostnames/remember_mdns_names/load_mdns_names`;
-  `apply_hostnames` sorted named-first. `zeroconf==0.151.3` in `requirements.txt`.
-  Live-verified on the dev box: Apple TV / MacBook Air / WD NAS / the box get
-  named, and the cache holds them across repeat scans (a name only disappears
-  when the device is absent from *that* ARP sweep — expected, not a cache miss).
-  211 tests green, ruff clean.
-- The subnet/diagnostic batch that shipped since the 2026-09-17 snapshot
-  (all pushed to gitlab/main, all covered by tests):
+- HEAD / sync: local = `gitlab/main` at `7e6577a` (L3 test fix) + this
+  memory-bank commit; worktree clean. **255 tests pass, ruff clean** (system
+  `python3` 3.13; the repo `.venv` is a non-working Windows venv on this NFS
+  share — see context.md).
+- **mDNS hostnames (done — `10d12fa` + `fa191e2`, deployed to dev 2026-09-19):**
+  layered naming in the diagnostic table (highest first): monitored host's DB
+  name → live mDNS/avahi (zeroconf browse, 8 s, concurrent with the ARP sweep) →
+  persistent per-MAC `mdns_names` cache → reverse-DNS; `apply_hostnames`
+  sorts named-first; a name only disappears when the device is absent from
+  *that* ARP sweep. Live-verified on the dev box (Apple TV / MacBook Air /
+  WD NAS / the box).
+- **Subnet/diagnostic batch — shipped + deployed 2026-09-16/17** (all on
+  gitlab/main, all test-covered): the batch summary, with the commit-level
+  detail still in git log:
   - `8e2f674` **F1** — *actively sweep only selected subnets; never leak
     unselected networks.* Rewrote the scapy/arp-scan selection path in
     `app/services/scanner.py`; the monitor + diagnostic now sweep exactly the
@@ -113,10 +116,9 @@
   `host_form.html` (subnet select). No new nav link — subnets live in Settings.
 
 
-## Diagnostics page — DONE (shipped; latest work is the mDNS hostname feature)
+## Diagnostics page (shipped 2026-09-16/18; foundation for the mDNS + L3 work)
 
-All the `/diagnostic` polish from 2026-09-16/18 is shipped + deployed — it builds
-the foundation the **mDNS hostname feature** (see Current state) sits on:
+All the `/diagnostic` polish is shipped + deployed:
 - **Collapsible NPM proxy-host table** + merged scanner-type card + a tightened
   "Run a Scan" layout (the three F-style UI fixes).
 - **Settings screen** widened to `max-w-3xl` with clarified subnet fields
@@ -129,27 +131,19 @@ monitor, direct `docker exec`); the `/32`-not-a-network, the `auto`-interface
 placeholder, and the `POST /api/diagnostic/scan` request contract all live in
 `decisions.md`.
 
-## Done (recent history)
+## Done (recent history — full detail in git log)
 
-- **`412bda5` (2026-09-17)**: memory-bank commit (primary-repo rule + NFS
-  gotchas) → pipeline 160 (`lint` / `unit_tests` / `build_image` all green) →
-  `deploy_dev` job 811 **success** (34s); dev UI live (HTTP 200 on
-  `192.168.86.38:8787`).
-- **Fast ship workflow added: `scripts/ship.sh`** (2026-09-17) — one command
-  for tests → commit → push gitlab → auto jobs → `deploy_dev`, ~6 min
-  end-to-end (replaces the hand-rolled poll loops; see decisions.md). Hardened
-  2026-09-18: token split (read token for polls, pipeline token for the play
-  POST), API preflight, 10-min pipeline-appear window, loud play-failure,
-  resumable re-runs.
-
-- Scapy route-bug fix (`00062a6`) is deployed to dev (pipeline 151). Live-verify
-  on the dev box when convenient: pick a host pinned to a subnet and run a *scapy*
-  diagnostic scan — it must sweep and return the full responder table (no
-  `ERROR: "enp6s0" is not a valid numeric value`, no `(no ARP responses received)`).
-  The `arp-scan` method is the primary path and always worked; the fix matters for
-  the scapy fallback.
-- User-facing: on Settings → Subnets, add the **network** CIDR (`…0/24`), not a
-  single host (`/32`).
+- `412bda5` (2026-09-17): memory-bank commit → pipeline 160 all green →
+  `deploy_dev` job 811 success (34 s); dev UI live on `192.168.86.38:8787`.
+- **`scripts/ship.sh`** (2026-09-17, hardened 2026-09-18): one-command ship —
+  tests → commit → push gitlab → auto jobs → `deploy_dev`, ~6 min; resumable
+  re-runs (token/endpoint wiring in decisions.md; conventions below).
+- `00062a6` scapy route-bug fix deployed to dev (pipeline 151) — scapy
+  diagnostic scans now return the full responder table.
+- **`b09cd4d` → `7e6577a` (2026-09-20):** L3 discovery failed pipeline 181's
+  `unit_tests` 1/255 (scapy import-failure test; the `sys.modules` trap —
+  decisions.md gotchas); `7e6577a` fixed the test; pipeline 182 green.
+- User-facing: Settings → Subnets takes a **network** CIDR (`…0/24`), not `/32`.
 
 ## Conventions (keep these when editing)
 

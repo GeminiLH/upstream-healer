@@ -1,6 +1,6 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-09-19. Re-verify with `git status` and `progress.md` before relying on this.
+> Last updated: 2026-09-20. Re-verify with `git status` and `progress.md` before relying on this.
 
 ## Repository (read this first)
 
