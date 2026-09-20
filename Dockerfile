@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     iputils-ping \
     net-tools \
     arp-scan \
+    nmap \
     procps \
     curl \
     && rm -rf /var/lib/apt/lists/*

@@ -106,6 +106,7 @@
           <select id="scan-method" class="form-control">
             <option value="arp-scan" selected>arp-scan</option>
             <option value="scapy">scapy</option>
+            <option value="nmap">nmap (ping sweep)</option>
           </select>
         </div>
         <div class="flex-1 w-full">
@@ -167,6 +168,7 @@
               <tbody id="scan-hosts" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800"></tbody>
             </table>
           </div>
+          <p class="mt-1.5 text-[11px] text-slate-400 dark:text-slate-500"><span class="routed-badge">routed</span> = reached via an L3 route (e.g. a WireGuard/tunnel or gateway), not a local ARP segment, so its source MAC isn't visible and shows <code>--</code>.</p>
         </div>
         <div class="mt-2 text-xs uppercase tracking-wider text-slate-400 dark:text-slate-500">Raw output</div>
         <pre id="scan-output"
@@ -197,6 +199,27 @@
     color: #bae6fd !important;
     box-shadow: 0 0 0 1px #38bdf8;
   }
+  /* "routed" pill: marks hosts reached over an L3 route (WireGuard/tunnel or
+     gateway) whose source MAC is invisible behind the tunnel, so MAC shows --. */
+  .routed-badge {
+    display: inline-block;
+    margin-left: 0.375rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 9999px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    vertical-align: middle;
+    color: #075985;
+    background-color: #e0f2fe;
+    border: 1px solid #bae6fd;
+  }
+  .dark .routed-badge {
+    color: #bae6fd;
+    background-color: rgba(12, 74, 110, 0.5);
+    border-color: rgba(56, 189, 248, 0.4);
+  }
 </style>
 
 <script>
@@ -223,6 +246,7 @@
     const METHOD_DESCS = {
       'arp-scan': 'Fast and reliable on Linux — sweeps the subnet with the arp-scan binary.',
       'scapy': 'Python-based fallback — sends ARP requests directly via scapy.',
+      'nmap': 'Host discovery with nmap (ICMP/ping sweep). ARP-routable subnets are still swept in parallel.',
     };
 
     function syncMethodDesc() {
@@ -318,7 +342,7 @@
           `<tr class="text-slate-700 dark:text-slate-200">
             <td class="px-3 py-1.5 font-mono">${h.hostname ? esc(h.hostname) : '<span class="text-slate-400 dark:text-slate-600">—</span>'}</td>
             <td class="px-3 py-1.5 font-mono">${esc(h.ip)}</td>
-            <td class="px-3 py-1.5 font-mono">${esc(h.mac)}</td>
+            <td class="px-3 py-1.5 font-mono">${h.mac ? esc(h.mac) : '<span class="text-slate-400 dark:text-slate-600">--</span> <span class="routed-badge" title="Reached via an L3 route (WireGuard/tunnel or gateway), not a local ARP segment">routed</span>'}</td>
             <td class="px-3 py-1.5 text-xs text-slate-500 dark:text-slate-400">${esc(h.detail)}</td>
           </tr>`).join('');
         hostsCount.textContent = `(${hosts.length})`;

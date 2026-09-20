@@ -732,7 +732,7 @@ class ScanRequest(BaseModel):
     """Body for ``POST /api/diagnostic/scan`` — run one scanner on demand."""
 
     target_mac: str = Field(..., description="MAC address to look for (normalised server-side)")
-    method: str = Field("arp-scan", description="'arp-scan' or 'scapy'")
+    method: str = Field("arp-scan", description="'arp-scan', 'scapy' or 'nmap'")
     subnet_id: int = Field(0, description="Optional subnet id to scope the scan; 0 = all known subnets")
     subnet_cidr: str = Field("", description="Optional CIDR for auto-detected subnets (they have no DB id)")
 
@@ -826,7 +826,7 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
     effective subnet (manual rows + auto-discovered local networks).
     """
     method = body.method.strip().lower()
-    if method not in ("arp-scan", "scapy"):
+    if method not in ("arp-scan", "scapy", "nmap"):
         raise HTTPException(status_code=400, detail=f"Unknown scanner method: {body.method!r}")
     if not body.target_mac.strip():
         raise HTTPException(status_code=400, detail="target_mac is required")

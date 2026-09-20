@@ -2,10 +2,19 @@
 
 > Snapshot: 2026-09-19 — **mDNS hostname resolution shipped to dev** (real device names in the diagnostic table + a persistent per-MAC name cache so the set is stable across scans; `10d12fa` + `fa191e2`, deployed via `deploy_dev`).
 > **Verify before acting**: `git status`, `git log -5`, then
-> `python3 -m pytest tests/ -q` (currently 211 passed, ruff clean).
+> `python3 -m pytest tests/ -q` (currently 255 passed, ruff clean).
 
 ## Current state
 
+- **Tunnel/routed discovery + nmap diagnostic (this batch — local, not yet
+  shipped):** `scanner.py` classifies each subnet (real-NIC `BROADCAST` vs
+  point-to-point/gateway via `ip -o link` flags) and sweeps tunnel/routed ones at
+  **Layer 3** (`run_l3_probe`: scapy ICMP → `nmap -sn` → `ping`), emitting `--`
+  for the unresolvable source MAC; `run_nmap_scan` + a selectable **nmap** method
+  (`main.py`), and the UI (`app/templates/diagnostic.html`) shows a **routed**
+  badge. `_l3_alive_nmap` fixed to parse `nmap -sn -oG -` (grepable). +44 tests
+  (full suite 255 green). **Verify + ship via `bash scripts/ship.sh`.** See
+  decisions.md for the rationale + tooling gotchas.
 - Branch: `main` (tracking `gitlab/main`; GitLab is the primary repo, see
   decisions.md; push explicitly with `git push gitlab main` — never bare).
 - HEAD / sync: `gitlab/main` at `af4a760` (bank note); latest functional code

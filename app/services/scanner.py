@@ -77,7 +77,12 @@ async def run_scan(
         found_ip, output, error = await loop.run_in_executor(
             None, lambda: run_scapy_scan(target_mac, interface, subnets=subnets)
         )
-    else:  # "arp-scan" (the only other method we ship)
+    elif method == "nmap":
+        found_ip, output, error = await loop.run_in_executor(
+            None,
+            lambda: run_nmap_scan(subnets=subnets, target_mac=target_mac, interface=interface),
+        )
+    else:  # "arp-scan" (the default)
         found_ip, output, error = await loop.run_in_executor(
             None, lambda: run_arp_scan(subnets=subnets)
         )
@@ -116,11 +121,14 @@ def _parse_scan_output(output: str, subnets: Optional[list[str]] = None) -> list
             continue  # banner / summary / note line
         if subnets and not ip_in_subnets(parts[0], subnets):
             continue
-        key = (parts[0], normalize_mac(parts[1]))
+        # A routed/tunnel host has no locally-visible source MAC; we emit "--".
+        raw_mac = parts[1]
+        mac = None if raw_mac == "--" else normalize_mac(raw_mac)
+        key = (parts[0], mac or "")
         if key in seen:
             continue
         seen.add(key)
-        hosts.append({"ip": parts[0], "mac": normalize_mac(parts[1]), "detail": " ".join(parts[2:])})
+        hosts.append({"ip": parts[0], "mac": mac, "detail": " ".join(parts[2:])})
     return hosts
 
 
@@ -411,6 +419,17 @@ def _run_sweeps(
     chunks: list[str] = []
     error: Optional[str] = None
     for iface, cidr in sweeps:
+        # arp-scan is a Layer-2 (ARP broadcast) tool: it cannot reach hosts beyond
+        # a tunnel/gateway (the broadcast would hit only the tunnel peer).  For
+        # such networks probe at Layer 3 instead.
+        if classify_subnet(cidr, iface)["kind"] in ("tunnel", "routed"):
+            l3_egress = _l3_probe_egress(cidr, iface)
+            _found, l3_output, l3_err = run_l3_probe(cidr, l3_egress, timeout=3.0)
+            if l3_err:
+                error = f"L3 probe failed: {l3_err}"
+            if l3_output and l3_output.strip():
+                chunks.append(l3_output.rstrip())
+            continue
         cmd = ["arp-scan", "-q", "--retry=3", "-i", iface, cidr]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
@@ -562,6 +581,25 @@ def run_scapy_scan(
                             if local_ip in if_ips:
                                 egress = if_name
                                 break
+
+            # A tunnel/routed subnet cannot be ARP-*broadcast* swept: the
+            # broadcast reaches only the one tunnel peer (so every IP would show
+            # that peer's MAC).  Probe it at Layer 3 instead (ICMP/ping), which
+            # finds the real live hosts.
+            if classify_subnet(network, interface)["kind"] in ("tunnel", "routed"):
+                l3_egress = _l3_probe_egress(network, interface)
+                _found, l3_output, l3_err = run_l3_probe(
+                    network, l3_egress, target_mac, timeout=3.0,
+                )
+                if l3_err:
+                    lines.append(f"# {network}: L3 probe failed ({l3_err})")
+                elif l3_output:
+                    lines.extend(l3_output.splitlines())
+                else:
+                    lines.append(f"# {network}: no live hosts detected (L3)")
+                if _found and found_ip is None:
+                    found_ip = _found
+                continue
 
             try:
                 if egress:
@@ -774,6 +812,318 @@ def get_local_interfaces() -> list[dict]:
         seen.add(name)
         found.append({"name": name, "address": addr, "cidr": f"{addr}/{prefix}"})
     return found
+
+
+# ───────────────────────────── Tunnel / routed discovery ─────────────────────────────
+#
+# An ARP *broadcast* only reaches hosts on a single Layer‑2 segment.  A subnet
+# reached over a WireGuard/VPN tunnel (or a gateway) is **not** that: the tunnel
+# is a Layer‑3 pipe with exactly one peer, so a broadcast ARP hits only the
+# gateway (the flash) and every IP in the sweep shows the *gateway's* MAC.  For
+# such subnets we must probe at Layer 3 (ICMP echo / ``nmap -sn`` / ``ping``),
+# which reveals the real alive hosts (by IP + hostname) — even though the true
+# source MAC of a host behind the tunnel is never visible from this side.
+
+# Name prefixes of point‑to‑point / tunnel interfaces (L3, no L2 broadcast).
+# ``tap*`` is deliberately excluded: a tap is an Ethernet (L2) interface and *can*
+# be ARP‑swept. Used only as a fallback when the kernel's own flags are unreadable.
+_TUNNEL_IFACE_PREFIXES = (
+    "wg", "wgi", "wpan", "tun", "ipip", "ipip6", "gre", "gre6", "ip6gre",
+    "erspan", "erspan6", "sit", "ip6tnl",
+)
+
+
+def get_interface_flags(iface: Optional[str]) -> Optional[str]:
+    """Return the kernel flags inside ``<...>`` for ``iface`` (e.g.
+    ``"BROADCAST,MULTICAST,UP"``) via ``ip -o link``, or ``None`` when it cannot
+    be read (no ``ip``/iproute2, or the name is unknown)."""
+    if not iface:
+        return None
+    try:
+        proc = subprocess.run(
+            ["ip", "-o", "link", "show", iface],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+    m = re.search(r"<([^>]*)>", proc.stdout)
+    return m.group(1) if m else None
+
+
+def is_tunnel_interface(iface: Optional[str], flags: Optional[str] = None) -> bool:
+    """True when ``iface`` is a Layer‑3 point‑to‑point/tunnel interface
+    (WireGuard, ``tun*``, ``gre*``, …) — i.e. **not** a Layer‑2 broadcast medium.
+
+    Detection is authoritative when possible (a real NIC carries the ``BROADCAST``
+    flag; a tunnel does not, and has ``POINTOPOINT``/``NOARP``).  When the kernel
+    flags are unreadable (e.g. the Windows dev box, where ``ip`` is absent) we fall
+    back to an interface‑name heuristic.
+
+    ``flags`` may be passed in (from :func:`get_interface_flags`) to avoid a
+    second ``ip -o link`` round‑trip when the caller already has them.
+    """
+    if not iface:
+        return False
+    if flags is None:
+        flags = get_interface_flags(iface)
+    if flags is not None:
+        if "BROADCAST" in flags:
+            return False
+        if "POINTOPOINT" in flags or "NOARP" in flags:
+            return True
+    # Flags unreadable or unrecognised → fall back to the name heuristic.
+    name = iface.lower()
+    return any(name.startswith(prefix) for prefix in _TUNNEL_IFACE_PREFIXES)
+
+
+def interface_has_address_in(iface: str, cidr: str) -> bool:
+    """True if ``iface`` holds an IPv4 address inside ``cidr`` (i.e. the network is
+    directly attached to it, not reached only via a gateway)."""
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    try:
+        proc = subprocess.run(
+            ["ip", "-4", "-o", "addr", "show", iface],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
+    if proc.returncode != 0:
+        return False
+    for tok in proc.stdout.split():
+        if "/" in tok:
+            try:
+                if ipaddress.ip_interface(tok) in net:
+                    return True
+            except ValueError:
+                continue
+    return False
+
+
+def classify_subnet(cidr: str, explicit_iface: Optional[str] = None) -> dict:
+    """Decide how a subnet must be swept.
+
+    Returns ``{"cidr", "egress", "kind", "flags"}`` where ``kind`` is:
+
+    * ``"broadcast"`` — directly attached to a real L2 NIC → an ARP *broadcast*
+      sweep reaches the hosts and returns their true MACs (the normal case).
+    * ``"tunnel"``    — egress is a point‑to‑point/tunnel (WireGuard, …) → a
+      broadcast cannot cross; probe at Layer 3.
+    * ``"routed"``    — reached via a gateway, not directly attached → probe at
+      Layer 3.
+    * ``"unknown"``   — no egress could be resolved → default to the historic
+      broadcast behaviour.
+    """
+    local_ip, iface = get_local_ip_for_network(cidr)
+    if explicit_iface:
+        iface = explicit_iface
+    flags = get_interface_flags(iface)
+    if is_tunnel_interface(iface, flags):
+        kind = "tunnel"
+    elif flags is None:
+        # ``ip`` unavailable (Windows dev box) → rely on the name heuristic.
+        kind = "tunnel" if is_tunnel_interface(iface, flags) else "unknown"
+    elif "BROADCAST" in flags:
+        kind = "broadcast" if interface_has_address_in(iface, cidr) else "routed"
+    else:
+        kind = "routed"
+    return {"cidr": cidr, "egress": iface, "kind": kind, "flags": flags}
+
+
+def subnet_is_l3_only(cidr: str, explicit_iface: Optional[str] = None) -> bool:
+    """True when the subnet must be probed at Layer 3 (tunnel or routed): an ARP
+    *broadcast* cannot reach the hosts inside it."""
+    return classify_subnet(cidr, explicit_iface)["kind"] in ("tunnel", "routed")
+
+
+def _usable_hosts(cidr: str) -> list[str]:
+    """Host addresses in a CIDR, refusing to sweep an unreasonably large range."""
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        raise ValueError(f"invalid network {cidr!r}")
+    if net.num_addresses > 4096:
+        raise ValueError(f"subnet {cidr} is too large to sweep one host at a time")
+    return [str(h) for h in net.hosts()]
+
+
+def _l3_probe_egress(cidr: str, iface: Optional[str] = None) -> Optional[str]:
+    """Egress interface for a Layer‑3 probe of ``cidr``.
+
+    A user‑named interface wins; otherwise the kernel's *routed* egress (``ip
+    route get``) is used — which correctly resolves to the tunnel (e.g. ``wg0``) for
+    a routed/tunnel subnet instead of collapsing "auto"/blank to the default NIC.
+    """
+    if iface and iface != "auto":
+        return iface
+    _, dev = get_local_ip_for_network(cidr)
+    return dev or None
+
+
+def _l3_alive_scapy(hosts: list[str], egress: Optional[str], timeout: float) -> Optional[set]:
+    """ICMP‑echo sweep via scapy.  Returns the set of live IPs, or ``None`` when
+    scapy is unavailable or the send fails (so the caller can fall back)."""
+    if not hosts:
+        return set()
+    try:
+        from scapy.all import ICMP, IP
+        from scapy.sendrecv import sr
+    except Exception:  # noqa: BLE001 - scapy missing/failed to import
+        return None
+    try:
+        packets = [IP(dst=h) / ICMP() for h in hosts]
+        answered, _ = sr(packets, iface=egress, timeout=timeout, retry=1, verbose=0)
+    except Exception:  # noqa: BLE001 - can't open a socket on the iface, etc.
+        return None
+    alive = set()
+    for reply in answered:
+        if ICMP in reply and IP in reply and reply[ICMP].type == 0:
+            alive.add(reply[IP].psrc)
+    return alive
+
+
+def _l3_alive_nmap(cidr: str, egress: Optional[str]) -> Optional[set]:
+    """Host discovery via ``nmap -sn`` (robust: ICMP + TCP/UDP probes).  Returns the
+    set of live IPs, or ``None`` when ``nmap`` is absent or the run fails.
+
+    Runs ``nmap -sn -oG -`` (grepable output to stdout) and parses the
+    ``Host: <ip> (…) Status: up`` lines — the stable machine-readable format, which
+    is far more reliable than scraping nmap's human-readable banner.
+    """
+    try:
+        cmd = ["nmap", "-sn", "-oG", "-", "--host-timeout", "5s"]
+        if egress:
+            cmd += ["-e", egress]
+        cmd.append(cidr)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    alive = set()
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != "Host:" or "Status:" not in parts:
+            continue
+        i = parts.index("Status:")
+        if i + 1 >= len(parts) or parts[i + 1].lower() != "up":
+            continue
+        if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", parts[1]):
+            alive.add(parts[1])
+    return alive
+
+
+def _l3_alive_ping(hosts: list[str], egress: Optional[str], concurrency: int = 32) -> set:
+    """Last‑resort Layer‑3 sweep using the ``ping`` binary (iputils‑ping, already in
+    the image), fanned out across a small thread pool."""
+    import concurrent.futures
+
+    def _one(host: str) -> Optional[str]:
+        try:
+            cmd = ["ping", "-c", "1", "-W", "1"]
+            if egress:
+                cmd += ["-I", egress]
+            cmd.append(host)
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+            return host if proc.returncode == 0 else None
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+
+    alive = set()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for hit in pool.map(_one, hosts):
+            if hit:
+                alive.add(hit)
+    return alive
+
+
+def _host_line(ip: str, mac: str, routed: bool, egress: Optional[str], via: str) -> str:
+    """Format one discovered host as a parseable scanner line:
+    ``<ip>  <mac-or---->  (<tag>)``.  ``--`` means "no locally‑resolvable MAC"."""
+    tag = f"routed via {egress or 'L3'}" if routed else f"on {egress or 'local'}"
+    return f"{ip}  {mac or '--'}  ({tag}, {via})"
+
+
+def run_l3_probe(
+    cidr: str,
+    egress: Optional[str] = None,
+    target_mac: Optional[str] = None,
+    timeout: float = 3.0,
+) -> tuple[Optional[str], str, Optional[str]]:
+    """Discover live hosts in a routed/tunnel subnet with a Layer‑3 probe.
+
+    An ARP *broadcast* cannot reach hosts behind a tunnel or gateway, so sweep with
+    unicast ICMP echo requests instead.  Tries scapy first, then ``nmap -sn``, then
+    a parallel ``ping`` sweep.  Returns ``(found_ip, output, error)`` where
+    ``output`` is one :func:`_host_line` per live host.
+    """
+    try:
+        hosts = _usable_hosts(cidr)
+    except ValueError as exc:
+        return None, "", f"invalid subnet {cidr}: {exc}"
+    if not hosts:
+        return None, "", None
+
+    alive = _l3_alive_scapy(hosts, egress, timeout)
+    via = "scapy ICMP"
+    if alive is None:
+        alive = _l3_alive_nmap(cidr, egress)
+        via = "nmap -sn"
+    if alive is None:
+        alive = _l3_alive_ping(hosts, egress)
+        via = "ping"
+    if not alive:
+        return None, "", None
+
+    # L3 hosts have no locally‑visible source MAC — the real one sits on the far
+    # side of the tunnel/gateway.  Emit "--" rather than the misleading gateway MAC.
+    lines = [
+        _host_line(ip, "--", True, egress, via)
+        for ip in sorted(alive)
+    ]
+    output = "\n".join(lines)
+    found_ip = _match_mac_in_output(target_mac, output, subnets=[cidr]) if target_mac else None
+    return found_ip, output, None
+
+
+def run_nmap_scan(
+    subnets: Optional[list[str]] = None,
+    target_mac: Optional[str] = None,
+    interface: Optional[str] = None,
+) -> tuple[Optional[str], str, Optional[str]]:
+    """Host discovery via ``nmap -sn`` — a diagnostic aid, **not** the recovery path.
+
+    ``nmap -sn`` uses ARP for locally‑attached networks and ICMP/ping probes for
+    routed/tunnel ones, so it shows real hosts on *both* without the tunnel
+    returning only the gateway.  Returns ``(found_ip, output, error)``.
+    """
+    if subnets is None:
+        subnets = [s["cidr"] for s in get_default_subnets()]
+    if not subnets:
+        return None, "", None
+    try:
+        subprocess.run(["nmap", "-V"], capture_output=True, text=True, timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None, "", "nmap is not installed in this container; rebuild the image with the nmap dependency to use this diagnostic."
+
+    lines: list[str] = []
+    for cidr in subnets:
+        cls = classify_subnet(cidr, interface)
+        alive = _l3_alive_nmap(cidr, cls["egress"])
+        if alive is None:
+            return None, "", f"nmap failed on {cidr}"
+        if not alive:
+            continue
+        routed = cls["kind"] in ("tunnel", "routed")
+        for ip in sorted(alive):
+            lines.append(_host_line(ip, "--", routed, cls["egress"], "nmap -sn"))
+    output = "\n".join(line for line in lines if line)
+    found_ip = _match_mac_in_output(target_mac, output, subnets=subnets) if target_mac else None
+    return found_ip, output, None
 
 
 async def load_suppressed_subnets(db=None) -> list[str]:

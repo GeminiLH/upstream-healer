@@ -48,7 +48,10 @@ must never be copied into code, tests, or the memory bank.
   the app container also builds with it but doesn't use it)
 - **scapy** — LAN ARP scan for MAC → IP discovery; `arp-scan` (Dockerfile
   `iproute2`-adjacent) is the fast first choice. The Diagnostic page can run
-  either on demand via `POST /api/diagnostic/scan` → `run_scan`.
+  either on demand via `POST /api/diagnostic/scan` → `run_scan`. **Tunnel/routed**
+  subnets (WireGuard, gateway) can't be ARP-*broadcast* swept, so they're probed at
+  Layer 3 (scapy ICMP → `nmap -sn` → `ping`); `nmap` is a selectable diagnostic
+  method (in the Dockerfile) and shows `--` for the (unresolvable) source MAC.
 - **Multi-subnet discovery:** `app.services.scanner.get_default_subnets()`
   shells out to `ip -4 -o addr` (from `iproute2`, in the Dockerfile) to
   enumerate locally-attached /24s. Manual overrides live in the `subnets`
@@ -63,7 +66,7 @@ must never be copied into code, tests, or the memory bank.
   `.venv/` present in the repo is a **Windows-style venv** (`Lib/`, `Scripts/`)
   from a Windows machine and **does not work on this Linux host**.
 - Use the system interpreter instead: `python3` (3.13, with all deps installed
-  globally). Verified working: `python3 -m pytest tests/ -q` → 105 passed.
+  globally). Verified working: `python3 -m pytest tests/ -q` → 255 passed.
 - **Remotes**: `gitlab` = `ssh://git@192.168.86.38:32768/monster/upstream_healer.git`
   — **the primary repository** (see the "Repository" section above and the hard
   rule in decisions.md). `origin` = GitHub `GeminiLH/upstream-healer` —

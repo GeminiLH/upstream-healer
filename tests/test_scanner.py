@@ -1,19 +1,29 @@
 """Tests for app.services.scanner — MAC normalization and reachability."""
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.services.scanner import (
+    _l3_alive_nmap,
+    _l3_alive_ping,
+    _l3_alive_scapy,
+    _l3_probe_egress,
     _parse_scan_output,
+    _usable_hosts,
     apply_hostnames,
     check_host_reachable,
+    classify_subnet,
     find_ip_by_mac,
     get_default_subnets,
+    get_interface_flags,
     get_local_interfaces,
     get_local_ip_for_network,
     ip_in_subnets,
+    is_tunnel_interface,
     list_subnets,
     load_known_hostnames,
     load_mdns_names,
@@ -22,9 +32,12 @@ from app.services.scanner import (
     remember_mdns_names,
     resolve_hostnames,
     run_arp_scan,
+    run_l3_probe,
+    run_nmap_scan,
     run_scan,
     run_scapy_scan,
     save_suppressed_subnets,
+    subnet_is_l3_only,
 )
 
 
@@ -35,9 +48,12 @@ class _FakeProc:
     need it; sweep command assertions read ``mock_run.call_args_list``.
     """
 
-    def __init__(self, stdout, stderr=""):
+    def __init__(self, stdout, stderr="", code=0):
         self.stdout = stdout
         self.stderr = stderr
+        # Real ``subprocess.run`` results always expose ``returncode``; helpers such
+        # as ``get_interface_flags`` read it unguarded, so the fake must too.
+        self.returncode = code
 
 
 class TestNormalizeMac:
@@ -543,13 +559,18 @@ class TestRunArpScanWithSubnets:
 
     def test_two_subnets_sweep_separately(self):
         out = "10.0.0.5  aa:bb  X\n10.1.0.5  aa:bb  Y\n"
+        # ``classify_subnet`` is stubbed to "broadcast" so this test exercises the
+        # per-sweep arp-scan plumbing in isolation (one sweep → one arp-scan call);
+        # the L3/tunnel branch is covered by its own tests below.
         with patch(
             "app.services.scanner.get_default_subnets",
             return_value=[
                 {"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"},
                 {"cidr": "10.1.0.0/24", "interface": "eth1", "source": "auto"},
             ],
-        ),              patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)) as mock_run:
+        ), \
+             patch("app.services.scanner.classify_subnet", return_value={"kind": "broadcast", "cidr": None, "iface": "eth1", "egress": "eth1"}), \
+             patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)) as mock_run:
             _, output, error = run_arp_scan(subnets=["10.0.0.0/24", "10.1.0.0/24"])
         assert error is None
         assert mock_run.call_count == 2
@@ -818,4 +839,283 @@ class TestMdnsNameCache:
             assert await load_mdns_names(db) == {}
         finally:
             await db.close()
+
+
+# =============================================================================
+# Layer-3 (tunnel / routed) discovery + nmap diagnostic
+# =============================================================================
+
+
+class TestGetInterfaceFlags:
+    def test_parses_flags(self):
+        out = "2: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UP\n"
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            assert get_interface_flags("wg0") == "POINTOPOINT,NOARP,UP,LOWER_UP"
+
+    def test_broadcast_flags(self):
+        out = "1: eth1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n"
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            assert get_interface_flags("eth1") == "BROADCAST,MULTICAST,UP,LOWER_UP"
+
+    def test_no_flags_returns_none(self):
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("1: eth1: nope\n")):
+            assert get_interface_flags("eth1") is None
+
+    def test_ip_missing_returns_none(self):
+        with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
+            assert get_interface_flags("eth1") is None
+
+    def test_nonzero_returncode_returns_none(self):
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("1: x <A,B>\n", code=1)):
+            assert get_interface_flags("eth1") is None
+
+    def test_empty_iface_returns_none(self):
+        assert get_interface_flags(None) is None
+
+
+class TestIsTunnelInterface:
+    def test_broadcast_flag_is_false(self):
+        with patch("app.services.scanner.get_interface_flags", return_value="BROADCAST,MULTICAST,UP"):
+            assert is_tunnel_interface("eth1") is False
+
+    def test_pointopoint_flag_is_true(self):
+        with patch("app.services.scanner.get_interface_flags", return_value="POINTOPOINT,NOARP,UP"):
+            assert is_tunnel_interface("wg0") is True
+
+    def test_noarp_flag_is_true(self):
+        with patch("app.services.scanner.get_interface_flags", return_value="NOARP,UP"):
+            assert is_tunnel_interface("gre0") is True
+
+    def test_name_heuristic_when_flags_unreadable(self):
+        with patch("app.services.scanner.get_interface_flags", return_value=None):
+            assert is_tunnel_interface("wg0") is True
+            assert is_tunnel_interface("tun0") is True
+            assert is_tunnel_interface("eth1") is False
+
+    def test_empty_iface_is_false(self):
+        assert is_tunnel_interface(None) is False
+
+    def test_prepassed_flags_avoid_subprocess(self):
+        with patch("app.services.scanner.get_interface_flags") as mock_flags:
+            assert is_tunnel_interface("eth1", "BROADCAST,UP") is False
+            mock_flags.assert_not_called()
+
+
+class TestClassifySubnet:
+    def _classify(self, *, local="eth1", flags="BROADCAST,MULTICAST,UP", has_addr=True, tunnel=False):
+        with patch("app.services.scanner.get_local_ip_for_network", return_value=("10.0.0.1", local)), \
+             patch("app.services.scanner.get_interface_flags", return_value=flags), \
+             patch("app.services.scanner.is_tunnel_interface", return_value=tunnel), \
+             patch("app.services.scanner.interface_has_address_in", return_value=has_addr):
+            return classify_subnet("10.0.0.0/24", local)
+
+    def test_broadcast(self):
+        r = self._classify(flags="BROADCAST,MULTICAST,UP", has_addr=True, tunnel=False)
+        assert r["kind"] == "broadcast" and r["egress"] == "eth1" and r["cidr"] == "10.0.0.0/24"
+
+    def test_routed_when_no_local_address(self):
+        assert self._classify(flags="BROADCAST,MULTICAST,UP", has_addr=False, tunnel=False)["kind"] == "routed"
+
+    def test_tunnel(self):
+        assert self._classify(local="wg0", flags="POINTOPOINT,NOARP,UP", tunnel=True)["kind"] == "tunnel"
+
+    def test_unknown_when_no_flags(self):
+        assert self._classify(local="eth1", flags=None, tunnel=False)["kind"] == "unknown"
+
+    def test_subnet_is_l3_only_helper(self):
+        with patch("app.services.scanner.classify_subnet", return_value={"kind": "routed", "egress": "wg0"}):
+            assert subnet_is_l3_only("10.0.0.0/24", "wg0") is True
+        with patch("app.services.scanner.classify_subnet", return_value={"kind": "broadcast", "egress": "eth1"}):
+            assert subnet_is_l3_only("10.0.0.0/24", "eth1") is False
+
+
+class TestUsableHosts:
+    def test_slash24(self):
+        hosts = _usable_hosts("10.0.0.0/24")
+        assert len(hosts) == 254 and "10.0.0.1" in hosts and "10.0.0.254" in hosts
+
+    def test_slash30(self):
+        assert _usable_hosts("10.0.0.0/30") == ["10.0.0.1", "10.0.0.2"]
+
+    def test_slash8_too_large(self):
+        with pytest.raises(ValueError):
+            _usable_hosts("10.0.0.0/8")
+
+    def test_invalid(self):
+        with pytest.raises(ValueError):
+            _usable_hosts("not-a-cidr")
+
+
+class TestL3ProbeEgress:
+    def test_explicit_wins(self):
+        assert _l3_probe_egress("10.0.0.0/24", "eth0") == "eth0"
+
+    def test_auto_resolves_via_kernel_route(self):
+        with patch("app.services.scanner.get_local_ip_for_network", return_value=("10.0.0.1", "eth2")):
+            assert _l3_probe_egress("10.0.0.0/24", "auto") == "eth2"
+
+    def test_none_resolves_via_kernel_route(self):
+        with patch("app.services.scanner.get_local_ip_for_network", return_value=(None, None)):
+            assert _l3_probe_egress("10.0.0.0/24", None) is None
+
+
+class TestL3AliveScapy:
+    def test_empty_hosts(self):
+        assert _l3_alive_scapy([], None, 1.0) == set()
+
+    def test_import_failure_returns_none(self, monkeypatch):
+        # Forcing the ``scapy.all`` import to fail must yield None (so the caller
+        # falls back), never an exception.
+        monkeypatch.setitem(sys.modules, "scapy", None)
+        assert _l3_alive_scapy(["10.0.0.5"], None, 1.0) is None
+
+
+class TestL3AliveNmap:
+    def test_parses_grepable_up_hosts(self):
+        out = (
+            "# Nmap scan initiated\n"
+            "# Hosts:  256 total, 2 up\n"
+            "- HOSTS:\n"
+            "Host: 10.0.0.5 (10.0.0.5) Status: up\n"
+            "Host: 10.0.0.7 (10.0.0.7) Status: up\n"
+            "Host: 10.0.0.99 (10.0.0.99) Status: down\n"
+            "- HOSTS: 256 total, 2 up\n"
+        )
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            assert _l3_alive_nmap("10.0.0.0/24", "wg0") == {"10.0.0.5", "10.0.0.7"}
+
+    def test_nmap_missing_returns_none(self):
+        with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
+            assert _l3_alive_nmap("10.0.0.0/24", None) is None
+
+    def test_all_down_is_empty(self):
+        out = "Host: 10.0.0.99 (10.0.0.99) Status: down\n"
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            assert _l3_alive_nmap("10.0.0.0/24", None) == set()
+
+
+class TestL3AlivePing:
+    def test_collects_replies(self):
+        def fake_run(cmd, **_kw):
+            return _FakeProc("", code=0 if cmd[-1] == "10.0.0.5" else 1)
+
+        with patch("app.services.scanner.subprocess.run", side_effect=fake_run):
+            assert _l3_alive_ping(["10.0.0.5", "10.0.0.9"], None) == {"10.0.0.5"}
+
+    def test_empty(self):
+        assert _l3_alive_ping([], None) == set()
+
+
+class TestRunL3Probe:
+    def test_invalid_subnet(self):
+        found, output, error = run_l3_probe("not-a-cidr")
+        assert found is None and output == "" and "invalid subnet" in error
+
+    def test_scapy_happy_path(self):
+        with patch("app.services.scanner._l3_alive_scapy", return_value={"10.0.0.5"}):
+            found, output, error = run_l3_probe("10.0.0.0/24", "wg0")
+        assert error is None
+        assert "10.0.0.5" in output and "--" in output
+        assert "routed via wg0" in output and "scapy ICMP" in output
+
+    def test_falls_back_to_ping(self):
+        with patch("app.services.scanner._l3_alive_scapy", return_value=None), \
+             patch("app.services.scanner._l3_alive_nmap", return_value=None), \
+             patch("app.services.scanner._l3_alive_ping", return_value={"10.0.0.9"}):
+            found, output, error = run_l3_probe("10.0.0.0/24", "wg0")
+        assert error is None
+        assert "10.0.0.9" in output and "ping" in output
+
+    def test_no_live_hosts(self):
+        with patch("app.services.scanner._l3_alive_scapy", return_value=None), \
+             patch("app.services.scanner._l3_alive_nmap", return_value=None), \
+             patch("app.services.scanner._l3_alive_ping", return_value=set()):
+            found, output, error = run_l3_probe("10.0.0.0/24", "wg0")
+        assert error is None and output == "" and found is None
+
+
+class TestRunNmapScan:
+    def test_happy_path(self):
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)) as mock_run, \
+             patch("app.services.scanner.classify_subnet",
+                   return_value={"kind": "routed", "cidr": "10.0.0.0/24", "iface": "wg0", "egress": "wg0"}), \
+             patch("app.services.scanner._l3_alive_nmap", return_value={"10.0.0.5", "10.0.0.7"}):
+            found, output, error = run_nmap_scan(subnets=["10.0.0.0/24"], interface="wg0")
+        assert error is None
+        assert "10.0.0.5" in output and "10.0.0.7" in output and "--" in output
+        assert "routed via wg0" in output
+        # the only subprocess call is the `nmap -V` availability probe
+        assert mock_run.call_count == 1 and mock_run.call_args[0][0] == ["nmap", "-V"]
+
+    def test_nmap_not_installed(self):
+        with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
+            found, output, error = run_nmap_scan(subnets=["10.0.0.0/24"])
+        assert "not installed" in error
+
+    def test_probe_failed_on_subnet(self):
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)), \
+             patch("app.services.scanner.classify_subnet", return_value={"kind": "tunnel", "egress": "wg0"}), \
+             patch("app.services.scanner._l3_alive_nmap", return_value=None):
+            found, output, error = run_nmap_scan(subnets=["10.0.0.0/24"], interface="wg0")
+        assert "nmap failed on" in error
+
+    def test_empty_subnets(self):
+        assert run_nmap_scan(subnets=[]) == (None, "", None)
+
+
+class TestRunScanNmapDispatch:
+    async def test_nmap_dispatch(self):
+        with patch(
+            "app.services.scanner.run_nmap_scan",
+            return_value=(None, "10.0.0.5  --  (routed via wg0, nmap -sn)", None),
+        ), patch("app.services.scanner.run_arp_scan") as mock_arp, \
+             patch("app.services.scanner.run_scapy_scan") as mock_scapy, \
+             patch("app.services.scanner.resolve_hostnames", new=AsyncMock(return_value=[])):
+            result = await run_scan("aa:bb:cc:dd:ee:ff", "nmap")
+        assert result["method"] == "nmap"
+        assert result["error"] is None
+        assert "10.0.0.5" in result["output"]
+        mock_arp.assert_not_called()
+        mock_scapy.assert_not_called()
+
+
+class TestL3BranchDelegation:
+    def test_arp_scan_delegates_tunnel_subnet_to_l3(self):
+        l3_out = "10.0.0.5  --  (routed via wg0, scapy ICMP)"
+        with patch(
+            "app.services.scanner.get_default_subnets",
+            return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
+        ), patch(
+            "app.services.scanner.classify_subnet",
+            return_value={"kind": "tunnel", "cidr": "10.0.0.0/24", "iface": "eth1", "egress": "wg0"},
+        ), patch(
+            "app.services.scanner.run_l3_probe", return_value=(None, l3_out, None)
+        ) as mock_l3, patch("app.services.scanner.subprocess.run") as mock_run:
+            found, output, error = run_arp_scan(subnets=["10.0.0.0/24"])
+        assert mock_l3.called
+        mock_run.assert_not_called()  # no arp-scan broadcast on a tunnel subnet
+        assert error is None and "10.0.0.5" in output and "--" in output
+
+    def test_scapy_delegates_routed_subnet_to_l3(self, monkeypatch):
+        fake_all = SimpleNamespace(ARP=object, Ether=object, srp=object, conf=SimpleNamespace(verb=0))
+        monkeypatch.setitem(sys.modules, "scapy", SimpleNamespace(all=fake_all))
+        monkeypatch.setitem(sys.modules, "scapy.all", fake_all)
+        l3_out = "10.0.0.5  --  (routed via wg0, scapy ICMP)"
+        with patch(
+            "app.services.scanner.classify_subnet",
+            return_value={"kind": "routed", "cidr": "10.0.0.0/24", "iface": "wg0", "egress": "wg0"},
+        ), patch("app.services.scanner.run_l3_probe", return_value=(None, l3_out, None)) as mock_l3:
+            found, output, error = run_scapy_scan("aa:bb:cc:dd:ee:ff", "wg0", subnets=["10.0.0.0/24"])
+        assert mock_l3.called
+        assert error is None and "10.0.0.5" in output
+
+
+class TestParseScanOutputL3Line:
+    def test_dash_mac_maps_to_none(self):
+        hosts = _parse_scan_output("10.0.0.5  --  (routed via wg0, nmap -sn)")
+        assert hosts == [{"ip": "10.0.0.5", "mac": None, "detail": "(routed via wg0, nmap -sn)"}]
+
+    def test_real_mac_parsed(self):
+        hosts = _parse_scan_output("10.0.0.5  aa:bb:cc:dd:ee:ff  Vendor")
+        assert hosts[0]["mac"] == "aa:bb:cc:dd:ee:ff"
 

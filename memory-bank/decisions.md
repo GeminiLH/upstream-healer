@@ -38,6 +38,34 @@
   sweep. `apply_hostnames` sorts named-first so the table stays visually stable.
   `zeroconf==0.151.3`; the browse degrades to empty maps (never raises) if mDNS is
   unavailable, so a scan is never blocked by name lookup.
+- **Tunnel/routed subnets need Layer-3 discovery, not an ARP broadcast** (see
+  `app/services/scanner.py::classify_subnet` / `is_tunnel_interface`): a real NIC
+  carries the kernel `BROADCAST` flag → an ARP *broadcast* sweep reaches the hosts
+  and returns their true MACs. A WireGuard/`tun*`/`gre*` egress is point-to-point
+  (no `BROADCAST`) and a gateway-routed subnet is not locally attached → an ARP
+  broadcast reaches only the one tunnel peer, so every host would falsely show
+  that peer's MAC. Such subnets are swept at **Layer 3** instead: `run_l3_probe`
+  tries **scapy ICMP echo** first, then **`nmap -sn`**, then a parallel **`ping`**
+  sweep, and emits `--` for the (unresolvable) source MAC; the UI shows a
+  **routed** badge. `nmap` is a selectable diagnostic method (`run_nmap_scan`) and
+  is in the Dockerfile. **`_l3_alive_nmap` parses `nmap -sn -oG -`** (grepable
+  `Host: <ip> (…) Status: up` lines), NOT the human-readable banner — the original
+  regex didn't match real output and would have found nothing. `ip` (iproute2) may
+  be absent (Windows dev box) → `is_tunnel_interface` falls back to a name
+  heuristic; callers pass already-fetched `flags` in to avoid a second `ip -o link`
+  round-trip.
+
+## Tooling gotchas (this NFS workstation)
+
+- **`read_files` returned a stale snapshot** of `tests/test_scanner.py` in a prior
+  session (wrong docstring/imports/line numbers vs. the file on disk). When a read
+  looks inconsistent with an edit/pytest result, **get ground truth from the
+  shell**: `sed -n 'A,Bp' <file>`, `grep -n …`, `wc -l`.
+- **`run_commands`** takes a `commands` **array of plain strings** (e.g.
+  `["python3 -m pytest tests/ -q"]`); passing `{"cmd": "…"}` objects is rejected
+  with "Invalid input".
+- The repo `.venv` is a **Windows venv** (unusable here) — use the system
+  `python3` (3.13, deps installed globally).
 
 ## Hard rules (user directives)
 
