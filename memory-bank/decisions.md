@@ -316,9 +316,12 @@ collection with `ValidationError: extra_forbidden`.
   `int("enp6s0")` route bug (above, fixed `00062a6`) and (2) the *arp-scan*
   argument bug (separate note below). After the scapy fix the remaining error came
   from the arp-scan sweep, not scapy — which is why nmap/scapy worked on a subnet
-  while arp-scan returned empty. **Validate the fix in the `deploy_dev` container on the batcave**
-  (192.168.86.38) — the NFS-workstation sandbox can't sweep (Flatpak: no `ip`/
-  `arp-scan` inside the sandbox; host copies are only reachable under `/run/host`).
+  while arp-scan returned empty. **VALIDATED 2026-09-21 on the batcave** (192.168.86.38,
+  the `deploy_dev` box): the NFS-workstation sandbox can't sweep itself (Flatpak: no `ip`/
+  `arp-scan` in-sandbox; host copies only under `/run/host`), so the check was run on the
+  deployed app via `POST :8787/api/diagnostic/scan` (unauthenticated) →
+  `arp-scan -q --retry=3 --interface=enp6s0 192.168.86.0/24` returned `rc=0`, empty
+  stderr, **17 hosts** (`error=None`), `found_ip=192.168.86.37` (flash). Bug confirmed gone.
   Three paths into the app's scanner: (1) Diagnostic UI → `POST
   /api/diagnostic/scan` → `run_scan` → `run_arp_scan`/`run_scapy_scan` (the path
   that surfaced the error); (2) recovery monitor (`monitor.py:269`) →

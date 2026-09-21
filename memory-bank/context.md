@@ -138,7 +138,32 @@ Gotchas (learned the hard way):
   inner `"` literal and `cat` then fails with "No such file". Filenames contain
   `:` but colons are fine *unquoted*: `cat diag_20260921_070637_nmap_dc:a6:32:02:59:63_7.log`.
 - Convenience wrapper: `scripts/batcave_logs.sh '<cmd>'` reads the password from
-  `.env.local` and runs the askpass+setsid ssh for you.
+  `.env.local` and runs the askpass+setsid ssh for you. **Prefer this** — it's the
+  only path that works.
+- **Never hand-roll `ssh -o BatchMode=yes user@host`** for this account — the box
+  has no deploy key and `BatchMode=yes` *disables* password auth, so you get
+  `Permission denied (publickey,password)` and no password prompt. This bit me
+  twice (2026-09-21). The askpass+setsid trick (or the wrapper) is mandatory:
+  `SSH_ASKPASS_REQUIRE=force` + `setsid` + `BatchMode=no` is what lets OpenSSH 10.4
+  read the password with no controlling tty.
+
+## Triggering a scan to test a scanner change (no `docker exec` needed)
+
+The dev stack on batcave serves the FastAPI app on `:8787` and the app API is
+**unauthenticated** (no bearer/JWT/token in `main.py`/`config.py`). So from this
+box you can fire a scan directly and then read back the fresh `diag_*.log`:
+
+```bash
+curl -s -m 105 -X POST http://192.168.86.38:8787/api/diagnostic/scan \
+  -H 'Content-Type: application/json' \
+  -d '{"target_mac":"dc:a6:32:02:59:63","method":"arp-scan","subnet_cidr":"192.168.86.0/24"}'
+# → {found_ip, found_via, output, error, hosts[], subnets}
+```
+
+`method` ∈ `arp-scan|scapy|nmap`; `subnet_cidr` scopes the sweep (leave `""` +
+`subnet_id:0` for all effective subnets). Use a known-up target so `found_ip`
+populates. Verified the arp-scan `--interface=` fix this way on 2026-09-21
+(17 hosts, `rc=0`, `error=None`, `--interface=enp6s0` in the diag log).
 
 ## Key commands
 
