@@ -1091,7 +1091,7 @@ class TestRunNmapScan:
         # A probe failure on ONE subnet must not discard the others' results:
         # the failed CIDR is named in ``error`` while the good subnet's hosts are
         # still returned (the old code returned immediately, losing everything).
-        def fake_alive(cidr, egress):
+        def fake_alive(cidr, egress, kind=None):
             return None if cidr == "10.0.0.0/24" else {"192.168.100.5"}
         with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)), \
              patch("app.services.scanner.classify_subnet",
@@ -1105,7 +1105,7 @@ class TestRunNmapScan:
 
     def test_all_subnets_failed_is_hard_error(self):
         # Every subnet failing = nothing to salvage → a hard error naming all of them.
-        def fake_alive(cidr, egress):
+        def fake_alive(cidr, egress, kind=None):
             return None
         with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)), \
              patch("app.services.scanner.classify_subnet",

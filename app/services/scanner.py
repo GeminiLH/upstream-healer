@@ -1067,22 +1067,52 @@ def _l3_alive_scapy(hosts: list[str], egress: Optional[str], timeout: float) -> 
     return alive
 
 
-def _l3_alive_nmap(cidr: str, egress: Optional[str]) -> Optional[set]:
+# Wall-clock caps for ``nmap -sn``.  A directly-attached (broadcast/ARP) sweep of a
+# real LAN is slow but *finishes* (≈45s for a /24), so leave headroom.  A routed or
+# tunnel sweep on a dead gateway instead stalls per host — every unresponsive host
+# burns its full probe+retry window (3 retries by default) — so a blackholed /24
+# would hang the whole sweep near the cap.  Routed/tunnel subnets therefore sweep a
+# single probe round (``--max-retries 0``) under a tight wall cap and *finish fast*
+# (usually with zero hosts) rather than timing out and flagging an alarming error.
+_NMAP_TIMEOUT_LOCAL = 120
+_NMAP_TIMEOUT_L3 = 30
+
+
+def _l3_alive_nmap(
+    cidr: str, egress: Optional[str], kind: Optional[str] = None,
+) -> Optional[set]:
     """Host discovery via ``nmap -sn`` (robust: ICMP + TCP/UDP probes).  Returns the
     set of live IPs, or ``None`` when ``nmap`` is absent or the run fails.
 
     Runs ``nmap -sn -oG -`` (grepable output to stdout) and parses the
     ``Host: <ip> (…) Status: up`` lines — the stable machine-readable format, which
     is far more reliable than scraping nmap's human-readable banner.
+
+    ``kind`` is the :func:`classify_subnet` result for ``cidr``; when omitted it is
+    re-derived.  Routed/tunnel subnets (``kind`` in tunnel/routed) sweep a single
+    probe round under a tight per-host/wall timeout so a blackholed gateway resolves
+    quickly instead of hanging the whole sweep (see the timeout caps above).
     """
+    if kind is None:
+        try:
+            kind = classify_subnet(cidr)["kind"]
+        except Exception:  # noqa: BLE001 - classification is best-effort here
+            kind = "unknown"
+    l3 = kind in ("tunnel", "routed")
     try:
-        cmd = ["nmap", "-sn", "-oG", "-", "--host-timeout", "5s"]
+        cmd = ["nmap", "-sn", "-oG", "-"]
+        if l3:
+            cmd += ["--host-timeout", "3s", "--max-retries", "0"]
+            wall = _NMAP_TIMEOUT_L3
+        else:
+            cmd += ["--host-timeout", "5s"]
+            wall = _NMAP_TIMEOUT_LOCAL
         if egress:
             cmd += ["-e", egress]
         cmd.append(cidr)
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=wall)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        diag_log.emit("l3-nmap", f"failed: {exc!r}", "cmd=" + " ".join(cmd))
+        diag_log.emit("l3-nmap", f"failed: {exc!r}", f"kind={kind}", "cmd=" + " ".join(cmd))
         return None
     diag_log.proc("l3-nmap", cmd, proc)
     if proc.returncode != 0:
@@ -1212,7 +1242,7 @@ def run_nmap_scan(
     failures: list[str] = []
     for cidr in subnets:
         cls = classify_subnet(cidr, interface)
-        alive = _l3_alive_nmap(cidr, cls["egress"])
+        alive = _l3_alive_nmap(cidr, cls["egress"], kind=cls["kind"])
         diag_log.emit(
             "nmap",
             f"cidr={cidr}",
