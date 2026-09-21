@@ -13,7 +13,7 @@ from unittest import mock
 import pytest
 
 from app.services import diag_log
-from app.services.scanner import _run_sweeps
+from app.services.scanner import _run_sweeps, run_scan
 
 
 @pytest.fixture(autouse=True)
@@ -155,3 +155,49 @@ def test_scanner_wiring_writes_to_active_log(tmp_path, monkeypatch):
     assert "arp-scan" in text
     assert "10.0.0.0/24" in text
     assert "aa:bb:cc:dd:ee:00" in text  # raw output was captured
+
+
+async def test_worker_thread_lines_land_via_dispatch(tmp_path, monkeypatch):
+    """Regression: the active-scan ContextVar must reach the worker thread that
+    ``run_scan`` dispatches to.
+
+    ``run_scan`` dispatches sweeps with ``asyncio.to_thread`` (which copies the
+    running context), so every ``diag_log.emit``/``proc``/``exc`` inside the sweep
+    thread lands in the per-scan file.  A bare ``loop.run_in_executor`` drops the
+    ContextVar on Python 3.12 (the dev image) and the worker would silently log
+    *nothing* — the exact bug this guards.  Unlike
+    ``test_scanner_wiring_writes_to_active_log`` (which calls ``_run_sweeps``
+    directly in-thread), this drives the *real* ``run_scan`` dispatch so the
+    context-propagation path is actually exercised.
+    """
+    monkeypatch.setenv("UPSTREAM_HEALER_DEBUG_LOG_DIR", str(tmp_path))
+
+    def fake_run(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
+        if "arp-scan" in joined:
+            return mock.Mock(returncode=0, stdout="10.0.0.5  aa:bb:cc:dd:ee:00  Fake\n", stderr="")
+        return mock.Mock(returncode=0, stdout="", stderr="")
+
+    with mock.patch.object(diag_log, "self_identity", return_value=_EMPTY_IDENTITY), \
+        mock.patch("app.services.scanner.subprocess.run", side_effect=fake_run), \
+        mock.patch(
+            "app.services.scanner.classify_subnet",
+            side_effect=lambda cidr, iface=None: {"kind": "local", "egress": "eth0"},
+        ), \
+        mock.patch("app.services.scanner.get_local_ip_for_network",
+                    return_value=("10.0.0.1", "eth0")), \
+        mock.patch("app.services.scanner.get_default_subnets", return_value=[]), \
+        mock.patch("app.services.scanner.resolve_hostnames",
+                    new=mock.AsyncMock(return_value=[])):
+        with diag_log.scan_context(
+            target_mac="aa:bb:cc:dd:ee:01", method="arp-scan", subnets=["10.0.0.0/24"]
+        ):
+            result = await run_scan("aa:bb:cc:dd:ee:01", "arp-scan", subnets=["10.0.0.0/24"])
+
+    files = list(tmp_path.glob("diag_*.log"))
+    assert len(files) == 1
+    text = files[0].read_text()
+    # Worker-side marker: the raw arp-scan responder captured in the sweep thread.
+    assert "10.0.0.5" in text
+    assert "aa:bb:cc:dd:ee:00" in text
+    assert result["error"] is None

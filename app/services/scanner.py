@@ -59,7 +59,7 @@ async def run_scan(
 ) -> dict:
     """Run one scanner and return a JSON-ready dict for the diagnostic UI.
 
-    The scanner work is dispatched to a thread pool (``run_in_executor``) so the
+    The scanner work is dispatched to a thread pool (``asyncio.to_thread``) so the
     long ``arp-scan``/scapy run never blocks the event loop. ``method`` selects
     the scanner; ``"auto"`` is not valid here — ``find_ip_by_mac`` owns that
     fallback logic and returns a single IP rather than raw output.
@@ -73,21 +73,21 @@ async def run_scan(
     target_mac = normalize_mac(target_mac)
     method = (method or "arp-scan").strip().lower()
     diag_log.emit("run_scan", f"method={method}", f"target={target_mac}", f"subnets={subnets}")
-    loop = asyncio.get_running_loop()
-
+    # Dispatch each sweep with ``asyncio.to_thread`` (NOT a bare
+    # ``loop.run_in_executor``): ``to_thread`` copies the running context, so the
+    # active-scan diag_log ContextVar reaches the worker thread and the sweep's
+    # per-scan log lines actually land.  A bare ``run_in_executor`` drops the
+    # context on Python 3.12 (the dev image) → the worker silently logs nothing.
     if method == "scapy":
-        found_ip, output, error = await loop.run_in_executor(
-            None, lambda: run_scapy_scan(target_mac, interface, subnets=subnets)
+        found_ip, output, error = await asyncio.to_thread(
+            run_scapy_scan, target_mac, interface, subnets=subnets
         )
     elif method == "nmap":
-        found_ip, output, error = await loop.run_in_executor(
-            None,
-            lambda: run_nmap_scan(subnets=subnets, target_mac=target_mac, interface=interface),
+        found_ip, output, error = await asyncio.to_thread(
+            run_nmap_scan, subnets=subnets, target_mac=target_mac, interface=interface
         )
     else:  # "arp-scan" (the default)
-        found_ip, output, error = await loop.run_in_executor(
-            None, lambda: run_arp_scan(subnets=subnets)
-        )
+        found_ip, output, error = await asyncio.to_thread(run_arp_scan, subnets=subnets)
         if not error:
             found_ip = _match_mac_in_output(target_mac, output, subnets=subnets)
 
@@ -1069,7 +1069,11 @@ def _l3_alive_nmap(cidr: str, egress: Optional[str]) -> Optional[set]:
         return None
     diag_log.proc("l3-nmap", cmd, proc)
     if proc.returncode != 0:
-        diag_log.emit("l3-nmap", f"non-zero rc={proc.returncode}")
+        diag_log.emit(
+            "l3-nmap",
+            f"non-zero rc={proc.returncode}",
+            "stderr=" + (proc.stderr or "").strip()[:800],
+        )
         return None
     alive = set()
     for line in proc.stdout.splitlines():
@@ -1170,6 +1174,11 @@ def run_nmap_scan(
     ``nmap -sn`` uses ARP for locally‑attached networks and ICMP/ping probes for
     routed/tunnel ones, so it shows real hosts on *both* without the tunnel
     returning only the gateway.  Returns ``(found_ip, output, error)``.
+
+    A probe failure on *one* subnet no longer aborts the whole scan: the failed
+    CIDR is noted and the remaining subnets are still swept.  ``error`` is set
+    when every requested subnet failed (nmap unusable) or some failed (a partial
+    sweep is returned alongside the note); it is ``None`` when all succeeded.
     """
     if subnets is None:
         subnets = [s["cidr"] for s in get_default_subnets()]
@@ -1183,6 +1192,7 @@ def run_nmap_scan(
         return None, "", "nmap is not installed in this container; rebuild the image with the nmap dependency to use this diagnostic."
 
     lines: list[str] = []
+    failures: list[str] = []
     for cidr in subnets:
         cls = classify_subnet(cidr, interface)
         alive = _l3_alive_nmap(cidr, cls["egress"])
@@ -1191,10 +1201,18 @@ def run_nmap_scan(
             f"cidr={cidr}",
             f"classified={cls['kind']}",
             f"egress={cls['egress']}",
-            f"alive={sorted(alive) if alive is not None else '(run failed)'}",
+            f"alive={sorted(alive) if alive is not None else '(failed)'}",
         )
         if alive is None:
-            return None, "", f"nmap failed on {cidr}"
+            # One unreachable / unroutable subnet must not poison the whole
+            # sweep: note it, log it, and keep going.  The old behaviour (return
+            # immediately) dropped every other subnet's results, so a single bad
+            # CIDR reported zero hosts even with ~20 alive elsewhere.
+            failures.append(f"nmap failed on {cidr}")
+            diag_log.emit(
+                "nmap", f"cidr={cidr}", "probe failed — skipping this subnet, continuing"
+            )
+            continue
         if not alive:
             continue
         routed = cls["kind"] in ("tunnel", "routed")
@@ -1202,6 +1220,14 @@ def run_nmap_scan(
             lines.append(_host_line(ip, "--", routed, cls["egress"], "nmap -sn"))
     output = "\n".join(line for line in lines if line)
     found_ip = _match_mac_in_output(target_mac, output, subnets=subnets) if target_mac else None
+    if failures and not lines:
+        # Every requested subnet's probe failed — nothing to salvage, so surface
+        # it as a hard error (preserves the "nmap itself is broken" signal).
+        return None, "", "; ".join(failures)
+    if failures:
+        # Partial success: keep the good results, but name the failed subnet(s)
+        # so the UI can warn instead of trusting an incomplete sweep silently.
+        return found_ip, output, "; ".join(failures)
     return found_ip, output, None
 
 

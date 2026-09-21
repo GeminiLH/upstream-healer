@@ -1069,6 +1069,37 @@ class TestRunNmapScan:
             found, output, error = run_nmap_scan(subnets=["10.0.0.0/24"], interface="wg0")
         assert "nmap failed on" in error
 
+    def test_partial_failure_keeps_good_subnets(self):
+        # A probe failure on ONE subnet must not discard the others' results:
+        # the failed CIDR is named in ``error`` while the good subnet's hosts are
+        # still returned (the old code returned immediately, losing everything).
+        def fake_alive(cidr, egress):
+            return None if cidr == "10.0.0.0/24" else {"192.168.100.5"}
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)), \
+             patch("app.services.scanner.classify_subnet",
+                    return_value={"kind": "routed", "egress": "enp6s0"}), \
+             patch("app.services.scanner._l3_alive_nmap", side_effect=fake_alive):
+            found, output, error = run_nmap_scan(
+                subnets=["10.0.0.0/24", "192.168.100.0/24"]
+            )
+        assert "192.168.100.5" in output  # the good subnet survived
+        assert "nmap failed on 10.0.0.0/24" in error  # the bad one is named
+
+    def test_all_subnets_failed_is_hard_error(self):
+        # Every subnet failing = nothing to salvage → a hard error naming all of them.
+        def fake_alive(cidr, egress):
+            return None
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)), \
+             patch("app.services.scanner.classify_subnet",
+                    return_value={"kind": "routed", "egress": "enp6s0"}), \
+             patch("app.services.scanner._l3_alive_nmap", side_effect=fake_alive):
+            found, output, error = run_nmap_scan(
+                subnets=["10.0.0.0/24", "192.168.100.0/24"]
+            )
+        assert found is None
+        assert output == ""
+        assert "10.0.0.0/24" in error and "192.168.100.0/24" in error
+
     def test_empty_subnets(self):
         assert run_nmap_scan(subnets=[]) == (None, "", None)
 

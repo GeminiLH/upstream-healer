@@ -32,10 +32,21 @@ Safety properties (covered by ``tests/test_diag_log.py``)
 * **Never raises**: a logging failure can never fail a scan.
 * Bounded: per-file byte cap + oldest-first rotation, so the directory
   cannot grow without limit.
-* Async-safe: the active scan is a ``contextvars`` token; ``run_scan``
-  dispatches sweeps to a thread pool and both ``run_in_executor`` and
-  ``asyncio.to_thread`` propagate the current context (Python 3.7+), so the
-  worker threads write to the same per-scan file.
+* Async-safe: the active scan is a ``contextvars`` token.  ``run_scan``
+  dispatches each sweep with ``asyncio.to_thread``, which copies the running
+  context and runs the target inside it (``contextvars.copy_context().run``),
+  so worker threads write to the same per-scan file.
+
+  Note the subtlety that motivated this design: a plain
+  ``loop.run_in_executor(None, fn)`` does **not** propagate a ContextVar into
+  the worker thread on Python 3.12 (the runtime of the dev image) — the context
+  is only copied at task-creation boundaries, not at executor dispatch — so a
+  scanner dispatched that way silently logs *nothing* (empty per-scan file),
+  while the event-loop-side lines still land.  Python 3.13+ happens to also
+  propagate into the executor, but ``asyncio.to_thread`` is the portable fix
+  across 3.9-3.13.  **Never** dispatch a function that calls ``emit``/``proc``/
+  ``exc`` via a bare ``run_in_executor``; use ``to_thread`` (or wrap the body in
+  ``ctx.run`` where ``ctx = copy_context()`` was captured on the loop).
 """
 from __future__ import annotations
 
@@ -382,6 +393,26 @@ def _write_header(
         )
     else:
         log.emit("note", f"target {target} does not match any local interface MAC.")
+
+
+# -- context propagation helper ---------------------------------------------
+
+
+def copy_context() -> contextvars.Context:
+    """Return a copy of the *running* context, for dispatching context-aware
+    work onto a thread pool.
+
+    ``asyncio.to_thread`` does exactly this internally, but a caller that drives
+    ``loop.run_in_executor`` directly must wrap the target in
+    ``copy_context().run(...)`` (or just switch to ``to_thread``) — otherwise the
+    active-scan ``_current`` ContextVar is dropped in the worker thread and every
+    ``emit``/``proc``/``exc`` silently no-ops.  See the module docstring.
+    Example::
+
+        ctx = copy_context()
+        await loop.run_in_executor(None, lambda: ctx.run(worker_fn, *args))
+    """
+    return contextvars.copy_context()
 
 
 # -- scanner-facing one-liners (safe no-ops outside a scan / when disabled) --
