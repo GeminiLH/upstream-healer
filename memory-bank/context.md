@@ -101,10 +101,44 @@ Verified via the manual `dev_debug` CI job (2026-09-15): containers
 (`healer-data`, `npm-*`) persist across deploys.
 
 **Interact with NPM via `docker exec` — never via the web UI** (user
-directive). There is no docker CLI or SSH from this workstation, so from here
-the equivalent is: direct MariaDB over `:3306`, or triggering the manual
-`dev_debug` CI job (job dumps container states + log tails; see decisions.md
-for the trigger recipe).
+directive). There is no docker CLI or *general* (key) SSH from this workstation,
+so the usual equivalent is direct MariaDB over `:3306` or the manual `dev_debug`
+CI job (dumps container states + log tails; see decisions.md for the trigger
+recipe). The one SSH exception: the read-only **`cline-logs`** account for
+**scan logs** (below).
+
+## Accessing the batcave scan logs (read-only `cline-logs`)
+
+The per-scan `diag_*.log` files live in the app's mounted `/logs` dir
+(`= /mnt/data/upstream-healer/logs` on batcave). Read them by SSHing as
+**`cline-logs@batcave`** — a read-only account (the old `claire.liu` account is
+gone/renamed). The password is in the gitignored `.env.local` as
+`CLINE_LOGS_SSH_PASS` — **never commit it**. The account is wrapped with a
+`ForceCommand` allowlist: **only `ls cat tail grep head wc file stat`** are
+permitted (anything else prints `Command not allowed: …`), and it **auto-cd's
+into the log directory**, so a bare `ls -lat` / `cat <file>` / `grep <pat>
+<file>` works with no path.
+
+This workstation has **no `sshpass`/`expect`/`paramiko`**, so use the
+`SSH_ASKPASS` + `setsid` trick (no controlling tty → OpenSSH 10.4 invokes the
+askpass helper for the password). `-o BatchMode=no` is required — `yes` disables
+password auth. One-liner (or just run `scripts/batcave_logs.sh`):
+
+```bash
+cd /mnt/Aquaman/upstream-healer
+set -a && source ./.env.local && set +a   # → CLINE_LOGS_SSH_{HOST,USER,PASS}
+printf '#!/bin/sh\necho "%s"\n' "$CLINE_LOGS_SSH_PASS" > /tmp/ua_askpass && chmod +x /tmp/ua_askpass
+SSH_ASKPASS=/tmp/ua_askpass SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
+  setsid -w ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new \
+  "${CLINE_LOGS_SSH_USER}@${CLINE_LOGS_SSH_HOST}" 'ls -lat'
+```
+
+Gotchas (learned the hard way):
+- **Don't double-quote the filename** in the remote command — the wrapper keeps
+  inner `"` literal and `cat` then fails with "No such file". Filenames contain
+  `:` but colons are fine *unquoted*: `cat diag_20260921_070637_nmap_dc:a6:32:02:59:63_7.log`.
+- Convenience wrapper: `scripts/batcave_logs.sh '<cmd>'` reads the password from
+  `.env.local` and runs the askpass+setsid ssh for you.
 
 ## Key commands
 
