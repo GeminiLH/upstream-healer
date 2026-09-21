@@ -310,11 +310,13 @@ collection with `ValidationError: extra_forbidden`.
   (emitted as `ERROR:`), which **aborts the entire sweep** — zero responders.
   Passing `iface=` per `srp` call keeps the default resolution path intact.
   Regression: `tests/test_scanner.py::TestRunScapyScan::test_per_sweep_failure_is_isolated`.
-- **TASK 4 PARKED (2026-09-18) — the `"enp6s0" is not a valid numeric value`
-  sweep error is NOT fixed yet.** The user deferred it ("we will come back to
-  this"). It's a scapy route/iface-resolution error surfacing from a full-CIDR sweep;
-  it overlaps the `conf.iface` note above and the CIDR-in-`pdst` handling in
-  `run_scapy_scan`. **Validate in the `deploy_dev` container on the batcave**
+- **`"enp6s0" is not a valid numeric value` — RESOLVED (was TASK 4, parked
+  2026-09-18; the arp-scan half fixed by the `--interface` change below).** This
+  message has **two** producers, both now handled: (1) the *scapy* `conf.iface` /
+  `int("enp6s0")` route bug (above, fixed `00062a6`) and (2) the *arp-scan*
+  argument bug (separate note below). After the scapy fix the remaining error came
+  from the arp-scan sweep, not scapy — which is why nmap/scapy worked on a subnet
+  while arp-scan returned empty. **Validate the fix in the `deploy_dev` container on the batcave**
   (192.168.86.38) — the NFS-workstation sandbox can't sweep (Flatpak: no `ip`/
   `arp-scan` inside the sandbox; host copies are only reachable under `/run/host`).
   Three paths into the app's scanner: (1) Diagnostic UI → `POST
@@ -336,6 +338,18 @@ collection with `ValidationError: extra_forbidden`.
   against scapy's `conf.get_if_addresses()`) could leave `egress=None`, which
   caused scapy to use its (possibly corrupted) default interface.  Fixed
   2026-09-17.
+
+- **arp-scan 1.10: `-i` is `--interval` (a number), not the interface — select the
+  NIC with `-I`/`--interface`.** The per-sweep command was
+  `arp-scan -q --retry=3 -i <iface> <cidr>`. In arp-scan 1.10.0 (Debian bookworm,
+  what `python:3.12-slim` ships) the short letters are case-sensitive:
+  `-I`/`--interface` = the NIC (a string) while `-i`/`--interval` = a *numeric*
+  retry interval. Feeding the NIC name to `-i` made arp-scan run
+  `strtoul("enp6s0")`, print `ERROR: "enp6s0" is not a valid numeric value` and
+  **exit 1 with zero hosts** — so full arp-scan lists came back empty (the non-zero
+  exit was unchecked, so the error banner was silently filtered out). Fixed: the
+  sweep uses `--interface=<nic>` (the man-page canonical form) and checks the
+  return code, recording a failed sweep instead of treating its error as output.
 
 - **arp-scan note: a `/32` (or `/31`) is a *host*, not a network.** It has no
   usable broadcast, so it is not ARP-sweepable. `run_arp_scan` now emits a

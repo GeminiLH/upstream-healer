@@ -154,6 +154,13 @@ placeholder, and the `POST /api/diagnostic/scan` request contract all live in
 
 ## Done (recent history — full detail in git log)
 
+- **(2026-09-21) arp-scan full-list fix**: the per-sweep command passed the NIC to
+  `-i`, but arp-scan 1.10 uses `-i`=`--interval` (numeric) and `-I`=`--interface`.
+  `arp-scan -q --retry=3 -i enp6s0 <cidr>` aborted with `"enp6s0" is not a valid
+  numeric value` (exit 1, zero hosts) → silently empty results. Now uses
+  `--interface=<nic>` and checks the return code. Resolves the parked **TASK 4**
+  (the arp-scan half of the `"enp6s0"` error, after the scapy fix in `00062a6`).
+  Full root cause in `decisions.md` (Scanner / multi-subnet gotchas).
 - `412bda5` (2026-09-17): memory-bank commit → pipeline 160 all green →
   `deploy_dev` job 811 success (34 s); dev UI live on `192.168.86.38:8787`.
 - **`scripts/ship.sh`** (2026-09-17, hardened 2026-09-18): one-command ship —

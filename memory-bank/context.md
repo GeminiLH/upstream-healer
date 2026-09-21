@@ -1,6 +1,6 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-09-20. Re-verify with `git status` and `progress.md` before relying on this.
+> Last updated: 2026-09-21 (arp-scan `-i`/`-I` full-list fix shipped). Re-verify with `git status` and `progress.md` before relying on this.
 
 ## Repository (read this first)
 
