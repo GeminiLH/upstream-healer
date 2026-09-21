@@ -165,6 +165,14 @@ curl -s -m 105 -X POST http://192.168.86.38:8787/api/diagnostic/scan \
 populates. Verified the arp-scan `--interface=` fix this way on 2026-09-21
 (17 hosts, `rc=0`, `error=None`, `--interface=enp6s0` in the diag log).
 
+**Agent-tool gotcha (this sandbox, learned 2026-09-21):** a `run_commands` shell
+is reaped at ~30 s and takes anything backgrounded behind `&`/`nohup` down with
+it — so a long scan trigger (or `ship.sh`'s background `deploy_dev` wait) is
+killed before it finishes. Launch it detached with `setsid … &`, `touch` a
+sentinel file on exit, and **poll that file** in a short separate command; the
+work keeps running in its own session even after the launching shell is reaped
+(this is how the Fix C `deploy_dev` and the live nmap sweep were driven here).
+
 ## Key commands
 
 ```bash

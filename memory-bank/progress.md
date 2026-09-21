@@ -32,7 +32,7 @@
 
 ## Current state
 
-- **Routed-subnet nmap fast-bail (Fix C) — done, pending deploy** (2026-09-21):
+- **Routed-subnet nmap fast-bail (Fix C) — done, deployed + verified live** (2026-09-21):
   `scanner.py::_l3_alive_nmap` is classification-aware — routed/tunnel subnets sweep
   `nmap -sn` with `--max-retries 0 --host-timeout 3s` under a 30 s wall cap so a
   blackholed gateway finishes fast with 0 hosts (→ no top-level error); broadcast
@@ -101,6 +101,17 @@
 - The **Settings widen+clarify** task (previously the "Next task") is now
   **done** — `settings.html` is `max-w-3xl` and the three subnet fields carry
   the clarifying hints (see decisions.md "UI / templates").
+- **Parked (potential later item — do NOT implement without asking):** make the
+  **nmap diagnostic** resolve a target by MAC. Today `run_nmap_scan` hardcodes
+  `"--"` for every host's MAC (`nmap -oG` carries none), so `found_ip` is always
+  `None` for nmap (it still *lists* hosts via the name layer, and **recovery is
+  unaffected** — it uses arp-scan/scapy). The fix: resolve MACs for the IPs nmap
+  finds (e.g. `ip neigh get` / a targeted arp-scan of just those IPs) and feed
+  them to `_match_mac_in_output` so `found_ip` populates for nmap too. Full
+  why/scope in decisions.md "Scanner / multi-subnet gotchas". Related: the
+  corrected `/api/diagnostic/scan` contract note there (`target_mac` is the only
+  required field; `subnet_cidr`/`subnet_id`/`method` optional — there is no
+  `subnets` field on the endpoint model).
 - Leftovers from earlier: old manual `deploy_*` jobs on stale pipelines —
   `deploy_test` / `deploy_production` / `dev_down` / `dev_debug` in every
   recent pipeline remain `manual` — **trigger only on explicit user

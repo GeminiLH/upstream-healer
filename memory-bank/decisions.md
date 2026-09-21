@@ -288,12 +288,19 @@ collection with `ValidationError: extra_forbidden`.
   *changes between NPM image releases*, so prefer introspecting `SHOW COLUMNS`
   and auto-filling over hardcoding a fixed column list.
 - **Live diagnostic-scan API contract (`POST /api/diagnostic/scan`):** the
-  deployed `ScanRequest` requires `target_mac` (str) **and** `subnet_cidr` (str)
-  together. A body with only `subnets` (a list) **422s** with `Field required`.
-  The unit tests exercise the `subnets`-list form (fine in-process) — but to
-  *script against the live API* you must send `target_mac` + `subnet_cidr`. Unit
-  tests are the source of truth for the scanner; hit `:8787` only to confirm the
-  *deployed* request shape.
+  `ScanRequest` (`app/main.py:732`) has **one** required field — `target_mac`
+  (a blank one 400s, "target_mac is required"); `method` (default `"arp-scan"`),
+  `subnet_id` (default `0` = all known subnets) and `subnet_cidr` (default `""`
+  = all effective subnets) are all **optional**. So the minimal body is just
+  `{"target_mac": "…"}` and it sweeps every effective subnet. **Verified live
+  2026-09-21 on the batcave:** `{"target_mac":"…","method":"nmap"}` (no
+  `subnet_cidr`) → 200, swept all subnets. There is **no `subnets` list field**
+  on the HTTP model — `subnets=[…]` is only a keyword arg on the scanner
+  *functions* (`run_scan`/`run_*_scan`), which is what the in-process unit tests
+  pass; a body of only `{"subnets":[…]}` 422s purely because `target_mac` is
+  missing. Unit tests are the source of truth for the scanner; hit `:8787` only
+  to confirm the *deployed* request shape. (Corrects an earlier note that wrongly
+  said `subnet_cidr` was required alongside `target_mac`.)
 - **`sys.modules["pkg"] = None` does NOT fake a *submodule* import failure once
   it is cached (learned 2026-09-20, pipeline 181; fixed in `7e6577a`).**
   `monkeypatch.setitem(sys.modules, "scapy", None)` only stops a *fresh* import:
@@ -373,6 +380,21 @@ collection with `ValidationError: extra_forbidden`.
   is usually *present*; the address is just a single host). If a user added a
   specific IP (e.g. `192.168.70.0/32`) and expected a whole-LAN sweep, the real
   fix is to enter the `/24` (e.g. `192.168.70.0/24`).
+- **`found_ip` is always `None` for the *nmap* diagnostic — a limitation, NOT a
+  bug (and NOT in the recovery path).** `run_nmap_scan` builds each host line
+  with the MAC hardcoded to `"--"` (`_host_line(ip, "--", …)`) because
+  `nmap -sn -oG` output carries no MAC, and `_match_mac_in_output()` matches real
+  MACs (it is written for an arp-scan table) — so with only `"--"` present there
+  is nothing to match and `found_ip`/`found_mac` come back `None` (host MACs
+  render as `mac: None`). It *does* still list the live hosts (names via the
+  mDNS/curated layer), so the target is visible in `hosts[]`, just not pinned to
+  `found_ip`. This affects only the on-demand **nmap diagnostic** (it is also a
+  L2 broadcast probe, so it can't see a routed/tunnel host regardless); **recovery
+  is unaffected** — it uses arp-scan/scapy, which resolve MACs. *Parked (potential
+  later item, deliberately not implemented):* resolve MACs for the IPs nmap
+  discovers — e.g. a follow-up `ip neigh get <ip>` or a targeted arp-scan of just
+  those IPs on the egress NIC — and feed the real MACs to `_match_mac_in_output`
+  so `found_ip` populates for nmap too.
 
 ## Seeder / NPM-sync gotchas (all resolved — read before touching `scripts/seed_dev.py`)
 
