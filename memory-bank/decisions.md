@@ -1,8 +1,31 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-09-20.
+> Last updated: 2026-09-21.
 
 ## Design decisions
+
+- **Scanner worker-thread logging: dispatch via `asyncio.to_thread`, NOT a bare
+  `run_in_executor`** (2026-09-21): On Python 3.12 (the dev image)
+  `loop.run_in_executor(None, fn)` does **not** copy the `ContextVar` into the
+  worker thread, so every `diag_log.emit/proc/exc` inside the sweep thread
+  silently no-oped and the per-scan file came back with only the event-loop-side
+  lines (an "empty" sweep — this was the batcave/fash debug-log bug). `run_scan`
+  now dispatches scapy/nmap/arp-scan via `asyncio.to_thread` (which copies the
+  running context), so worker-side lines land. 3.13+ happens to *also* propagate
+  into the executor, which is why it regressed invisibly whenever dev ran 3.13 —
+  it only bites on the 3.12 image. Added a `diag_log.copy_context()` helper
+  documenting the manual `ctx.run` alternative. The regression test drives the
+  *real* `run_scan` dispatch — the earlier wiring test called `_run_sweeps`
+  in-thread, so it could never catch this.
+
+- **nmap scan is per-CIDR resilient** (2026-09-21): a probe failure on *one*
+  subnet no longer aborts the whole sweep — the failed CIDR is noted in `error`
+  and the other subnets are still swept. `error` is set only when *every* subnet
+  failed, or names the failed one(s) on a partial sweep. Also logs nmap stderr on
+  a non-zero rc. On batcave this is what the phantom `192.168.70.0/24` (routed,
+  flash side) was doing: its `nmap -sn` failed and the old code returned 0 hosts,
+  discarding the ~16 on `192.168.86.0/24`. Now the self/fash nmap scan returns
+  the 86.0/24 hosts (incl. flash) with `error` naming `192.168.70.0/24`.
 
 - **Scan debug logging: opt-in, file-based, dev-only** (2026-09-20):
   `app/services/diag_log.py` — one log file per diagnostic scan
