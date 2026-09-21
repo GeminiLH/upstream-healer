@@ -116,7 +116,7 @@ class TestRunArpScan:
         assert found_ip is None  # a full list has no single target
         assert error is None
         assert "10.0.0.5" in output
-        assert mock_run.call_args[0][0] == ["arp-scan", "-q", "--retry=3", "-i", "eth1", "10.0.0.0/24"]
+        assert mock_run.call_args[0][0] == ["arp-scan", "-q", "--retry=3", "--interface=eth1", "10.0.0.0/24"]
 
     def test_none_falls_back_to_passive_list_when_no_local_networks(self):
         # No /24s, no primary IP (e.g. Windows dev box): historic `arp-scan -l`.
@@ -492,7 +492,25 @@ class TestRunArpScanWithSubnets:
             return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
         ),              patch("app.services.scanner.subprocess.run", return_value=_FakeProc("x")) as mock_run:
             run_arp_scan(subnets=["10.0.0.0/24"])
-        assert mock_run.call_args[0][0] == ["arp-scan", "-q", "--retry=3", "-i", "eth1", "10.0.0.0/24"]
+        assert mock_run.call_args[0][0] == ["arp-scan", "-q", "--retry=3", "--interface=eth1", "10.0.0.0/24"]
+
+    def test_failed_sweep_records_error_not_host_output(self):
+        """A non-zero arp-scan exit (bad NIC / arg) is recorded as an error and its
+        error banner must never leak into the host output."""
+        with patch(
+            "app.services.scanner.get_default_subnets",
+            return_value=[{"cidr": "10.0.0.0/24", "interface": "eth1", "source": "auto"}],
+        ), patch(
+            "app.services.scanner.classify_subnet",
+            return_value={"kind": "broadcast"},
+        ), patch(
+            "app.services.scanner.subprocess.run",
+            return_value=_FakeProc("", stderr='ERROR: "eth1" is not a valid numeric value', code=1),
+        ):
+            _, output, error = run_arp_scan(subnets=["10.0.0.0/24"])
+        assert error is not None
+        assert "10.0.0.0/24" in error
+        assert "not a valid numeric value" not in output
 
     def test_unknown_subnet_is_skipped_with_note(self):
         with patch(

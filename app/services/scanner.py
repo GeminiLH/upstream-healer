@@ -309,7 +309,7 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
     (there is no single "the" target for a full list).
 
     * ``subnets`` (list of CIDRs): each network with a local interface is
-      swept with ``arp-scan -q --retry=3 -i <iface> <cidr>``.  Networks with
+      swept with ``arp-scan -q --retry=3 --interface=<iface> <cidr>``.  Networks with
       no local interface are skipped with a note, and the output is filtered
       to responders inside the requested networks — an unselected network
       can never leak its hosts into the results (the old implicit no-``-i``
@@ -453,7 +453,15 @@ def _run_sweeps(
             if l3_output and l3_output.strip():
                 chunks.append(l3_output.rstrip())
             continue
-        cmd = ["arp-scan", "-q", "--retry=3", "-i", iface, cidr]
+        # arp-scan 1.10's option letters are case-sensitive and differ from older
+        # releases: ``-I``/``--interface`` selects the NIC (a string) while
+        # ``-i``/``--interval`` is a *numeric* retry interval.  The old code passed
+        # the NIC name to ``-i``, so arp-scan tried ``strtoul("enp6s0")``, printed
+        # ``"enp6s0" is not a valid numeric value`` and exited 1 with zero hosts —
+        # which is why full arp-scan lists came back empty.  Bind the NIC with the
+        # long ``--interface=<nic>`` form (the man-page canonical spelling) so the
+        # name can never be re-read as a number.
+        cmd = ["arp-scan", "-q", "--retry=3", f"--interface={iface}", cidr]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
         except FileNotFoundError:
@@ -464,6 +472,15 @@ def _run_sweeps(
             error = f"arp-scan failed: {exc}"
             continue
         diag_log.proc("arp-scan", cmd, proc)
+        if proc.returncode != 0:
+            # arp-scan aborts on a bad argument / unusable NIC (non-zero exit)
+            # rather than returning a partial list, so a failed sweep must not
+            # have its error banner mistaken for host output: record it and keep
+            # sweeping the remaining networks.
+            stderr_tail = (proc.stderr or "").strip().splitlines()
+            detail = stderr_tail[-1][:160] if stderr_tail else f"rc={proc.returncode}"
+            error = f"arp-scan failed on {cidr} ({detail})"
+            continue
         out = (proc.stdout or "") + (proc.stderr or "")
         if out.strip():
             chunks.append(out.rstrip())
