@@ -32,6 +32,14 @@
 
 ## Current state
 
+- **Routed-subnet nmap fast-bail (Fix C) — done, pending deploy** (2026-09-21):
+  `scanner.py::_l3_alive_nmap` is classification-aware — routed/tunnel subnets sweep
+  `nmap -sn` with `--max-retries 0 --host-timeout 3s` under a 30 s wall cap so a
+  blackholed gateway finishes fast with 0 hosts (→ no top-level error); broadcast
+  keeps `5s`/120 s. Closes the row-4 symptom from the 2026-09-21 scan battery (nmap
+  full sweep: `error="nmap failed on 192.168.70.0/24"` + a 120 s hang on the phantom
+  routed subnet). 127 scanner tests pass; in-process proof: routed blackhole →
+  `error=None`, local hosts kept. Deploy via `bash scripts/ship.sh` (or `deploy_dev`).
 - **L3 discovery — SHIPPED (pending deploy):** `b09cd4d` — `scanner.py`
   classifies each subnet (real-NIC `BROADCAST` vs point-to-point/gateway via
   `ip -o link` flags) and sweeps tunnel/routed ones at **Layer 3**

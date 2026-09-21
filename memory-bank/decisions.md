@@ -27,6 +27,18 @@
   discarding the ~16 on `192.168.86.0/24`. Now the self/fash nmap scan returns
   the 86.0/24 hosts (incl. flash) with `error` naming `192.168.70.0/24`.
 
+- **Routed/tunnel `nmap -sn` sweeps fast-bail** (2026-09-21, "Fix C"): the
+  per-CIDR isolation above *survives* a failed subnet, but the routed `nmap -sn`
+  was the failure *source* — on a blackholed gateway it can't ARP, so it fires
+  unicast ICMP/TCP pings and every dead host burns its probe+retry window (3
+  retries by default); a dead `/24` then hit the 120 s wall and set a scary
+  top-level `error="nmap failed on …"`. `_l3_alive_nmap` is now
+  classification-aware: routed/tunnel subnets sweep a **single probe round**
+  (`--max-retries 0 --host-timeout 3s`, 30 s wall cap) so a dead gateway *finishes
+  fast with zero hosts* (→ no failure, no error); directly-attached/broadcast keeps
+  the old `--host-timeout 5s` + 120 s cap (a real ARP LAN sweep ≈45 s needs the
+  room). Complements the per-CIDR isolation above.
+
 - **Scan debug logging: opt-in, file-based, dev-only** (2026-09-20):
   `app/services/diag_log.py` — one log file per diagnostic scan
   (`/api/diagnostic/scan` wraps its body in `scan_context`), recording the
