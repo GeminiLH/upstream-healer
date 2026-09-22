@@ -291,65 +291,74 @@ class Monitor:
             notify=notify,
         )
 
-        # Update NPM
-        if npm_id:
-            success = self.npm.update_forward_host(npm_id, new_ip)
-            if success:
-                reloaded = self.npm.reload_nginx()
-                if reloaded:
-                    await send_event(
-                        db,
-                        "updated",
-                        f"🔄 Updated NPM proxy host #{npm_id} to {new_ip} and reloaded nginx",
-                        host_id=host_id,
-                        notify=notify,
-                    )
+        # Defer NPM update until we've confirmed the backend is reachable.
+        # The update will be attempted only after the reachability check below
+        # (so we don't point the proxy at an IP that doesn't serve the expected
+        # port).
+
+        # Final reachability check: only persist the discovered IP and mark
+        # the host healthy if the host actually responds on the monitored port.
+        await asyncio.sleep(2)
+        reachable = await check_host_reachable(new_ip, port=port)
+
+        now = current_time().isoformat()
+        if reachable:
+            # Persist the discovered IP and mark healthy
+            await db.execute(
+                "UPDATE hosts SET current_ip = ?, updated_at = ? WHERE id = ?",
+                (new_ip, now, host_id),
+            )
+            await db.execute(
+                """UPDATE host_state SET
+                    status = 'healthy',
+                    last_seen_at = ?,
+                    unreachable_since = NULL,
+                    last_check_at = ?,
+                    last_ip = ?
+                 WHERE host_id = ?""",
+                (now, now, new_ip, host_id),
+            )
+            await db.commit()
+
+            # Now that the backend answers, update NPM proxy host and reload
+            if npm_id:
+                success = self.npm.update_forward_host(npm_id, new_ip)
+                if success:
+                    reloaded = self.npm.reload_nginx()
+                    if reloaded:
+                        await send_event(
+                            db,
+                            "updated",
+                            f"🔄 Updated NPM proxy host #{npm_id} to {new_ip} and reloaded nginx",
+                            host_id=host_id,
+                            notify=notify,
+                        )
+                    else:
+                        await send_event(
+                            db,
+                            "failed",
+                            f"Updated NPM proxy host #{npm_id} but nginx reload failed for {name}",
+                            host_id=host_id,
+                            notify=notify,
+                        )
                 else:
                     await send_event(
                         db,
                         "failed",
-                        f"Updated IP in DB but nginx reload failed for {name}",
+                        f"Failed to update NPM database for {name}",
                         host_id=host_id,
                         notify=notify,
                     )
             else:
+                # No NPM configured is informational only
                 await send_event(
                     db,
                     "failed",
-                    f"Failed to update NPM database for {name}",
+                    f"No NPM proxy host ID configured for {name}",
                     host_id=host_id,
                     notify=notify,
                 )
-        else:
-            await send_event(
-                db,
-                "failed",
-                f"No NPM proxy host ID configured for {name}",
-                host_id=host_id,
-                notify=notify,
-            )
 
-        # Update our records
-        now = current_time().isoformat()
-        await db.execute(
-            "UPDATE hosts SET current_ip = ?, updated_at = ? WHERE id = ?",
-            (new_ip, now, host_id),
-        )
-        await db.execute(
-            """UPDATE host_state SET
-                status = 'healthy',
-                last_seen_at = ?,
-                unreachable_since = NULL,
-                last_check_at = ?,
-                last_ip = ?
-             WHERE host_id = ?""",
-            (now, now, new_ip, host_id),
-        )
-        await db.commit()
-
-        # Final reachability check
-        await asyncio.sleep(2)
-        if await check_host_reachable(new_ip, port=port):
             await send_event(
                 db,
                 "recovered",
@@ -358,10 +367,23 @@ class Monitor:
                 notify=notify,
             )
         else:
+            # Did not reach the host despite finding an IP. Record the last
+            # checked IP and leave the host as unreachable so the operator can
+            # investigate. Do not overwrite hosts.current_ip until recovery.
+            await db.execute(
+                """UPDATE host_state SET
+                    status = 'unreachable',
+                    last_check_at = ?,
+                    last_ip = ?
+                 WHERE host_id = ?""",
+                (now, new_ip, host_id),
+            )
+            await db.commit()
+
             await send_event(
                 db,
                 "failed",
-                f"⚠️ Updated to {new_ip} but host still not responding on port 80",
+                f"⚠️ Found {name} at {new_ip} but it is not responding on port {port}",
                 host_id=host_id,
                 notify=notify,
             )
