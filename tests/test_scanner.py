@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -20,6 +19,7 @@ from app.services.scanner import (
     apply_hostnames,
     build_port_spec,
     parse_nmap_services_json,
+    parse_nmap_services_xml,
     check_host_reachable,
     classify_subnet,
     find_ip_by_mac,
@@ -1245,29 +1245,65 @@ class TestParseNmapServicesJson:
         assert parse_nmap_services_json('{"hosts":[{"address":"1.1.1.1"}]}') == []
 
 
+class TestParseNmapServicesXml:
+    _DOC = (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE nmaprun SYSTEM "http://www.insecure.org/nmap/nmap.xsd">'
+        '<nmaprun version="7.93" args="nmap">'
+        '<host><address addr="192.168.86.9" addrtype="ipv4"/>'
+        '<ports>'
+        '<port protocol="tcp" portid="80"><state state="open"/>'
+        '<service name="http" product="nginx" version="1.24.0" extrainfo=""/>'
+        '</port>'
+        '<port protocol="tcp" portid="22"><state state="closed"/>'
+        '<service name="ssh"/>'
+        '</port>'
+        '<port protocol="udp" portid="53"><state state="open"/>'
+        '<service name="domain"/>'
+        '</port></ports></host>'
+        '<host><address addr="192.168.86.1" addrtype="ipv4"/></host>'
+        '</nmaprun>'
+    )
+
+    def test_ports_and_services(self):
+        ports = parse_nmap_services_xml(self._DOC)
+        assert [p["port"] for p in ports] == [80, 22, 53]
+        assert ports[0]["protocol"] == "tcp"
+        assert ports[0]["state"] == "open"
+        assert ports[0]["service"] == "http"
+        assert ports[0]["product"] == "nginx"
+        assert ports[0]["version"] == "1.24.0"
+        assert ports[2]["protocol"] == "udp"
+
+    def test_empty_and_unparseable(self):
+        assert parse_nmap_services_xml("") == []
+        assert parse_nmap_services_xml("not xml at all") == []
+        assert parse_nmap_services_xml('<nmaprun><host><ports><port portid=""></nmaprun>') == []
+
+
 class TestRunServiceScan:
     def test_happy_path_builds_nmap_cmd(self):
-        def _run(cmd, **kwargs):
-            with open(cmd[cmd.index("-oJ") + 1], "w") as fh:
-                fh.write(
-                    '{"hosts":[{"address":"192.168.86.9","ports":['
-                    '{"port":80,"protocol":"tcp","state":"open","service":{"name":"http"}}]}]}'
-                )
-            return _FakeProc(stdout="", code=0)
-
-        with patch("app.services.scanner.subprocess.run", side_effect=_run) as mock_run:
+        xml = (
+            '<?xml version="1.0"?>'
+            '<nmaprun version="7.93" args="nmap -Pn">'
+            '<host><address addr="192.168.86.9" addrtype="ipv4"/>'
+            '<ports><port protocol="tcp" portid="80">'
+            '<state state="open"/><service name="http" product="Apache"/>'
+            '</port></ports></host></nmaprun>'
+        )
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(stdout=xml, code=0)) as mock_run:
             services, error = run_service_scan("192.168.86.9", tcp_ports=[80], udp_ports=[])
         assert error is None
         assert services[0]["service"] == "http"
+        assert services[0]["port"] == 80
+        assert services[0]["product"] == "Apache"
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "nmap"
-        for flag in ("-Pn", "-sT", "-sU", "-sV", "--open", "-oJ"):
+        for flag in ("-Pn", "-sT", "-sU", "-sV", "--open", "-oX"):
             assert flag in cmd
+        assert "-oJ" not in cmd  # nmap 7.93 re-parses -oJ as deprecated -o + filename "J"
+        assert cmd[cmd.index("-oX") + 1] == "-"  # XML to stdout, like the L3 sweeps' -oG -
         assert "192.168.86.9" in cmd
-        assert "-" not in cmd  # the bare-dash stdout trap (Failed to resolve '-')
-        outfile = cmd[cmd.index("-oJ") + 1]
-        assert outfile != "192.168.86.9"  # the target must never be the -oJ argument
-        assert not os.path.exists(outfile)  # temp file cleaned up after the run
         spec = cmd[cmd.index("-p") + 1]
         assert "80" in spec  # the caller's port is merged in
         assert "22" in spec  # the default list is always included
@@ -1285,12 +1321,7 @@ class TestRunServiceScan:
         assert "timed out" in error
 
     def test_unparseable_output_is_reported(self):
-        def _run(cmd, **kwargs):
-            with open(cmd[cmd.index("-oJ") + 1], "w") as fh:
-                fh.write("garbage")
-            return _FakeProc(stdout="", stderr="bad args", code=1)
-
-        with patch("app.services.scanner.subprocess.run", side_effect=_run):
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(stdout="garbage", stderr="bad args", code=1)):
             services, error = run_service_scan("1.2.3.4")
         assert services == []
         assert "no results" in error

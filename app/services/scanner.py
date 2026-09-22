@@ -9,11 +9,10 @@ import asyncio
 import ipaddress
 import json
 import logging
-import os
 import re
 import socket
 import subprocess
-import tempfile
+import xml.etree.ElementTree as ET
 from typing import Optional
 
 from app.config import current_time
@@ -1451,6 +1450,41 @@ def parse_nmap_services_json(raw: str) -> list[dict]:
     return ports
 
 
+def parse_nmap_services_xml(raw: str) -> list[dict]:
+    """Parse ``nmap -oX`` (XML) output into a flat list of per-port dicts.
+
+    ``-oX`` — not ``-oJ`` — is used deliberately: nmap 7.93 (Debian trixie /
+    the Docker image) has no JSON output, and a bare ``-oJ`` element silently
+    re-parses as the *deprecated* ``-o`` flag with filename "J", dropping the
+    intended file argument into the *target* list (see run_service_scan).
+    Both new and older nmap builds emit the same XML shape:
+    ``host/ports/port[@protocol @portid]/state[@state]/service[@name ...]``.
+    Unparseable/empty output yields ``[]`` — never raises.
+    """
+    if not raw or "<nmaprun" not in raw:
+        return []
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return []
+    ports: list[dict] = []
+    for host in root.iter("host"):
+        for port in host.iter("port"):
+            state_el = port.find("state")
+            svc_el = port.find("service")
+            portid = port.get("portid") or ""
+            ports.append({
+                "port": int(portid) if portid.isdigit() else None,
+                "protocol": port.get("protocol"),
+                "state": state_el.get("state") if state_el is not None else None,
+                "service": svc_el.get("name") if svc_el is not None and svc_el.get("name") else None,
+                "product": svc_el.get("product") if svc_el is not None else None,
+                "version": svc_el.get("version") if svc_el is not None else None,
+                "extrainfo": svc_el.get("extrainfo") if svc_el is not None else None,
+            })
+    return ports
+
+
 def run_service_scan(
     ip: str,
     tcp_ports: Optional[list[int]] = None,
@@ -1460,58 +1494,37 @@ def run_service_scan(
     """Blocking nmap port+service scan of one host (run via ``asyncio.to_thread``).
 
     Probes ``DEFAULT_PROBE_TCP/UDP_PORTS`` merged with ``tcp_ports``/``udp_ports``
-    (the host's configured port) using ``-Pn -sT -sU -sV -T4 --open -oJ``.
-    Returns ``(services, error)``: every port nmap reported (any state) plus a
-    human-facing error string when the probe could not run at all (missing
-    binary, timeout, unusable output).
+    (the host's configured port) using
+    ``nmap -Pn -sT -sU -sV -T4 --open -p <spec> -oX - <ip>`` and parses the XML
+    from stdout.  Returns ``(services, error)``: every port nmap reported
+    (any state) plus a human-facing error string when the probe could not run
+    at all (missing binary, timeout, unusable output).
+
+    Command shape notes (each fixed after a live batcave failure, 2026-09-21/22):
+    * an explicit TCP scan type is REQUIRED — with only ``-sU`` present and
+      ``T:…`` in the port spec, nmap warns "ports include T: but you haven't
+      specified any TCP scan type" and scans UDP only;
+    * ``-oX -`` mirrors the long-standing ``-oG -`` (grepable → stdout) idiom
+      that the L3 sweeps already use — verified to parse in nmap 7.93.  A
+      ``-oJ`` element must never be used: in nmap 7.93 there is no JSON output
+      and the element re-parses as deprecated ``-o`` + filename "J", which
+      shoves the intended output argument into the *target* list.
     """
     tcp = sorted({p for p in (tcp_ports or []) if 0 < p < 65536} | set(DEFAULT_PROBE_TCP_PORTS))
     udp = sorted({p for p in (udp_ports or []) if 0 < p < 65536} | set(DEFAULT_PROBE_UDP_PORTS))
     spec = build_port_spec(tcp, udp)
-    # Command shape notes (both fixed after a live batcave failure, 2026-09-21):
-    #   * an explicit TCP scan type is REQUIRED — with only ``-sU`` present and
-    #     ``T:…`` in the port spec, nmap warns "ports include T: but no TCP
-    #     scan type" and scans UDP only.  ``-sT`` (connect) needs no privileges
-    #     and version-detects just as well for a single LAN host.
-    #   * ``-oJ`` must come *after* the target with an explicit *file* argument:
-    #     the older ``-oJ -`` (bare dash = stdout) made this nmap build parse
-    #     the ``-`` as a *hostname* → "Failed to resolve '-'" → zero results.
-    #     A real temp file is unambiguous across nmap versions.
-    cmd = ["nmap", "-Pn", "-sT", "-sU", "-sV", "-T4", "--open", "-p", spec, ip]
-    outfile = None
-    try:
-        fd, outfile = tempfile.mkstemp(prefix="uh-services-", suffix=".json")
-        os.close(fd)
-        cmd += ["-oJ", outfile]
-    except OSError as exc:
-        return [], f"service scan failed: cannot create output file: {exc}"
+    cmd = ["nmap", "-Pn", "-sT", "-sU", "-sV", "-T4", "--open", "-p", spec, "-oX", "-", ip]
     diag_log.emit("run_service_scan", f"target={ip}", f"ports: {len(tcp)} tcp, {len(udp)} udp")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
-        if outfile:
-            os.unlink(outfile)
         return [], "nmap binary not found"
     except subprocess.TimeoutExpired:
-        if outfile:
-            os.unlink(outfile)
         return [], f"service scan timed out after {int(timeout)}s"
     except OSError as exc:
-        if outfile:
-            os.unlink(outfile)
         return [], f"service scan failed: {exc}"
-    raw = ""
-    if outfile:
-        try:
-            with open(outfile, encoding="utf-8", errors="replace") as fh:
-                raw = fh.read()
-        except OSError:
-            raw = ""
-        os.unlink(outfile)
-    else:  # pragma: no cover - only reachable if mkstemp above were skipped
-        raw = proc.stdout or ""
     diag_log.proc("nmap", cmd, proc, f"ports: {len(tcp)} tcp, {len(udp)} udp")
-    services = parse_nmap_services_json(raw)
+    services = parse_nmap_services_xml(proc.stdout or "")
     if not services:
         detail = (proc.stderr or "").strip()
         return [], f"nmap produced no results (rc={proc.returncode})" + (f": {detail[:300]}" if detail else "")
