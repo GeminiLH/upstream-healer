@@ -68,6 +68,18 @@ def build_parser() -> argparse.ArgumentParser:
     edit_host.add_argument("--disable", action="store_true", help="Disable monitoring for this host")
     edit_host.add_argument("--notes", default=None)
 
+    validate = subparsers.add_parser(
+        "validate-host",
+        help="Validate a host's details against the live network (log-only: sweep + mDNS + nmap probe; "
+        "prints JSON, changes nothing)",
+    )
+    validate.add_argument("--name", default=None, help="Host name (logging label only)")
+    validate.add_argument("--mac", default=None, help="MAC address to check (MAC → IP)")
+    validate.add_argument("--ip", default=None, help="IP address to check (IP → MAC + ports/services)")
+    validate.add_argument("--port", type=int, default=None, help="Port the host serves (merged into the nmap probe)")
+    validate.add_argument("--subnet", action="append", default=None,
+                          help="CIDR to sweep (repeatable; default: every enabled subnet)")
+
     list_events = subparsers.add_parser("list-events", help="List recent events")
     list_events.add_argument("--host-id", type=int, default=None)
     list_events.add_argument("--limit", type=int, default=10, help="Maximum events to return")
@@ -508,6 +520,27 @@ async def edit_host(host_id: int, args: argparse.Namespace, db: aiosqlite.Connec
     }))
 
 
+async def validate_host(args: argparse.Namespace, db: aiosqlite.Connection) -> None:
+    from app.services.scanner import validate_host_record
+
+    if not (args.mac or args.ip):
+        raise ValueError("Provide --mac and/or --ip (at least one)")
+    subnets = args.subnet
+    if subnets is None:
+        async with db.execute("SELECT cidr FROM subnets WHERE enabled = 1") as cur:
+            rows = await cur.fetchall()
+        subnets = [r[0] for r in rows]
+    result = await validate_host_record(
+        db,
+        name=args.name or args.ip or args.mac or "cli",
+        mac=args.mac or "",
+        ip=args.ip or "",
+        port=args.port or 0,
+        subnet_cidrs=subnets or None,
+    )
+    print(json.dumps(result, indent=2))
+
+
 async def run(args: argparse.Namespace) -> None:
     await init_db()
     async with aiosqlite.connect(settings.db_path) as db:
@@ -515,6 +548,8 @@ async def run(args: argparse.Namespace) -> None:
             await add_host(args, db)
         elif args.command == "list-hosts":
             await list_hosts(db)
+        elif args.command == "validate-host":
+            await validate_host(args, db)
         elif args.command == "list-npm-hosts":
             await list_npm_hosts(db)
         elif args.command == "check-npm-db":

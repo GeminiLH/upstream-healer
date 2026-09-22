@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -1246,20 +1247,27 @@ class TestParseNmapServicesJson:
 
 class TestRunServiceScan:
     def test_happy_path_builds_nmap_cmd(self):
-        proc = _FakeProc(
-            stdout='{"hosts":[{"address":"192.168.86.9","ports":['
-            '{"port":80,"protocol":"tcp","state":"open","service":{"name":"http"}}]}]}',
-            code=0,
-        )
-        with patch("app.services.scanner.subprocess.run", return_value=proc) as mock_run:
+        def _run(cmd, **kwargs):
+            with open(cmd[cmd.index("-oJ") + 1], "w") as fh:
+                fh.write(
+                    '{"hosts":[{"address":"192.168.86.9","ports":['
+                    '{"port":80,"protocol":"tcp","state":"open","service":{"name":"http"}}]}]}'
+                )
+            return _FakeProc(stdout="", code=0)
+
+        with patch("app.services.scanner.subprocess.run", side_effect=_run) as mock_run:
             services, error = run_service_scan("192.168.86.9", tcp_ports=[80], udp_ports=[])
         assert error is None
         assert services[0]["service"] == "http"
         cmd = mock_run.call_args[0][0]
         assert cmd[0] == "nmap"
-        for flag in ("-Pn", "-sV", "-sU", "--open", "-oJ"):
+        for flag in ("-Pn", "-sT", "-sU", "-sV", "--open", "-oJ"):
             assert flag in cmd
         assert "192.168.86.9" in cmd
+        assert "-" not in cmd  # the bare-dash stdout trap (Failed to resolve '-')
+        outfile = cmd[cmd.index("-oJ") + 1]
+        assert outfile != "192.168.86.9"  # the target must never be the -oJ argument
+        assert not os.path.exists(outfile)  # temp file cleaned up after the run
         spec = cmd[cmd.index("-p") + 1]
         assert "80" in spec  # the caller's port is merged in
         assert "22" in spec  # the default list is always included
@@ -1277,7 +1285,12 @@ class TestRunServiceScan:
         assert "timed out" in error
 
     def test_unparseable_output_is_reported(self):
-        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(stdout="garbage", stderr="bad args", code=1)):
+        def _run(cmd, **kwargs):
+            with open(cmd[cmd.index("-oJ") + 1], "w") as fh:
+                fh.write("garbage")
+            return _FakeProc(stdout="", stderr="bad args", code=1)
+
+        with patch("app.services.scanner.subprocess.run", side_effect=_run):
             services, error = run_service_scan("1.2.3.4")
         assert services == []
         assert "no results" in error

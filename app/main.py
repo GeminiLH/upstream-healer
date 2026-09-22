@@ -390,9 +390,15 @@ async def validate_host(host_id: int, body: ValidateHostRequest, db: aiosqlite.C
     if subnets is None:
         subnets = [s["cidr"] for s in await list_subnets(db) if s.get("enabled", 1)]
 
-    result = await validate_host_record(
-        db, name=host["name"], mac=mac, ip=ip, port=port, subnet_cidrs=subnets or None
-    )
+    # Same per-run diag log the diagnostic scan writes (dev-only: the prod
+    # compose leaves UPSTREAM_HEALER_DEBUG_LOG_DIR unset → all no-ops).  Gives
+    # the exact nmap command + raw stderr in /logs for post-hoc review.
+    with diag_log.scan_context(
+        target_mac=mac or "none", method="validate", subnets=subnets
+    ):
+        result = await validate_host_record(
+            db, name=host["name"], mac=mac, ip=ip, port=port, subnet_cidrs=subnets or None
+        )
 
     mac_res = result.get("mac") or {}
     ip_res = result.get("ip") or {}

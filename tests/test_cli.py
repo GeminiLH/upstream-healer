@@ -13,6 +13,7 @@ from app.cli import (
     add_host,
     add_telegram,
     build_parser,
+    validate_host,
     disable_host,
     disable_telegram,
     edit_host,
@@ -404,3 +405,54 @@ def test_main_list_hosts(tmp_path, monkeypatch, capsys):
     asyncio.run(seed())
     assert main(["list-hosts"]) == 0
     assert "Vault" in capsys.readouterr().out
+
+class TestValidateHostCommand:
+    def test_parser(self):
+        args = build_parser().parse_args([
+            "validate-host", "--name", "flash", "--mac", "dc:a6:32:02:59:63",
+            "--ip", "192.168.86.37", "--port", "80",
+            "--subnet", "192.168.86.0/24", "--subnet", "10.20.30.0/24",
+        ])
+        assert args.command == "validate-host"
+        assert args.name == "flash"
+        assert args.mac == "dc:a6:32:02:59:63"
+        assert args.ip == "192.168.86.37"
+        assert args.port == 80
+        assert args.subnet == ["192.168.86.0/24", "10.20.30.0/24"]
+
+    async def test_requires_mac_or_ip(self, cli_db):
+        args = build_parser().parse_args(["validate-host"])
+        with pytest.raises(ValueError, match="--mac"):
+            await validate_host(args, cli_db)
+
+    async def test_calls_scanner_with_explicit_subnets(self, cli_db, capsys):
+        result = {"sweep": {"responders": 3, "error": None}, "mac": None,
+                  "ip": {"target": "192.168.86.37", "port_state": "open", "services": []}}
+        with patch("app.services.scanner.validate_host_record", return_value=result) as mock_v:
+            args = build_parser().parse_args([
+                "validate-host", "--name", "flash", "--mac", "dc:a6:32:02:59:63",
+                "--ip", "192.168.86.37", "--port", "80", "--subnet", "192.168.86.0/24",
+            ])
+            await validate_host(args, cli_db)
+        mock_v.assert_awaited_once()
+        kwargs = mock_v.call_args.kwargs
+        assert kwargs["mac"] == "dc:a6:32:02:59:63"
+        assert kwargs["ip"] == "192.168.86.37"
+        assert kwargs["port"] == 80
+        assert kwargs["subnet_cidrs"] == ["192.168.86.0/24"]
+        assert json.loads(capsys.readouterr().out)["sweep"]["responders"] == 3
+
+    async def test_defaults_to_enabled_subnets(self, cli_db):
+        await cli_db.execute(
+            "INSERT INTO subnets (name, cidr, enabled) VALUES (?, ?, ?)",
+            ("lab", "192.168.10.0/24", 1),
+        )
+        await cli_db.execute(
+            "INSERT INTO subnets (name, cidr, enabled) VALUES (?, ?, ?)",
+            ("dark", "10.0.0.0/24", 0),
+        )
+        await cli_db.commit()
+        with patch("app.services.scanner.validate_host_record", return_value={"sweep": {}, "mac": None, "ip": None}) as mock_v:
+            args = build_parser().parse_args(["validate-host", "--ip", "10.0.0.5"])
+            await validate_host(args, cli_db)
+        assert mock_v.call_args.kwargs["subnet_cidrs"] == ["192.168.10.0/24"]  # dark (disabled) excluded

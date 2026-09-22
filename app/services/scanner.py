@@ -9,9 +9,11 @@ import asyncio
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 import subprocess
+import tempfile
 from typing import Optional
 
 from app.config import current_time
@@ -1453,30 +1455,63 @@ def run_service_scan(
     ip: str,
     tcp_ports: Optional[list[int]] = None,
     udp_ports: Optional[list[int]] = None,
-    timeout: float = 60.0,
+    timeout: float = 120.0,
 ) -> tuple[list[dict], Optional[str]]:
     """Blocking nmap port+service scan of one host (run via ``asyncio.to_thread``).
 
     Probes ``DEFAULT_PROBE_TCP/UDP_PORTS`` merged with ``tcp_ports``/``udp_ports``
-    (the host's configured port) using ``-Pn -sV -sU --open -oJ``.  Returns
-    ``(services, error)``: every port nmap reported (any state) plus a
+    (the host's configured port) using ``-Pn -sT -sU -sV -T4 --open -oJ``.
+    Returns ``(services, error)``: every port nmap reported (any state) plus a
     human-facing error string when the probe could not run at all (missing
     binary, timeout, unusable output).
     """
     tcp = sorted({p for p in (tcp_ports or []) if 0 < p < 65536} | set(DEFAULT_PROBE_TCP_PORTS))
     udp = sorted({p for p in (udp_ports or []) if 0 < p < 65536} | set(DEFAULT_PROBE_UDP_PORTS))
     spec = build_port_spec(tcp, udp)
-    cmd = ["nmap", "-Pn", "-sV", "-sU", "--open", "-T4", "-p", spec, "-oJ", "-", ip]
+    # Command shape notes (both fixed after a live batcave failure, 2026-09-21):
+    #   * an explicit TCP scan type is REQUIRED — with only ``-sU`` present and
+    #     ``T:…`` in the port spec, nmap warns "ports include T: but no TCP
+    #     scan type" and scans UDP only.  ``-sT`` (connect) needs no privileges
+    #     and version-detects just as well for a single LAN host.
+    #   * ``-oJ`` must come *after* the target with an explicit *file* argument:
+    #     the older ``-oJ -`` (bare dash = stdout) made this nmap build parse
+    #     the ``-`` as a *hostname* → "Failed to resolve '-'" → zero results.
+    #     A real temp file is unambiguous across nmap versions.
+    cmd = ["nmap", "-Pn", "-sT", "-sU", "-sV", "-T4", "--open", "-p", spec, ip]
+    outfile = None
+    try:
+        fd, outfile = tempfile.mkstemp(prefix="uh-services-", suffix=".json")
+        os.close(fd)
+        cmd += ["-oJ", outfile]
+    except OSError as exc:
+        return [], f"service scan failed: cannot create output file: {exc}"
     diag_log.emit("run_service_scan", f"target={ip}", f"ports: {len(tcp)} tcp, {len(udp)} udp")
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except FileNotFoundError:
+        if outfile:
+            os.unlink(outfile)
         return [], "nmap binary not found"
     except subprocess.TimeoutExpired:
+        if outfile:
+            os.unlink(outfile)
         return [], f"service scan timed out after {int(timeout)}s"
     except OSError as exc:
+        if outfile:
+            os.unlink(outfile)
         return [], f"service scan failed: {exc}"
-    services = parse_nmap_services_json(proc.stdout or "")
+    raw = ""
+    if outfile:
+        try:
+            with open(outfile, encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+        except OSError:
+            raw = ""
+        os.unlink(outfile)
+    else:  # pragma: no cover - only reachable if mkstemp above were skipped
+        raw = proc.stdout or ""
+    diag_log.proc("nmap", cmd, proc, f"ports: {len(tcp)} tcp, {len(udp)} udp")
+    services = parse_nmap_services_json(raw)
     if not services:
         detail = (proc.stderr or "").strip()
         return [], f"nmap produced no results (rc={proc.returncode})" + (f": {detail[:300]}" if detail else "")
