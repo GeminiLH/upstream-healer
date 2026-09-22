@@ -30,6 +30,34 @@
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q` (currently 265 passed, ruff clean).
 
+## Latest (2026-09-22) — validate screens + the nmap 7.93 `-oJ` trap, fixed live
+
+- Edit-screen **Validate** shipped (`4299a52`): Validate button →
+  `POST /hosts/{id}/validate` → new `scanner.validate_host_record` (one ARP
+  sweep checked both directions, shared mDNS browse, nmap service probe per
+  distinct IP, port-state derivation, host_form.html sections + dashboard
+  banner) + `cli validate-host`. 305 tests green.
+- **`-oJ` trap, root-caused from nmap 7.93 source** (the user's "nmap
+  produced no results (rc=0): ... Failed to resolve '-'" error):
+  nmap 7.93 (Debian trixie, the Docker image) has **no JSON output** —
+  `-oJ` matches no long option, falls to the deprecated short `-o` (optstring
+  `o:`), `J` is eaten as its filename, and the output argument lands in the
+  *target* list. Full story in decisions.md. Fix in two commits: `811ac94`
+  (explicit `-sT` + temp-file `-oJ` — still broken, proving the `-oJ` theory)
+  → **`705db59`** = `nmap -Pn -sT -sU -sV -T4 --open -p <spec> -oX - <ip>`
+  (same proven idiom as the L3 sweeps' `-oG -`) + `parse_nmap_services_xml`
+  (stdlib ElementTree, never raises). **Verified live in the batcave**
+  2026-09-22: flash → `22/tcp open ssh OpenSSH 10.0p2 Debian 7+deb13u4`,
+  `port_state=closed`, `services_error=null` — the Pi genuinely serves no
+  HTTP on :80 (the user's "port 80 closed" reading was correct).
+- Validate endpoint now wrapped in `diag_log.scan_context(method="validate")`
+  — per-run file in /logs (dev-only; read via `scripts/batcave_logs.sh`)
+  with the exact nmap cmd + rc + raw stdout/stderr.
+- `scripts/ship.sh` hardened: poll deploy_dev to `manual` before the play
+  POST (was 400 "Unplayable Job" when the job was still `pending`).
+- Suite: 307 passed, ruff clean.
+
+
 ## Current state
 
 - **Routed-subnet nmap fast-bail (Fix C) — done, deployed + verified live** (2026-09-21):

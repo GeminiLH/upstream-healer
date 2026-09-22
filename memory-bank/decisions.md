@@ -4,6 +4,46 @@
 
 ## Design decisions
 
+- **nmap 7.93 has no `-oJ` — service probes use `-oX -` (XML to stdout)**
+  (2026-09-22, "validate flash" bug): the batcave nmap 7.93 build (Debian
+  trixie, python:3.12-slim image) has NO JSON output — `nmap.cc` contains no
+  "json" and no `oJ` long-option. GNU getopt long-*only* matching is what
+  makes `-oX`/`-oG` work as a single argv element: the whole remainder
+  matches a long entry (`{"oX", required_argument}`) and the NEXT element is
+  its filename — that is why the L3 sweeps' `-oG -` always worked. `-oJ`
+  matches no long entry, so it falls to the deprecated short `-o` in the
+  optstring (`o:` = argument from the same word): `J` is eaten as a
+  *filename* and the intended output argument lands in the *target* list —
+  `-oJ -` → "Failed to resolve '-'" (+ a UDP-only scan warning, rc 0, zero
+  results); `-oJ <tmpfile>` → "Unable to split netmask from target
+  expression: '/tmp/uh-services-…'". The service probe is therefore
+  `nmap -Pn -sT -sU -sV -T4 --open -p <spec> -oX - <ip>`: an explicit `-sT`
+  (connect scan, no raw-socket privilege) silences the "no TCP scan type"
+  warning, `-oX -` is the same proven idiom, and
+  `parse_nmap_services_xml()` (stdlib ElementTree, never raises) reads the
+  XML from stdout. **Never put `-oJ` in an nmap command.** Verified live
+  from the batcave diag log 2026-09-22 (rc 0, clean XML, stderr empty).
+
+- **Validate flow writes diag logs too; `validate-host` CLI added**
+  (2026-09-22): `POST /hosts/{id}/validate` is wrapped in
+  `diag_log.scan_context(method="validate")`, so `run_service_scan` records
+  the exact nmap cmd + rc + raw stdout/stderr in the per-run file (dev-only:
+  `UPSTREAM_HEALER_DEBUG_LOG_DIR` is unset in the base compose → prod stays
+  silent; the sandbox logs are readable via `scripts/batcave_logs.sh`).
+  `app/cli.py` gained `validate-host --name --mac --ip --port
+  [--subnet CIDR ...]` for `docker exec upstream-healer python -m app.cli
+  validate-host ...` — log-only, JSON to stdout, defaults to every enabled
+  subnet. Note `scan_context` is a *sync* `@contextmanager` — `with`, not
+  `async with`.
+
+- **ship.sh waits for `manual` before playing deploy_dev** (2026-09-22):
+  straight after the auto jobs finish, the deploy_dev job can still be
+  `pending`; POST `/play` on a pending job returns HTTP 400 "Unplayable Job"
+  and the old ship.sh exited leaving the pipeline un-deployed (bit us
+  2026-09-22). The play step now polls the job until `manual` (5 s cadence,
+  5 min cap) before the play POST.
+
+
 - **Scanner worker-thread logging: dispatch via `asyncio.to_thread`, NOT a bare
   `run_in_executor`** (2026-09-21): On Python 3.12 (the dev image)
   `loop.run_in_executor(None, fn)` does **not** copy the `ContextVar` into the

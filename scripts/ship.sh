@@ -165,6 +165,27 @@ done
 # ---------------- 5. deploy_dev (manual play) ----------------
 if [ "$DEPLOY" = 1 ] && [ -n "$DD" ]; then
   step "5/5 deploy_dev (job $DD) — playing manual job"
+  # The job may still be "pending" straight after the auto jobs finish, and
+  # POST /play on a pending job is HTTP 400 "Unplayable Job" — wait for the
+  # job to settle at "manual" first (5 s cadence, 5 min cap).
+  PDEADLINE=$(( $(date +%s) + 300 ))
+  PJS="pending"
+  while :; do
+    PJS=$(curl -s -m 10 -H "PRIVATE-TOKEN: $TOKEN" "$API/jobs/$DD" \
+      | python3 -c '
+import sys, json
+try:
+    print(json.load(sys.stdin)["status"])
+except Exception:
+    print("pending")' || echo pending)
+    case "$PJS" in
+      manual) break ;;
+      failed|canceled) say "deploy_dev already $PJS before play"; exit 1 ;;
+    esac
+    [ "$(date +%s)" -lt "$PDEADLINE" ] || { echo "deploy_dev never reached manual (last: $PJS)" >&2; exit 1; }
+    sleep 5
+  done
+  say "deploy_dev is manual — playing"
   PLAYRESP=$(curl -s -m 15 -w '\n%{http_code}' -X POST -H "PRIVATE-TOKEN: $PLAY_TOKEN" "$API/jobs/$DD/play")
   PLAYCODE=$(echo "$PLAYRESP" | tail -1)
   case "$PLAYCODE" in
