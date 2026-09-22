@@ -161,11 +161,23 @@
     </div>
     {% endif %}
 
-    <div class="flex gap-3 pt-2">
+    <div class="flex flex-wrap gap-3 pt-2">
       <button type="submit"
         class="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">
         Save
       </button>
+      {% if host %}
+      <button type="button" id="validate-btn" data-host-id="{{ host.id }}"
+        class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600
+               text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
+        title="Check this host against the live network (MAC ↔ IP, hostname, open ports) without changing anything">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span id="validate-btn-label">Validate</span>
+      </button>
+      {% endif %}
       <a href="/" class="px-5 py-2.5 text-sm rounded-lg btn-secondary">
         Cancel
       </a>
@@ -179,6 +191,181 @@
       Delete this host
     </button>
   </form>
+
+  <div id="validate-modal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true"
+    aria-labelledby="validate-modal-title">
+    <div id="validate-backdrop" class="absolute inset-0 bg-slate-900/60 dark:bg-black/70"></div>
+    <div class="absolute inset-0 overflow-y-auto p-4">
+      <div class="relative w-full max-w-2xl mx-auto mt-10 sm:mt-16 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700">
+        <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+          <h2 id="validate-modal-title"
+            class="text-lg font-semibold text-slate-900 dark:text-slate-100">Validation — {{ host.name }}</h2>
+          <button id="validate-close" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+            aria-label="Close">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        <div id="validate-body" class="px-6 py-4 max-h-[70vh] overflow-y-auto"></div>
+        <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
+          Log-only check — nothing was changed. Use these results to correct the form above, then press Save.
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if host %}
+  <script>
+    (function () {
+      const btn = document.getElementById('validate-btn');
+      const modal = document.getElementById('validate-modal');
+      if (!btn || !modal) return;
+      const label = document.getElementById('validate-btn-label');
+      const body = document.getElementById('validate-body');
+      const form = btn.closest('form');
+      const hostId = btn.getAttribute('data-host-id');
+      const closeBtn = document.getElementById('validate-close');
+      const backdrop = document.getElementById('validate-backdrop');
+
+      function esc(v) {
+        const d = document.createElement('div');
+        d.textContent = v == null ? '' : String(v);
+        return d.innerHTML;
+      }
+
+      function chip(ok, okText, badText) {
+        const cls = ok
+          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+          : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300';
+        return `<span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${cls}">${esc(ok ? okText : badText)}</span>`;
+      }
+
+      function servicesTable(services, error) {
+        const open = (services || []).filter((s) => (s.state || '').startsWith('open'));
+        if (!open.length) {
+          if (error) {
+            return `<p class="text-sm text-amber-600 dark:text-amber-400 mt-1">Service probe failed: ${esc(error)}</p>`;
+          }
+          return '<p class="text-sm text-slate-500 dark:text-slate-400 mt-1">No open ports detected among the common ports.</p>';
+        }
+        const rows = open.map((s) => `<tr class="border-t border-slate-200 dark:border-slate-700">
+          <td class="px-3 py-1.5 font-mono text-slate-800 dark:text-slate-200">${esc(s.port)}</td>
+          <td class="px-3 py-1.5 text-slate-500 dark:text-slate-400">${esc(s.protocol || '')}</td>
+          <td class="px-3 py-1.5 text-slate-800 dark:text-slate-200">${esc(s.service) || '<span class="text-slate-400">—</span>'}</td>
+          <td class="px-3 py-1.5 text-xs text-slate-500 dark:text-slate-400">${[s.product, s.version, s.extrainfo].filter(Boolean).map(esc).join(' ') || '—'}</td>
+        </tr>`).join('');
+        return `<table class="w-full text-sm mt-1">
+          <thead><tr class="text-left text-xs uppercase tracking-wide text-slate-400 dark:text-slate-500">
+            <th class="px-3 py-1.5">Port</th><th class="px-3 py-1.5">Proto</th>
+            <th class="px-3 py-1.5">Service</th><th class="px-3 py-1.5">Details</th>
+          </tr></thead><tbody>${rows}</tbody></table>`;
+      }
+
+      function section(title, inner) {
+        return `<section class="rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+          <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-2">${title}</h3>${inner}</section>`;
+      }
+
+      function render(data, payload) {
+        const parts = [];
+        const sweep = data.sweep || {};
+        let sweepLine = '';
+        if ((sweep.subnets || []).length) {
+          sweepLine += `<p class="text-xs text-slate-500 dark:text-slate-400">Swept ${esc(sweep.subnets.join(', '))} — ${sweep.responders} host(s) answered.</p>`;
+        }
+        if (sweep.error) {
+          sweepLine += `<p class="text-sm text-amber-600 dark:text-amber-400">${esc(sweep.error)}</p>`;
+        }
+        if (sweepLine) parts.push(`<div class="space-y-1">${sweepLine}</div>`);
+
+        if (data.mac) {
+          const m = data.mac;
+          const rows = [
+            `<div class="flex items-center gap-2">${chip(m.found, 'Found on the network', 'Not found on swept networks')}</div>`,
+            `<p class="text-sm text-slate-600 dark:text-slate-300">Recorded MAC <code>${esc(m.target)}</code>${m.found ? ` answers at <code class="font-mono">${esc(m.ip)}</code>` : ''}</p>`,
+            `<p class="text-sm text-slate-600 dark:text-slate-300">Hostname <span class="font-medium">${esc(m.hostname) || '—'}</span></p>`,
+            m.found ? servicesTable(m.services, m.services_error) : '<p class="text-sm text-slate-400 dark:text-slate-500 mt-1">No services — the host was not on the swept networks.</p>',
+          ];
+          if (m.found && payload.ip && m.ip && m.ip !== payload.ip) {
+            rows.splice(1, 0, `<p class="text-sm text-rose-600 dark:text-rose-400">⚠ This MAC answers at <code>${esc(m.ip)}</code>, which differs from the Current IP field (<code>${esc(payload.ip)}</code>) — you may want to update it.</p>`);
+          }
+          parts.push(section('MAC address check', `<div class="space-y-2">${rows.join('')}</div>`));
+        }
+
+        if (data.ip) {
+          const p = data.ip;
+          const macText = p.mac
+            ? `<code class="font-mono">${esc(p.mac)}</code>`
+            : `<span class="text-slate-400">no source MAC ${p.mac_routed ? '(reached via a route/tunnel, not on this ARP segment)' : '(no ARP reply — host may be off-segment or down)'}</span>`;
+          let portText = '';
+          if (p.port) {
+            portText = p.port_state === 'open'
+              ? chip(true, `port ${p.port} open`)
+              : chip(false, `port ${p.port} not responding`);
+          }
+          const rows = [
+            `<p class="text-sm text-slate-600 dark:text-slate-300">MAC address: ${macText}</p>`,
+            `<p class="text-sm text-slate-600 dark:text-slate-300">Hostname <span class="font-medium">${esc(p.hostname) || '—'}</span></p>`,
+            `<p class="text-sm text-slate-600 dark:text-slate-300">${portText}</p>`,
+            servicesTable(p.services, p.services_error),
+          ];
+          if (data.mac && data.mac.found && data.mac.ip && data.mac.ip !== p.target) {
+            rows.splice(0, 0, `<p class="text-sm text-rose-600 dark:text-rose-400">⚠ The recorded MAC answers at a different IP (<code>${esc(data.mac.ip)}</code>) than this one.</p>`);
+          }
+          parts.push(section(`IP address check — ${esc(p.target)}`, `<div class="space-y-2">${rows.join('')}</div>`));
+        }
+
+        if (!parts.length) {
+          parts.push('<p class="text-sm text-slate-500">Nothing to validate.</p>');
+        }
+        body.innerHTML = parts.join('<hr class="my-3 border-slate-200 dark:border-slate-700">');
+        modal.classList.remove('hidden');
+      }
+
+      function close() {
+        modal.classList.add('hidden');
+      }
+
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        label.textContent = 'Validating…';
+        body.innerHTML = '<p class="text-sm text-slate-500 dark:text-slate-400 animate-pulse">Sweeping the network and probing services — this can take up to a minute…</p>';
+        modal.classList.remove('hidden');
+        const payload = {
+          mac: form.elements['mac_address'].value,
+          ip: form.elements['current_ip'].value,
+          port: parseInt(form.elements['port'].value || '0', 10) || 0,
+          subnet_id: parseInt(form.elements['subnet_id'].value || '0', 10) || 0,
+        };
+        try {
+          const res = await fetch(`/hosts/${hostId}/validate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            body.innerHTML = `<p class="text-sm text-rose-600 dark:text-rose-400">${esc(data.detail || res.status)}</p>`;
+            return;
+          }
+          render(data, payload);
+        } catch (err) {
+          body.innerHTML = `<p class="text-sm text-rose-600 dark:text-rose-400">Request failed: ${esc(err)}</p>`;
+        } finally {
+          btn.disabled = false;
+          label.textContent = 'Validate';
+        }
+      });
+
+      closeBtn.addEventListener('click', close);
+      backdrop.addEventListener('click', close);
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !modal.classList.contains('hidden')) close();
+      });
+    })();
+  </script>
   {% endif %}
 </div>
 {% endblock %}

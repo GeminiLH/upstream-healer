@@ -10,11 +10,13 @@ import ipaddress
 import json
 import logging
 import re
+import socket
 import subprocess
 from typing import Optional
 
 from app.config import current_time
 from app.services import diag_log
+from app.services.mdns import discover_hostnames
 
 logger = logging.getLogger("healer.scanner")
 
@@ -1363,3 +1365,299 @@ async def check_host_reachable(ip: str, port: int = 80, timeout: float = 3.0) ->
         return True
     except Exception:
         return False
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Host validation — the "Validate" action on the host *edit* screen
+#
+# The edit screen's Validate button confirms, from the network's point of
+# view, whether the entered values for a host are still correct:
+#
+#   * given a MAC, one ARP sweep resolves the IP it currently answers on
+#     (the same sweep's rows are re-used for the IP→MAC direction),
+#   * the hostname comes from the same layered chain as the scan page
+#     (curated DB name → live mDNS → mDNS cache → reverse DNS),
+#   * a short nmap port/service probe reports what the host actually
+#     serves (open ports + service names/versions).
+#
+# It is deliberately log-only: it never mutates the host record — the
+# operator reads the results popup and corrects the form by hand.
+
+# Ports the nmap probe always checks.  A deliberately small, service-heavy
+# list keeps a single-host probe quick (nmap *version* detection is the slow
+# part) while covering what proxy hosts actually run.  The host's configured
+# port is merged in on top of this list (see :func:`run_service_scan`).
+DEFAULT_PROBE_TCP_PORTS: tuple[int, ...] = (
+    21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 465, 587,
+    631, 636, 873, 993, 995, 1080, 1194, 1433, 1521, 1723, 2049,
+    2375, 2376, 3000, 3001, 3306, 3389, 3390, 5000, 5001, 5432,
+    5666, 5672, 5984, 5985, 6379, 8000, 8080, 8081, 8086, 8443,
+    8554, 8888, 9000, 9090, 9117, 9418, 9999, 10000, 15672,
+)
+DEFAULT_PROBE_UDP_PORTS: tuple[int, ...] = (53, 67, 68, 137, 138, 161)
+
+
+def build_port_spec(tcp_ports: list[int], udp_ports: list[int]) -> str:
+    """Build an nmap ``-p`` port spec (``"T:22,80,U:53"``) from two lists."""
+    parts: list[str] = []
+    if tcp_ports:
+        parts.append("T:" + ",".join(str(p) for p in tcp_ports))
+    if udp_ports:
+        parts.append("U:" + ",".join(str(p) for p in udp_ports))
+    return ",".join(parts)
+
+
+def parse_nmap_services_json(raw: str) -> list[dict]:
+    """Parse ``nmap -oJ`` output into a flat list of per-port dicts.
+
+    Newer nmap emits ``service`` as an object (``{"name", "product",
+    "version", "extrainfo", ...}``); older builds emit a plain string.  Both
+    reduce to one dict per reported port:
+    ``{"port", "protocol", "state", "service", "product", "version",
+    "extrainfo"}``.  Unparseable/empty output yields ``[]`` — a bad JSON doc
+    must never surface as an exception up the chain.
+    """
+    if not raw or not raw.strip().startswith("{"):
+        return []
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    ports: list[dict] = []
+    for host in doc.get("hosts", []):
+        for entry in host.get("ports", []):
+            svc = entry.get("service")
+            service = product = version = extrainfo = None
+            if isinstance(svc, dict):
+                service = svc.get("name")
+                product = svc.get("product")
+                version = svc.get("version")
+                extrainfo = svc.get("extrainfo")
+            elif isinstance(svc, str) and svc:
+                service = svc
+            ports.append({
+                # real nmap -oJ uses "id" for the port number; accept "port"
+                # too so hand-rolled fakes in tests keep working
+                "port": entry.get("id", entry.get("port")),
+                "protocol": entry.get("protocol"),
+                "state": entry.get("state"),
+                "service": service,
+                "product": product,
+                "version": version,
+                "extrainfo": extrainfo,
+            })
+    return ports
+
+
+def run_service_scan(
+    ip: str,
+    tcp_ports: Optional[list[int]] = None,
+    udp_ports: Optional[list[int]] = None,
+    timeout: float = 60.0,
+) -> tuple[list[dict], Optional[str]]:
+    """Blocking nmap port+service scan of one host (run via ``asyncio.to_thread``).
+
+    Probes ``DEFAULT_PROBE_TCP/UDP_PORTS`` merged with ``tcp_ports``/``udp_ports``
+    (the host's configured port) using ``-Pn -sV -sU --open -oJ``.  Returns
+    ``(services, error)``: every port nmap reported (any state) plus a
+    human-facing error string when the probe could not run at all (missing
+    binary, timeout, unusable output).
+    """
+    tcp = sorted({p for p in (tcp_ports or []) if 0 < p < 65536} | set(DEFAULT_PROBE_TCP_PORTS))
+    udp = sorted({p for p in (udp_ports or []) if 0 < p < 65536} | set(DEFAULT_PROBE_UDP_PORTS))
+    spec = build_port_spec(tcp, udp)
+    cmd = ["nmap", "-Pn", "-sV", "-sU", "--open", "-T4", "-p", spec, "-oJ", "-", ip]
+    diag_log.emit("run_service_scan", f"target={ip}", f"ports: {len(tcp)} tcp, {len(udp)} udp")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return [], "nmap binary not found"
+    except subprocess.TimeoutExpired:
+        return [], f"service scan timed out after {int(timeout)}s"
+    except OSError as exc:
+        return [], f"service scan failed: {exc}"
+    services = parse_nmap_services_json(proc.stdout or "")
+    if not services:
+        detail = (proc.stderr or "").strip()
+        return [], f"nmap produced no results (rc={proc.returncode})" + (f": {detail[:300]}" if detail else "")
+    diag_log.emit("run_service_scan", f"target={ip}", f"rc={proc.returncode}", f"ports={len(services)}")
+    return services, None
+
+
+async def probe_services(
+    ip: str,
+    tcp_ports: Optional[list[int]] = None,
+    udp_ports: Optional[list[int]] = None,
+    timeout: float = 60.0,
+) -> dict:
+    """Async wrapper around :func:`run_service_scan`.
+
+    Returns ``{"ok": bool, "error": str|None, "services": [...]}`` so a
+    failed probe degrades to an empty result instead of aborting the caller.
+    """
+    try:
+        services, error = await asyncio.to_thread(
+            run_service_scan, ip, tcp_ports, udp_ports, timeout
+        )
+    except Exception as exc:  # noqa: BLE001 - a probe error is a result, not a crash
+        return {"ok": False, "error": f"service scan failed: {exc}", "services": []}
+    return {"ok": error is None, "error": error, "services": services}
+
+
+def _arp_sweep_rows(subnets: Optional[list[str]]) -> tuple[list[dict], Optional[str]]:
+    """One full ARP sweep → every responder as ``[{ip, mac, detail}]``.
+
+    arp-scan first; if it produced nothing *and* reported an error (missing
+    binary, no routable sweep) we retry via the scapy fallback.  Both
+    directions of validation (MAC→IP *and* IP→MAC) read off this one run,
+    and tunnel subnets are probed at L3 inside :func:`run_arp_scan` — whose
+    synthetic rows carry ``mac=None`` (the ``--`` marker).
+    """
+    _, output, error = run_arp_scan(subnets=subnets)
+    rows = _parse_scan_output(output, subnets)
+    if rows or not error:
+        return rows, error
+    _, output, error = run_scapy_scan("00:00:00:00:00:00", None, subnets=subnets)
+    rows = _parse_scan_output(output, subnets)
+    return rows, (error if not rows else None)
+
+
+async def sweep_responder_hosts(subnets: Optional[list[str]] = None) -> tuple[list[dict], Optional[str]]:
+    """Async wrapper around :func:`_arp_sweep_rows` (blocking work off the loop)."""
+    return await asyncio.to_thread(_arp_sweep_rows, subnets)
+
+
+async def resolve_hostname(
+    ip: Optional[str] = None,
+    mac: Optional[str] = None,
+    db=None,
+    mdns: Optional[tuple[dict[str, str], dict[str, str]]] = None,
+) -> Optional[str]:
+    """Best-effort hostname for one host, via the same layered chain as the scan page.
+
+    ``ip`` and/or ``mac`` may be supplied; ``mdns`` is an optional pre-fetched
+    ``(ip_map, mac_map)`` pair — pass one shared mDNS browse when resolving
+    several hosts (a fresh 8 s window otherwise).  Priority mirrors
+    :func:`apply_hostnames`: curated DB name (by MAC) → live mDNS (by IP,
+    then by MAC) → mDNS cache (by MAC) → reverse DNS.
+    """
+    ip = (ip or "").strip() or None
+    mac = normalize_mac(mac) if (mac or "").strip() else None
+    if mdns is None:
+        mdns = await discover_hostnames()
+    mdns_ip_map, mdns_mac_map = mdns
+    known: dict[str, str] = {}
+    cached: dict[str, str] = {}
+    if db is not None:
+        known = await load_known_hostnames(db)
+        cached = await load_mdns_names(db)
+    name = None
+    if mac:
+        name = known.get(mac) or mdns_mac_map.get(mac) or cached.get(mac)
+    if name is None and ip:
+        name = mdns_ip_map.get(ip)
+    if name is None and ip:
+        try:
+            name = (await asyncio.to_thread(socket.gethostbyaddr, ip)).hostname
+        except OSError:
+            name = None
+    return name or None
+
+
+async def validate_host_record(
+    db,
+    *,
+    name: str,
+    mac: str,
+    ip: str,
+    port: int,
+    subnet_cidrs: Optional[list[str]] = None,
+) -> dict:
+    """Run the edit screen's *Validate* check for one host; returns UI JSON.
+
+    One ARP sweep (matched in both directions), one mDNS browse (shared by
+    every hostname resolution), one nmap port/service probe per distinct IP
+    of interest (the entered IP and/or the IP the entered MAC answers on).
+    Returns ``{"sweep": {...}, "mac": {...}|None, "ip": {...}|None}``.
+    Log-only: never mutates the host record.
+    """
+    mac = normalize_mac(mac) if (mac or "").strip() else None
+    ip = (ip or "").strip() or None
+    port = int(port or 0) or None
+    diag_log.emit(
+        "validate_host", f"host={name}", f"mac={mac}", f"ip={ip}",
+        f"port={port}", f"subnets={subnet_cidrs}",
+    )
+
+    rows, sweep_error = await sweep_responder_hosts(subnet_cidrs)
+
+    try:
+        mdns = await discover_hostnames()
+        if db is not None:
+            await remember_mdns_names(db, mdns[1])
+    except Exception:  # noqa: BLE001 - discovery must never fail the validation
+        mdns = ({}, {})
+
+    mac_row = None
+    ip_row = None
+    if mac:
+        mac_row = next((r for r in rows if r.get("mac") and normalize_mac(r["mac"]) == mac), None)
+    if ip:
+        ip_row = next((r for r in rows if (r.get("ip") or "") == ip), None)
+
+    found_ip = (mac_row or {}).get("ip") if mac_row else None
+    found_mac = (ip_row or {}).get("mac") if ip_row else None  # None when L3-routed
+
+    # One probe per distinct IP, in parallel; ``--open`` means an absent port
+    # is closed/filtered, so the host port's state is derivable below.
+    probe_targets = sorted({t for t in (ip, found_ip) if t})
+    probes: dict[str, dict] = dict(
+        zip(probe_targets, await asyncio.gather(*[probe_services(t) for t in probe_targets]))
+    ) if probe_targets else {}
+    hostnames: dict[str, str] = {}
+    for target in probe_targets:
+        row_mac = normalize_mac(found_mac) if (found_mac and target in (ip, found_ip)) else None
+        hostnames[target] = await resolve_hostname(ip=target, mac=row_mac, db=db, mdns=mdns)
+
+    result: dict = {
+        "sweep": {
+            "subnets": subnet_cidrs or None,
+            "responders": len(rows),
+            "error": sweep_error,
+        },
+        "mac": None,
+        "ip": None,
+    }
+    if mac:
+        mac_probe = probes.get(found_ip) or {}
+        result["mac"] = {
+            "target": mac,
+            "found": bool(mac_row),
+            "ip": found_ip,
+            "hostname": hostnames.get(found_ip) if found_ip else None,
+            "services": mac_probe.get("services", []) if found_ip else [],
+            "services_error": mac_probe.get("error") if found_ip else None,
+        }
+    if ip:
+        ip_probe = probes.get(ip) or {}
+        services = ip_probe.get("services", [])
+        port_state = None
+        if port:
+            matching = [s for s in services if s.get("protocol") == "tcp" and s.get("port") == port]
+            port_state = matching[0].get("state") if matching else "closed"
+        result["ip"] = {
+            "target": ip,
+            "mac": found_mac,
+            "mac_routed": bool(ip_row and not ip_row.get("mac") and "routed" in (ip_row.get("detail") or "")),
+            "hostname": hostnames.get(ip),
+            "port": port,
+            "port_state": port_state,
+            "services": services,
+            "services_error": ip_probe.get("error"),
+        }
+    diag_log.emit(
+        "validate_host", f"host={name}", "done",
+        f"mac_found={bool(result['mac'] and result['mac']['found'])}",
+        f"ip_mac={result['ip']['mac'] if result['ip'] else None}",
+    )
+    return result

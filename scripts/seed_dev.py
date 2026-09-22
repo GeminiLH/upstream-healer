@@ -112,7 +112,7 @@ SEED_HOSTS: List[Dict[str, Any]] = [
     # A real lab device for a positive scan test (discovered by MAC only —
     # no known IP).  Also disabled: no service/port to health-check.
     {
-        "name": "fash",
+        "name": "flash",
         "mac": "dc:a6:32:02:59:63",
         "ip": "",
         "domain": "",

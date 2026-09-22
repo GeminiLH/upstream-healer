@@ -30,6 +30,7 @@ from app.services.scanner import (
     remember_mdns_names,
     run_scan,
     save_suppressed_subnets,
+    validate_host_record,
 )
 
 logging.basicConfig(
@@ -341,6 +342,81 @@ async def force_scan(host_id: int, db: aiosqlite.Connection = Depends(get_db)):
         notify=False,
     )
     return RedirectResponse("/", status_code=303)
+
+
+class ValidateHostRequest(BaseModel):
+    """Values *currently in the edit form*.
+
+    Validate tests what the user has typed so far — any empty field falls
+    back to the saved host row, so it works mid-edit.
+    """
+
+    mac: str = ""
+    ip: str = ""
+    port: int = Field(0, ge=0, le=65535)
+    subnet_id: int = Field(0, ge=0)
+
+
+@app.post("/hosts/{host_id}/validate")
+async def validate_host(host_id: int, body: ValidateHostRequest, db: aiosqlite.Connection = Depends(get_db)):
+    """Validate a host's entered details against the live network (log-only).
+
+    The edit screen's *Validate* button posts the form's current values.
+    Returns what the network actually shows — for the entered MAC: the IP it
+    answers on, hostname and open ports; for the entered IP: its MAC,
+    hostname and open ports — so the operator can correct the record from
+    the results popup.  Never mutates anything.
+    """
+    async with db.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Host {host_id} not found")
+    host = dict(row)
+    mac = (body.mac or host.get("mac_address") or "").strip()
+    ip = (body.ip or host.get("current_ip") or "").strip()
+    if not mac and not ip:
+        raise HTTPException(status_code=400, detail="Nothing to validate: this host has no MAC address and no IP")
+    port = body.port or host.get("port") or 80
+
+    # Sweep scope: the form's subnet → the saved pin → every known subnet.
+    subnet_id = body.subnet_id or host.get("subnet_id") or 0
+    subnets = None
+    if subnet_id:
+        async with db.execute(
+            "SELECT cidr FROM subnets WHERE id = ? AND enabled = 1", (subnet_id,)
+        ) as cur:
+            subnet_row = await cur.fetchone()
+        subnets = [subnet_row["cidr"]] if subnet_row else None
+    if subnets is None:
+        subnets = [s["cidr"] for s in await list_subnets(db) if s.get("enabled", 1)]
+
+    result = await validate_host_record(
+        db, name=host["name"], mac=mac, ip=ip, port=port, subnet_cidrs=subnets or None
+    )
+
+    mac_res = result.get("mac") or {}
+    ip_res = result.get("ip") or {}
+    summary = []
+    if mac_res:
+        summary.append(
+            f"MAC {mac_res.get('target')} found at {mac_res.get('ip')}"
+            if mac_res.get("found")
+            else f"MAC {mac} not found on swept networks"
+        )
+    if ip_res:
+        summary.append(f"{ip} answers as {ip_res.get('mac') or 'no MAC (routed)'}")
+    message = f"Validation for {host['name']}: " + ("; ".join(summary) if summary else "no results")
+    await send_event(
+        db, "manual", message.strip() or f"Validation for {host['name']}",
+        details=(
+            f"requested: mac={mac or 'none'}, ip={ip or 'none'}, port={port}; "
+            f"found: mac.ip={mac_res.get('ip') or 'none'}, ip.mac={ip_res.get('mac') or 'none'}; "
+            f"hostname: {ip_res.get('hostname') or mac_res.get('hostname') or 'none'}"
+        ),
+        host_id=host_id,
+        notify=False,
+    )
+    return result
 
 
 # ───────────────────────────── Notifications ─────────────────────────────

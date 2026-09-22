@@ -1,6 +1,8 @@
 """Tests for app.services.scanner — MAC normalization and reachability."""
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -15,6 +17,8 @@ from app.services.scanner import (
     _parse_scan_output,
     _usable_hosts,
     apply_hostnames,
+    build_port_spec,
+    parse_nmap_services_json,
     check_host_reachable,
     classify_subnet,
     find_ip_by_mac,
@@ -29,15 +33,20 @@ from app.services.scanner import (
     load_mdns_names,
     load_suppressed_subnets,
     normalize_mac,
+    probe_services,
     remember_mdns_names,
+    resolve_hostname,
     resolve_hostnames,
     run_arp_scan,
     run_l3_probe,
     run_nmap_scan,
     run_scan,
     run_scapy_scan,
+    run_service_scan,
     save_suppressed_subnets,
     subnet_is_l3_only,
+    sweep_responder_hosts,
+    validate_host_record,
 )
 
 
@@ -1177,4 +1186,260 @@ class TestParseScanOutputL3Line:
     def test_real_mac_parsed(self):
         hosts = _parse_scan_output("10.0.0.5  aa:bb:cc:dd:ee:ff  Vendor")
         assert hosts[0]["mac"] == "aa:bb:cc:dd:ee:ff"
+
+
+# ───────────────────────────── Host validation (Validate button) ─────────────────────────────
+
+
+class TestBuildPortSpec:
+    def test_combined(self):
+        assert build_port_spec([22, 80], [53, 161]) == "T:22,80,U:53,161"
+
+    def test_tcp_only(self):
+        assert build_port_spec([80], []) == "T:80"
+
+    def test_udp_only(self):
+        assert build_port_spec([], [53]) == "U:53"
+
+    def test_empty_lists_give_empty_spec(self):
+        assert build_port_spec([], []) == ""
+
+
+class TestParseNmapServicesJson:
+    _DOC = json.dumps({
+        "hosts": [
+            {
+                "address": "192.168.86.9",
+                "hostnames": [],
+                "ports": [
+                    {"id": 80, "protocol": "tcp", "state": "open",
+                     "service": {"name": "http", "product": "nginx", "version": "1.24.0", "extrainfo": None}},
+                    {"id": 22, "protocol": "tcp", "state": "closed", "service": "ssh"},
+                    {"id": 53, "protocol": "udp", "state": "open", "service": {"name": "domain"}},
+                ],
+            },
+            {"address": "192.168.86.1", "ports": []},
+        ],
+        "runstats": {"hosts_up": 1},
+    })
+
+
+    def test_dict_and_string_services(self):
+        rows = parse_nmap_services_json(self._DOC)
+        assert [r["port"] for r in rows] == [80, 22, 53]
+        assert rows[0]["service"] == "http"
+        assert rows[0]["product"] == "nginx"
+        assert rows[0]["version"] == "1.24.0"
+        assert rows[1]["service"] == "ssh"  # older-nmap plain-string form
+        assert rows[1]["product"] is None
+        assert rows[2]["protocol"] == "udp"
+        assert rows[2]["state"] == "open"
+
+    def test_bad_or_empty_input_is_empty_list(self):
+        assert parse_nmap_services_json("") == []
+        assert parse_nmap_services_json("nmap: usage error") == []
+        assert parse_nmap_services_json("{not json") == []
+
+    def test_hosts_without_ports(self):
+        assert parse_nmap_services_json('{"hosts":[{"address":"1.1.1.1"}]}') == []
+
+
+class TestRunServiceScan:
+    def test_happy_path_builds_nmap_cmd(self):
+        proc = _FakeProc(
+            stdout='{"hosts":[{"address":"192.168.86.9","ports":['
+            '{"port":80,"protocol":"tcp","state":"open","service":{"name":"http"}}]}]}',
+            code=0,
+        )
+        with patch("app.services.scanner.subprocess.run", return_value=proc) as mock_run:
+            services, error = run_service_scan("192.168.86.9", tcp_ports=[80], udp_ports=[])
+        assert error is None
+        assert services[0]["service"] == "http"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "nmap"
+        for flag in ("-Pn", "-sV", "-sU", "--open", "-oJ"):
+            assert flag in cmd
+        assert "192.168.86.9" in cmd
+        spec = cmd[cmd.index("-p") + 1]
+        assert "80" in spec  # the caller's port is merged in
+        assert "22" in spec  # the default list is always included
+
+    def test_missing_binary_is_reported(self):
+        with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
+            services, error = run_service_scan("1.2.3.4")
+        assert services == []
+        assert "not found" in error
+
+    def test_timeout_is_reported(self):
+        with patch("app.services.scanner.subprocess.run", side_effect=subprocess.TimeoutExpired("nmap", 60)):
+            services, error = run_service_scan("1.2.3.4")
+        assert services == []
+        assert "timed out" in error
+
+    def test_unparseable_output_is_reported(self):
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(stdout="garbage", stderr="bad args", code=1)):
+            services, error = run_service_scan("1.2.3.4")
+        assert services == []
+        assert "no results" in error
+
+    async def test_probe_services_wraps_result(self):
+        with patch("app.services.scanner.run_service_scan", return_value=([{"port": 80}], None)):
+            result = await probe_services("1.2.3.4")
+        assert result == {"ok": True, "error": None, "services": [{"port": 80}]}
+
+    async def test_probe_services_never_raises(self):
+        with patch("app.services.scanner.run_service_scan", side_effect=RuntimeError("boom")):
+            result = await probe_services("1.2.3.4")
+        assert result["ok"] is False
+        assert "boom" in result["error"]
+        assert result["services"] == []
+
+
+class TestSweepResponderHosts:
+    async def test_rows_from_arp_scan(self):
+        with patch(
+            "app.services.scanner.run_arp_scan",
+            return_value=(None, "192.168.86.9  aa:bb:cc:dd:ee:ff  VENDOR\n", None),
+        ):
+            rows, error = await sweep_responder_hosts()
+        assert error is None
+        assert rows == [{"ip": "192.168.86.9", "mac": "aa:bb:cc:dd:ee:ff", "detail": "VENDOR"}]
+
+    async def test_scapy_fallback_when_arp_scan_fails(self):
+        with patch(
+            "app.services.scanner.run_arp_scan",
+            return_value=(None, "", "arp-scan binary not found"),
+        ), patch(
+            "app.services.scanner.run_scapy_scan",
+            return_value=(None, "10.0.0.5  11:22:33:44:55:66  (via 10.0.0.0/24)\n", None),
+        ) as mock_scapy:
+            rows, error = await sweep_responder_hosts()
+        assert mock_scapy.called
+        assert error is None
+        assert rows[0]["mac"] == "11:22:33:44:55:66"
+
+    async def test_arp_scan_output_wins_over_fallback(self):
+        with patch(
+            "app.services.scanner.run_arp_scan",
+            return_value=(None, "192.168.86.9  aa:bb:cc:dd:ee:ff  VENDOR\n", "partial sweep note"),
+        ), patch("app.services.scanner.run_scapy_scan") as mock_scapy:
+            rows, error = await sweep_responder_hosts()
+        assert not mock_scapy.called  # rows exist -> no fallback needed
+        assert len(rows) == 1
+        assert error == "partial sweep note"
+
+
+class TestResolveHostname:
+    async def test_live_mdns_by_ip(self):
+        with patch(
+            "app.services.scanner.discover_hostnames",
+            new=AsyncMock(return_value=({"192.168.86.9": "vault.local"}, {})),
+        ):
+            assert await resolve_hostname(ip="192.168.86.9") == "vault.local"
+
+    async def test_mac_maps_first(self):
+        with patch(
+            "app.services.scanner.discover_hostnames",
+            new=AsyncMock(return_value=({"192.168.86.9": "other"}, {"aa:bb:cc:dd:ee:ff": "vault.local"})),
+        ):
+            name = await resolve_hostname(ip="192.168.86.9", mac="AA:BB:CC:DD:EE:FF")
+        assert name == "vault.local"
+
+    async def test_reverse_dns_last_resort(self):
+        with patch(
+            "app.services.scanner.discover_hostnames",
+            new=AsyncMock(return_value=({}, {})),
+        ), patch("socket.gethostbyaddr", return_value=SimpleNamespace(hostname="vault.example.com")):
+            assert await resolve_hostname(ip="192.168.86.9") == "vault.example.com"
+
+    async def test_no_inputs_no_name(self):
+        with patch(
+            "app.services.scanner.discover_hostnames",
+            new=AsyncMock(return_value=({}, {})),
+        ), patch("socket.gethostbyaddr", side_effect=OSError):
+            assert await resolve_hostname() is None
+            assert await resolve_hostname(ip="") is None
+
+
+class TestValidateHostRecord:
+    def _rows(self):
+        return [
+            {"ip": "192.168.86.9", "mac": "aa:bb:cc:dd:ee:ff", "detail": "VENDOR"},
+            {"ip": "192.168.86.20", "mac": None, "detail": "(routed via L3, nmap -sn)"},
+        ]
+
+    def _service(self, port=80):
+        return {"port": port, "protocol": "tcp", "state": "open", "service": "http"}
+
+    def _patches(self, rows):
+        return (
+            patch(
+                "app.services.scanner.sweep_responder_hosts",
+                new=AsyncMock(return_value=(rows, None)),
+            ),
+            patch(
+                "app.services.scanner.discover_hostnames",
+                new=AsyncMock(return_value=({}, {})),
+            ),
+            patch(
+                "app.services.scanner.probe_services",
+                new=AsyncMock(return_value={"ok": True, "error": None, "services": [self._service()]}),
+            ),
+            patch(
+                "app.services.scanner.resolve_hostname",
+                new=AsyncMock(return_value="vault.local"),
+            ),
+        )
+
+    async def test_mac_and_ip_point_at_same_host(self):
+        p1, p2, p3, p4 = self._patches(self._rows())
+        with p1, p2, p3 as mock_probe, p4:
+            result = await validate_host_record(
+                None, name="vault", mac="AA:BB:CC:DD:EE:FF", ip="192.168.86.9", port=80
+            )
+        assert result["mac"]["found"] is True
+        assert result["mac"]["ip"] == "192.168.86.9"
+        assert result["mac"]["hostname"] == "vault.local"
+        assert result["ip"]["mac"] == "aa:bb:cc:dd:ee:ff"
+        assert result["ip"]["mac_routed"] is False
+        assert result["ip"]["hostname"] == "vault.local"
+        assert result["ip"]["port_state"] == "open"
+        assert result["sweep"]["responders"] == 2
+        assert mock_probe.call_count == 1  # one distinct IP -> one nmap run
+
+    async def test_mac_at_a_different_ip_probes_both(self):
+        p1, p2, p3, p4 = self._patches(self._rows())
+        with p1, p2, p3 as mock_probe, p4:
+            result = await validate_host_record(
+                None, name="vault", mac="aa:bb:cc:dd:ee:ff", ip="192.168.86.20", port=80
+            )
+        assert result["mac"]["found"] is True
+        assert result["mac"]["ip"] == "192.168.86.9"
+        # the entered IP is the routed one: no locally visible MAC
+        assert result["ip"]["mac"] is None
+        assert result["ip"]["mac_routed"] is True
+        assert mock_probe.call_count == 2  # two distinct IPs
+
+    async def test_mac_not_found(self):
+        p1, p2, p3, p4 = self._patches(self._rows())
+        with p1, p2, p3, p4:
+            result = await validate_host_record(
+                None, name="vault", mac="de:ad:be:ef:00:01", ip="10.99.99.1", port=80
+            )
+        assert result["mac"]["found"] is False
+        assert result["mac"]["ip"] is None
+        assert result["mac"]["services"] == []
+        assert result["ip"]["mac"] is None
+        # the (mocked) probe reports http open on the host port
+        assert result["ip"]["port_state"] == "open"
+
+    async def test_missing_mac_section_when_not_given(self):
+        p1, p2, p3, p4 = self._patches(self._rows())
+        with p1, p2, p3, p4:
+            result = await validate_host_record(
+                None, name="vault", mac="", ip="192.168.86.9", port=80
+            )
+        assert result["mac"] is None
+        assert result["ip"] is not None
+        assert result["ip"]["mac"] == "aa:bb:cc:dd:ee:ff"
 

@@ -264,3 +264,133 @@ def test_rescan_all_clears_suppression(temp_db_file):
     resp = client.post("/settings/subnets/rescan-all", follow_redirects=False)
     assert resp.status_code == 303
     assert json.loads(_read_sync(temp_db_file, "suppressed_subnets")) == []
+
+
+# ───────────────────────────── Validate (host edit screen) ─────────────────────────────
+
+
+def _insert_host(s, **overrides):
+    """Seed one host row into the throwaway test DB; returns its id."""
+    import asyncio
+    import aiosqlite
+
+    cols = {
+        "name": "vault", "local_device_name": None, "quiet_enabled": 0,
+        "quiet_start": None, "quiet_end": None, "quiet_mode": "suppress",
+        "domain": None, "mac_address": "aa:bb:cc:dd:ee:ff",
+        "current_ip": "192.168.86.9", "npm_proxy_host_id": None,
+        "subnet_id": None, "port": 80, "grace_minutes": 10,
+        "enabled": 1, "notes": None, "created_at": None, "updated_at": None,
+    }
+    cols.update(overrides)
+    keys = ", ".join(cols)
+    marks = ", ".join("?" * len(cols))
+
+    async def _ins():
+        async with aiosqlite.connect(s.db_path) as db:
+            await db.execute(f"INSERT INTO hosts ({keys}) VALUES ({marks})", tuple(cols.values()))
+            await db.commit()
+            async with db.execute("SELECT id FROM hosts") as cur:
+                return (await cur.fetchall())[-1][0]
+
+    return asyncio.run(_ins())
+
+
+def _count_events(s):
+    import asyncio
+    import aiosqlite
+
+    async def _n():
+        async with aiosqlite.connect(s.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM events") as cur:
+                row = await cur.fetchone()
+            return row[0]
+
+    return asyncio.run(_n())
+
+
+_VALIDATION_RESULT = {
+    "sweep": {"subnets": None, "responders": 3, "error": None},
+    "mac": {"target": "aa:bb:cc:dd:ee:ff", "found": True, "ip": "192.168.86.9",
+            "hostname": "vault.local", "services": []},
+    "ip": {"target": "192.168.86.9", "mac": "aa:bb:cc:dd:ee:ff", "mac_routed": False,
+           "hostname": "vault.local", "port": 80, "port_state": "open", "services": []},
+}
+
+
+def test_validate_route_registered():
+    paths = {route.path for route in app.routes}
+    assert "/hosts/{host_id}/validate" in paths
+
+
+def test_validate_endpoint_returns_result_and_logs_event(temp_db_file):
+    host_id = _insert_host(temp_db_file)
+    with patch(
+        "app.main.validate_host_record",
+        new=AsyncMock(return_value=_VALIDATION_RESULT),
+    ) as mock_val:
+        resp = TestClient(app).post(f"/hosts/{host_id}/validate", json={})
+    assert resp.status_code == 200
+    assert resp.json() == _VALIDATION_RESULT
+    kw = mock_val.call_args.kwargs
+    # empty form fields fall back to the saved host row
+    assert kw["mac"] == "aa:bb:cc:dd:ee:ff"
+    assert kw["ip"] == "192.168.86.9"
+    assert kw["port"] == 80
+    # logged (no notify) but never mutates the host record
+    assert _count_events(temp_db_file) == 1
+
+
+def test_validate_404_for_unknown_host(temp_db_file):
+    resp = TestClient(app).post("/hosts/999/validate", json={})
+    assert resp.status_code == 404
+
+
+def test_validate_rejects_host_with_no_targets(temp_db_file):
+    host_id = _insert_host(temp_db_file, mac_address="", current_ip=None)
+    resp = TestClient(app).post(f"/hosts/{host_id}/validate", json={})
+    assert resp.status_code == 400
+    assert "Nothing to validate" in resp.json()["detail"]
+
+
+def test_validate_rejects_out_of_range_port(temp_db_file):
+    host_id = _insert_host(temp_db_file)
+    resp = TestClient(app).post(f"/hosts/{host_id}/validate", json={"port": 99999})
+    assert resp.status_code == 422
+
+
+def test_validate_scopes_sweep_to_pinned_subnet(temp_db_file):
+    import aiosqlite
+    import asyncio
+
+    async def _add_subnet():
+        async with aiosqlite.connect(temp_db_file.db_path) as db:
+            await db.execute(
+                "INSERT INTO subnets (name, cidr, interface, enabled, check_interval_seconds)"
+                " VALUES (?, ?, NULL, 1, NULL)",
+                ("Test net", "10.9.0.0/24"),
+            )
+            await db.commit()
+            async with db.execute("SELECT id FROM subnets") as cur:
+                return (await cur.fetchall())[-1][0]
+
+    subnet_id = asyncio.run(_add_subnet())
+    host_id = _insert_host(temp_db_file, subnet_id=subnet_id)
+    with patch("app.main.validate_host_record", new=AsyncMock(return_value=_VALIDATION_RESULT)) as mock_val:
+        resp = TestClient(app).post(f"/hosts/{host_id}/validate", json={})
+    assert resp.status_code == 200
+    assert mock_val.call_args.kwargs["subnet_cidrs"] == ["10.9.0.0/24"]
+
+
+def test_edit_page_shows_validate_button(temp_db_file, npm_client):
+    host_id = _insert_host(temp_db_file)
+    resp = TestClient(app).get(f"/hosts/{host_id}/edit")
+    assert resp.status_code == 200
+    assert 'id="validate-btn"' in resp.text
+    assert "Validate" in resp.text
+
+
+def test_add_page_has_no_validate_button(temp_db_file, npm_client):
+    resp = TestClient(app).get("/hosts/add")
+    assert resp.status_code == 200
+    assert 'id="validate-btn"' not in resp.text
