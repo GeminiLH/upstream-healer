@@ -132,6 +132,13 @@ try:
 except Exception:
     print("WARMUP"); sys.exit()
 auto = [j for j in jobs if j["name"] in ("lint", "unit_tests", "build_image")]
+# Right after pipeline creation GitLab can return an empty (or partial)
+# jobs list. An empty auto-list must NOT count as "all green" — the checks
+# below would pass vacuously and the deploy would be silently skipped
+# (happened 2026-09-22: first poll saw 0 jobs, ship.sh declared green and
+# skipped deploy_dev).
+if len(auto) < 3:
+    print("WARMUP"); sys.exit()
 bad = [j for j in auto if j["status"] in ("failed", "canceled")]
 if bad:
     print("FAILED " + ",".join(j["name"] for j in bad)); sys.exit()
@@ -139,7 +146,10 @@ if any(j["status"] in ("pending", "created", "running") for j in auto):
     print("RUNNING")
 else:
     dd = next((str(j["id"]) for j in jobs if j["name"] == "deploy_dev"), "")
-    print("READY " + dd)' || true)
+    if dd:
+        print("READY " + dd)
+    else:
+        print("WARMUP")' || true)
   case "$ST" in
     FAILED*)
       say "auto jobs failed: ${ST#FAILED }"
