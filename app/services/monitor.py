@@ -232,11 +232,15 @@ class Monitor:
         # VLANs).  Otherwise we fall back to the effective list of subnets
         # (enabled manual rows + auto-discovered local networks) so a host that
         # has no explicit subnet still gets every reachable /24 swept.
+        # A pin may live in ``subnet_cidr`` (auto-detected subnets have no DB id)
+        # or ``subnet_id`` (manual rows) — CIDR wins when present.
         subnet_ids: list[str] = []
-        subnet_id = host["subnet_id"] if "subnet_id" in host.keys() else None
-        if subnet_id is not None:
+        subnet_cidr = host["subnet_cidr"] if "subnet_cidr" in host.keys() else None
+        if subnet_cidr:
+            subnet_ids = [subnet_cidr]
+        elif "subnet_id" in host.keys() and host["subnet_id"] is not None:
             async with db.execute(
-                "SELECT cidr FROM subnets WHERE id = ?", (subnet_id,)
+                "SELECT cidr FROM subnets WHERE id = ?", (host["subnet_id"],)
             ) as cursor:
                 row = await cursor.fetchone()
                 if row:
@@ -322,33 +326,48 @@ class Monitor:
 
             # Now that the backend answers, update NPM proxy host and reload
             if npm_id:
-                success = self.npm.update_forward_host(npm_id, new_ip)
-                if success:
-                    reloaded = self.npm.reload_nginx()
-                    if reloaded:
-                        await send_event(
-                            db,
-                            "updated",
-                            f"🔄 Updated NPM proxy host #{npm_id} to {new_ip} and reloaded nginx",
-                            host_id=host_id,
-                            notify=notify,
-                        )
+                old_fwd = None
+                try:
+                    ph = self.npm.get_proxy_host(npm_id)
+                    old_fwd = ph.get("forward_host") if ph else None
+                except Exception:  # noqa: BLE001 - NPM down must not abort recovery
+                    ph = None
+                if old_fwd == new_ip:
+                    await send_event(
+                        db,
+                        "updated",
+                        f"🔄 NPM proxy host #{npm_id} already points at {new_ip} — no change needed",
+                        host_id=host_id,
+                        notify=notify,
+                    )
+                else:
+                    success = self.npm.update_forward_host(npm_id, new_ip)
+                    if success:
+                        reloaded = self.npm.reload_nginx()
+                        if reloaded:
+                            await send_event(
+                                db,
+                                "updated",
+                                f"🔄 Updated NPM proxy host #{npm_id} {old_fwd} → {new_ip} and reloaded nginx",
+                                host_id=host_id,
+                                notify=notify,
+                            )
+                        else:
+                            await send_event(
+                                db,
+                                "failed",
+                                f"Updated NPM proxy host #{npm_id} {old_fwd} → {new_ip} but nginx reload failed for {name}",
+                                host_id=host_id,
+                                notify=notify,
+                            )
                     else:
                         await send_event(
                             db,
                             "failed",
-                            f"Updated NPM proxy host #{npm_id} but nginx reload failed for {name}",
+                            f"Failed to update NPM database for {name} (was {old_fwd})",
                             host_id=host_id,
                             notify=notify,
                         )
-                else:
-                    await send_event(
-                        db,
-                        "failed",
-                        f"Failed to update NPM database for {name}",
-                        host_id=host_id,
-                        notify=notify,
-                    )
             else:
                 # No NPM configured is informational only
                 await send_event(

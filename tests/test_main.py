@@ -497,3 +497,336 @@ def test_add_host_mac_port_conflict_is_prevented(temp_db_file):
     # The repopulated add form shows no controls for a non-existent host.
     assert 'id="validate-btn"' not in resp.text
     assert "/hosts//delete" not in resp.text
+
+
+# ───────────────────── NPM mismatch on add/edit + subnet display ───────────────
+
+_NPM_FORWARD = {
+    "forward_host": "10.0.0.5",
+    "forward_port": 443,
+    "domain_names": '["x.example"]',
+}
+
+
+def _host_row(s, host_id):
+    """Fetch the full host row as a dict from the throwaway test DB."""
+    import asyncio
+    import aiosqlite
+
+    async def _get():
+        async with aiosqlite.connect(s.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM hosts WHERE id = ?", (host_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            return None if row is None else dict(row)
+
+    return asyncio.run(_get())
+
+
+def _first_host_id(s):
+    import asyncio
+    import aiosqlite
+
+    async def _id():
+        async with aiosqlite.connect(s.db_path) as db:
+            async with db.execute("SELECT id FROM hosts ORDER BY id LIMIT 1") as cur:
+                row = await cur.fetchone()
+            return None if row is None else row[0]
+
+    return asyncio.run(_id())
+
+
+def _insert_subnet(s, name, cidr):
+    """Insert a manual subnet row; return its id."""
+    import asyncio
+    import aiosqlite
+
+    async def _ins():
+        async with aiosqlite.connect(s.db_path) as db:
+            await db.execute(
+                "INSERT INTO subnets (name, cidr, interface, enabled) VALUES (?, ?, ?, 1)",
+                (name, cidr, None),
+            )
+            await db.commit()
+            async with db.execute("SELECT id FROM subnets WHERE cidr = ?", (cidr,)) as cur:
+                return (await cur.fetchone())[0]
+
+    return asyncio.run(_ins())
+
+
+def _last_event_details(s):
+    import asyncio
+    import aiosqlite
+
+    async def _d():
+        async with aiosqlite.connect(s.db_path) as db:
+            async with db.execute(
+                "SELECT details FROM events ORDER BY id DESC LIMIT 1"
+            ) as cur:
+                row = await cur.fetchone()
+            return None if row is None else row[0]
+
+    return asyncio.run(_d())
+
+
+def _add_form(**overrides):
+    form = {
+        "name": "vault", "local_device_name": "", "quiet_enabled": "off",
+        "quiet_start": "", "quiet_end": "", "quiet_mode": "suppress",
+        "domain": "", "mac_address": "aa:bb:cc:dd:ee:ff",
+        "current_ip": "192.168.86.9", "port": 80, "npm_proxy_host_id": "5",
+        "subnet_id": "", "npm_action": "", "grace_minutes": 10, "notes": "",
+    }
+    form.update(overrides)
+    return form
+
+
+def test_add_shows_npm_mismatch_warning(temp_db_file):
+    """Linking an NPM host whose forward differs from the entered IP/port
+    re-renders the add form with a warning + 3 resolution buttons; nothing is
+    saved yet."""
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        mock_npm.return_value.list_proxy_hosts.return_value = []
+        resp = TestClient(app).post(
+            "/hosts/add", data=_add_form(npm_action=""), follow_redirects=False
+        )
+    assert resp.status_code == 200
+    assert "NPM record does not match" in resp.text
+    assert "10.0.0.5:443" in resp.text
+    assert 'value="match"' in resp.text
+    assert 'value="link"' in resp.text
+    assert 'value="cancel"' in resp.text
+    assert _host_count(temp_db_file) == 0
+
+
+def test_add_npm_mismatch_match_adopts_npm(temp_db_file):
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        resp = TestClient(app).post(
+            "/hosts/add", data=_add_form(npm_action="match"), follow_redirects=False
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, _first_host_id(temp_db_file))
+    assert row["current_ip"] == "10.0.0.5"
+    assert row["port"] == 443
+    assert row["npm_proxy_host_id"] == 5
+
+
+def test_add_npm_mismatch_link_keeps_entered(temp_db_file):
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        resp = TestClient(app).post(
+            "/hosts/add", data=_add_form(npm_action="link"), follow_redirects=False
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, _first_host_id(temp_db_file))
+    assert row["current_ip"] == "192.168.86.9"
+    assert row["port"] == 80
+    assert row["npm_proxy_host_id"] == 5
+
+
+def test_add_npm_mismatch_cancel_unlinks(temp_db_file):
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        resp = TestClient(app).post(
+            "/hosts/add", data=_add_form(npm_action="cancel"), follow_redirects=False
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, _first_host_id(temp_db_file))
+    assert row["npm_proxy_host_id"] is None
+    assert row["current_ip"] == "192.168.86.9"
+
+
+
+def test_edit_shows_npm_mismatch_warning(temp_db_file):
+    host_id = _insert_host(temp_db_file, npm_proxy_host_id=5, current_ip="192.168.86.9")
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        mock_npm.return_value.list_proxy_hosts.return_value = []
+        resp = TestClient(app).post(
+            f"/hosts/{host_id}/edit",
+            data=_edit_form(current_ip="192.168.86.9", port=80, npm_proxy_host_id="5"),
+            follow_redirects=False,
+        )
+    assert resp.status_code == 200
+    assert "NPM record does not match" in resp.text
+    # The row is untouched until the user resolves the warning.
+    row = _host_row(temp_db_file, host_id)
+    assert row["current_ip"] == "192.168.86.9"
+    assert row["port"] == 80
+    assert row["npm_proxy_host_id"] == 5
+
+
+def test_edit_npm_mismatch_match(temp_db_file):
+    host_id = _insert_host(temp_db_file, npm_proxy_host_id=5, current_ip="192.168.86.9")
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        resp = TestClient(app).post(
+            f"/hosts/{host_id}/edit",
+            data=_edit_form(
+                current_ip="192.168.86.9", port=80,
+                npm_proxy_host_id="5", npm_action="match",
+            ),
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, host_id)
+    assert row["current_ip"] == "10.0.0.5"
+    assert row["port"] == 443
+    assert row["npm_proxy_host_id"] == 5
+
+
+def test_edit_npm_mismatch_link(temp_db_file):
+    host_id = _insert_host(temp_db_file, npm_proxy_host_id=5, current_ip="192.168.86.9")
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        resp = TestClient(app).post(
+            f"/hosts/{host_id}/edit",
+            data=_edit_form(
+                current_ip="192.168.86.9", port=80,
+                npm_proxy_host_id="5", npm_action="link",
+            ),
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, host_id)
+    assert row["current_ip"] == "192.168.86.9"
+    assert row["port"] == 80
+    assert row["npm_proxy_host_id"] == 5
+
+
+def test_edit_npm_mismatch_cancel_reverts_link(temp_db_file):
+    """'Cancel' on edit undoes the just-made NPM selection — the link reverts
+    to whatever the host had before this edit."""
+    host_id = _insert_host(temp_db_file, npm_proxy_host_id=3, current_ip="192.168.86.9")
+    with patch("app.main.NPMClient") as mock_npm:
+        # The user selected NPM host 5 (whose forward mismatches) in the dropdown.
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD
+        resp = TestClient(app).post(
+            f"/hosts/{host_id}/edit",
+            data=_edit_form(
+                current_ip="192.168.86.9", port=80,
+                npm_proxy_host_id="5", npm_action="cancel",
+            ),
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, host_id)
+    assert row["npm_proxy_host_id"] == 3  # reverted to the original link
+    assert row["current_ip"] == "192.168.86.9"
+
+
+def test_edit_npm_matching_no_warning(temp_db_file):
+    """When the entered IP:port already matches NPM's forward, saving proceeds
+    without the warning."""
+    host_id = _insert_host(
+        temp_db_file, npm_proxy_host_id=5, current_ip="10.0.0.5", port=443
+    )
+    with patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = _NPM_FORWARD  # 10.0.0.5:443
+        mock_npm.return_value.list_proxy_hosts.return_value = []
+        resp = TestClient(app).post(
+            f"/hosts/{host_id}/edit",
+            data=_edit_form(current_ip="10.0.0.5", port=443, npm_proxy_host_id="5"),
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, host_id)
+    assert row["current_ip"] == "10.0.0.5"
+
+
+
+# ─────────────────────────────── subnet dropdown + dashboard ───────────────────
+
+
+def test_add_page_lists_auto_subnets(temp_db_file):
+    # list_subnets() lives in scanner.py and calls get_default_subnets() from
+    # that module, so patch it there (not the app.main import).
+    with patch(
+        "app.services.scanner.get_default_subnets",
+        return_value=[{"cidr": "192.168.200.0/24", "interface": "eth9", "source": "auto"}],
+    ):
+        resp = TestClient(app).get("/hosts/add")
+    assert resp.status_code == 200
+    assert 'value="192.168.200.0/24"' in resp.text
+    assert "Auto-detected" in resp.text
+
+
+def test_edit_page_preselects_pinned_auto_subnet(temp_db_file):
+    host_id = _insert_host(temp_db_file, subnet_cidr="192.168.200.0/24")
+    with patch(
+        "app.services.scanner.get_default_subnets",
+        return_value=[{"cidr": "192.168.200.0/24", "interface": "eth9", "source": "auto"}],
+    ):
+        resp = TestClient(app).get(f"/hosts/{host_id}/edit")
+    assert resp.status_code == 200
+    assert 'value="192.168.200.0/24" selected' in resp.text
+
+
+def test_dashboard_shows_pinned_auto_subnet(temp_db_file):
+    _insert_host(temp_db_file, subnet_cidr="192.168.200.0/24")
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    assert "192.168.200.0/24" in resp.text
+
+
+def test_dashboard_shows_manual_subnet_name(temp_db_file):
+    subnet_id = _insert_subnet(temp_db_file, "Office LAN", "192.168.70.0/24")
+    _insert_host(temp_db_file, subnet_id=subnet_id)
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    assert "Office LAN" in resp.text
+
+
+def test_dashboard_shows_all_subnets_when_unpinned(temp_db_file):
+    _insert_host(temp_db_file)  # no subnet pinned
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    assert "All known subnets" in resp.text
+
+
+# ─────────────────────────────── force-scan NPM sync ───────────────────────────
+
+
+def test_force_scan_syncs_npm_and_logs(temp_db_file):
+    """When the ARP sweep finds the host at a new IP, force-scan adopts it,
+    re-points the linked NPM proxy host, and records the old→new transition in
+    the event."""
+    host_id = _insert_host(temp_db_file, npm_proxy_host_id=5, current_ip="192.168.86.9")
+    with patch("app.main.find_ip_by_mac", new=AsyncMock(return_value="192.168.86.50")), \
+         patch("app.main.check_host_reachable", new=AsyncMock(return_value=True)), \
+         patch("app.main.NPMClient") as mock_npm:
+        mock_npm.return_value.get_proxy_host.return_value = {"forward_host": "192.168.86.9"}
+        mock_npm.return_value.update_forward_host.return_value = True
+        mock_npm.return_value.reload_nginx.return_value = True
+        resp = TestClient(app).post(
+            f"/hosts/{host_id}/force-scan", follow_redirects=False
+        )
+    assert resp.status_code == 303
+    row = _host_row(temp_db_file, host_id)
+    assert row["current_ip"] == "192.168.86.50"
+    # NPM forward was re-pointed from the old IP to the newly-discovered one.
+    mock_npm.return_value.update_forward_host.assert_called_once_with(5, "192.168.86.50")
+    details = _last_event_details(temp_db_file)
+    assert "192.168.86.9 → 192.168.86.50" in details
+    assert "NPM proxy host #5 forward updated 192.168.86.9 → 192.168.86.50" in details
+
+
+def test_force_scan_no_npm_update_when_forward_matches(temp_db_file):
+    """If NPM already points at the newly-found IP, no update is triggered."""
+    host_id = _insert_host(temp_db_file, npm_proxy_host_id=5, current_ip="192.168.86.9")
+    with patch("app.main.find_ip_by_mac", new=AsyncMock(return_value="192.168.86.50")), \
+         patch("app.main.check_host_reachable", new=AsyncMock(return_value=True)), \
+         patch("app.main.NPMClient") as mock_npm:
+        # NPM is already pointed at the address the sweep is about to find.
+        mock_npm.return_value.get_proxy_host.return_value = {"forward_host": "192.168.86.50"}
+        resp = TestClient(app).post(
+            f"/hosts/{host_id}/force-scan", follow_redirects=False
+        )
+    assert resp.status_code == 303
+    assert _host_row(temp_db_file, host_id)["current_ip"] == "192.168.86.50"
+    mock_npm.return_value.update_forward_host.assert_not_called()
+

@@ -15,6 +15,45 @@
   <form method="post"
     class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 space-y-5 shadow-sm">
 
+    {# NPM IP/port mismatch — the user linked an NPM proxy host whose forward
+       differs from the record being entered. Offer 3 resolutions; each is a
+       submit that re-POSTs the whole form with the chosen npm_action value. #}
+    {% if npm_mismatch %}
+    <div class="rounded-lg border-2 border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/30 p-5">
+      <div class="flex items-start gap-3">
+        <svg class="w-6 h-6 text-amber-600 dark:text-amber-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M12 2l9 16H3z" />
+        </svg>
+        <div class="flex-1">
+          <h2 class="text-sm font-semibold text-amber-800 dark:text-amber-300">NPM record does not match</h2>
+          <p class="text-sm text-amber-800 dark:text-amber-200 leading-relaxed mt-1">
+            You are linking NPM proxy host
+            <strong>#{{ npm_mismatch.id }}{% if npm_mismatch.domain %} ({{ npm_mismatch.domain }}){% endif %}</strong>,
+            which currently forwards to
+            <code class="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 rounded">{{ npm_mismatch.forward_host }}:{{ npm_mismatch.forward_port }}</code>,
+            but this host is being saved at
+            <code class="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 rounded">{{ host.current_ip or 'no IP' }}:{{ host.port }}</code>.
+          </p>
+          <p class="text-xs text-amber-700 dark:text-amber-400 mt-2">How would you like to resolve this?</p>
+          <div class="flex flex-wrap gap-3 mt-3">
+            <button type="submit" name="npm_action" value="match"
+              class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition">
+              Update record to match NPM
+            </button>
+            <button type="submit" name="npm_action" value="link"
+              class="px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">
+              Link anyway (keep current IP:port)
+            </button>
+            <button type="submit" name="npm_action" value="cancel"
+              class="px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white text-sm font-medium rounded-lg transition">
+              Cancel (don't link)
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
     <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Name *</label>
       <input type="text" name="name" required value="{{ host.name if host else '' }}" placeholder="e.g. vault" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
@@ -130,11 +169,20 @@
                      bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                      focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
         <option value="">— All known subnets —</option>
-        {% for s in subnets %}
-        <option value="{{ s.id }}" {% if host and host.subnet_id and host.subnet_id == s.id %}selected{% endif %}>
-          {{ s.name }} ({{ s.cidr }}{% if s.interface %}, {{ s.interface }}{% endif %})
-        </option>
-        {% endfor %}
+        <optgroup label="Manual">
+          {% for s in subnets %}{% if s.source == "manual" %}
+          <option value="{{ s.cidr }}" {% if selected_subnet == s.cidr %}selected{% endif %}>
+            {{ s.name }} ({{ s.cidr }}{% if s.interface %}, {{ s.interface }}{% endif %})
+          </option>
+          {% endif %}{% endfor %}
+        </optgroup>
+        <optgroup label="Auto-detected">
+          {% for s in subnets %}{% if s.source == "auto" %}
+          <option value="{{ s.cidr }}" {% if selected_subnet == s.cidr %}selected{% endif %}>
+            {{ s.interface or s.name }} ({{ s.cidr }})
+          </option>
+          {% endif %}{% endfor %}
+        </optgroup>
       </select>
       <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">
         Where this host lives. Leave empty to let the monitor sweep every known subnet.
@@ -169,10 +217,12 @@
     {% endif %}
 
     <div class="flex flex-wrap gap-3 pt-2">
+      {% if not npm_mismatch %}
       <button type="submit"
         class="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">
         Save
       </button>
+      {% endif %}
       {% if host and host.id %}
       <button type="button" id="validate-btn" data-host-id="{{ host.id }}"
         class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600
@@ -344,7 +394,7 @@
           mac: form.elements['mac_address'].value,
           ip: form.elements['current_ip'].value,
           port: parseInt(form.elements['port'].value || '0', 10) || 0,
-          subnet_id: parseInt(form.elements['subnet_id'].value || '0', 10) || 0,
+          subnet_cidr: form.elements['subnet_id'].value,
         };
         try {
           const res = await fetch(`/hosts/${hostId}/validate`, {

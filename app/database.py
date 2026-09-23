@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS hosts (
     grace_minutes INTEGER DEFAULT 10,
     enabled INTEGER DEFAULT 1,
     subnet_id INTEGER,
+    subnet_cidr TEXT,
     notes TEXT,
     created_at TEXT,
     updated_at TEXT,
@@ -108,6 +109,7 @@ async def init_db():
             "quiet_end": "TEXT",
             "quiet_mode": "TEXT DEFAULT 'suppress'",
             "port": "INTEGER NOT NULL DEFAULT 80",
+            "subnet_cidr": "TEXT",
         }
         for column, definition in host_columns_to_add.items():
             if column not in host_columns:
