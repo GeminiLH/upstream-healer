@@ -5,6 +5,13 @@
 <div class="max-w-xl">
   <h1 class="text-2xl font-bold text-slate-900 dark:text-slate-100 mb-6">{{ title }}</h1>
 
+  {% if error %}
+  <div class="mb-6 rounded-lg border border-rose-300 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/40 px-4 py-3
+             text-sm text-rose-700 dark:text-rose-300">
+    {{ error }}
+  </div>
+  {% endif %}
+
   <form method="post"
     class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 space-y-5 shadow-sm">
 
@@ -153,7 +160,7 @@
                        focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">{{ host.notes if host else '' }}</textarea>
     </div>
 
-    {% if host %}
+    {% if host and host.id %}
     <div class="flex items-center gap-2">
       <input type="checkbox" name="enabled" id="enabled" {% if host.enabled %}checked{% endif %}
         class="rounded border-slate-300 dark:border-slate-600 text-brand-600 focus:ring-brand-500">
@@ -166,7 +173,7 @@
         class="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium rounded-lg transition">
         Save
       </button>
-      {% if host %}
+      {% if host and host.id %}
       <button type="button" id="validate-btn" data-host-id="{{ host.id }}"
         class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600
                text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
@@ -184,7 +191,7 @@
     </div>
   </form>
 
-  {% if host %}
+  {% if host and host.id %}
   <form method="post" action="/hosts/{{ host.id }}/delete" class="mt-8"
     onsubmit="return confirm('Really delete this host?')">
     <button type="submit" class="text-sm text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300">
@@ -216,7 +223,7 @@
   </div>
   {% endif %}
 
-  {% if host %}
+  {% if host and host.id %}
   <script>
     (function () {
       const btn = document.getElementById('validate-btn');

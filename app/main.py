@@ -167,8 +167,46 @@ async def add_host_form(request: Request, db: aiosqlite.Connection = Depends(get
     )
 
 
+async def _render_host_form_conflict(
+    request: Request,
+    db: aiosqlite.Connection,
+    title: str,
+    conflict_name: str,
+    mac: str,
+    port: int,
+    form: dict,
+):
+    """Re-render the host form with an error banner when the submitted
+    (mac_address, port) collides with another host. ``form`` carries the
+    submitted values (plus the existing row's ``id`` on edit) so the user
+    can correct the conflicting fields in place instead of losing the form.
+    """
+    npm = NPMClient()
+    try:
+        proxy_hosts = npm.list_proxy_hosts()
+    except Exception:
+        proxy_hosts = []
+    async with db.execute("SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1 ORDER BY name") as cur:
+        subnets = [dict(r) for r in await cur.fetchall()]
+    return templates.TemplateResponse(
+        request,
+        "host_form.html",
+        {
+            "host": form,
+            "proxy_hosts": proxy_hosts,
+            "subnets": subnets,
+            "title": title,
+            "error": (
+                f"MAC {mac} on port {port} is already used by host '{conflict_name}' — "
+                f"every host needs a unique MAC + port combination."
+            ),
+        },
+    )
+
+
 @app.post("/hosts/add")
 async def add_host(
+    request: Request,
     name: str = Form(...),
     local_device_name: str = Form(""),
     quiet_enabled: str = Form("off"),
@@ -190,6 +228,35 @@ async def add_host(
     subnet = int(subnet_id) if subnet_id.strip() else None
     if not 1 <= port <= 65535:
         raise HTTPException(400, "Port must be between 1 and 65535")
+
+    # (mac_address, port) is UNIQUE — check before the INSERT so a collision
+    # returns a clear error naming the other host instead of a 500 from the
+    # constraint.
+    async with db.execute(
+        "SELECT id, name FROM hosts WHERE mac_address = ? AND port = ?", (mac, port)
+    ) as cur:
+        conflict = await cur.fetchone()
+    if conflict:
+        return await _render_host_form_conflict(
+            request, db, "Add Host", conflict["name"], mac, port,
+            {
+                "name": name,
+                "local_device_name": local_device_name or None,
+                "quiet_enabled": quiet_enabled == "on",
+                "quiet_start": quiet_start or None,
+                "quiet_end": quiet_end or None,
+                "quiet_mode": quiet_mode if quiet_mode in ("suppress", "delete") else "suppress",
+                "domain": domain,
+                "mac_address": mac,
+                "current_ip": current_ip or None,
+                "npm_proxy_host_id": npm_id,
+                "subnet_id": subnet,
+                "port": port,
+                "grace_minutes": grace_minutes,
+                "notes": notes,
+                "enabled": 1,
+            },
+        )
 
     await db.execute(
             """INSERT INTO hosts (name, local_device_name, quiet_enabled, quiet_start, quiet_end, quiet_mode,
@@ -241,6 +308,7 @@ async def edit_host_form(host_id: int, request: Request, db: aiosqlite.Connectio
 
 @app.post("/hosts/{host_id}/edit")
 async def edit_host(
+    request: Request,
     host_id: int,
     name: str = Form(...),
     local_device_name: str = Form(""),
@@ -265,6 +333,45 @@ async def edit_host(
     is_enabled = 1 if enabled == "on" else 0
     if not 1 <= port <= 65535:
         raise HTTPException(400, "Port must be between 1 and 65535")
+
+    async with db.execute("SELECT * FROM hosts WHERE id = ?", (host_id,)) as cur:
+        existing = await cur.fetchone()
+    if not existing:
+        raise HTTPException(404, f"Host {host_id} not found")
+
+    # (mac_address, port) is UNIQUE — check before the UPDATE so a collision
+    # with another host returns a clear error naming it instead of a 500
+    # from the constraint. Saving the host's own MAC + port is fine.
+    if (mac, port) != (existing["mac_address"], existing["port"]):
+        async with db.execute(
+            "SELECT id, name FROM hosts WHERE mac_address = ? AND port = ? AND id != ?",
+            (mac, port, host_id),
+        ) as cur:
+            conflict = await cur.fetchone()
+        if conflict:
+            repopulated = dict(existing)
+            repopulated.update(
+                {
+                    "name": name,
+                    "local_device_name": local_device_name or None,
+                    "quiet_enabled": quiet_enabled == "on",
+                    "quiet_start": quiet_start or None,
+                    "quiet_end": quiet_end or None,
+                    "quiet_mode": quiet_mode if quiet_mode in ("suppress", "delete") else "suppress",
+                    "domain": domain,
+                    "mac_address": mac,
+                    "current_ip": current_ip or None,
+                    "npm_proxy_host_id": npm_id,
+                    "subnet_id": subnet,
+                    "port": port,
+                    "grace_minutes": grace_minutes,
+                    "notes": notes,
+                    "enabled": is_enabled,
+                }
+            )
+            return await _render_host_form_conflict(
+                request, db, "Edit Host", conflict["name"], mac, port, repopulated,
+            )
 
     await db.execute(
         """UPDATE hosts SET

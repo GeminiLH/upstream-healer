@@ -394,3 +394,106 @@ def test_add_page_has_no_validate_button(temp_db_file, npm_client):
     resp = TestClient(app).get("/hosts/add")
     assert resp.status_code == 200
     assert 'id="validate-btn"' not in resp.text
+
+
+# ───────────────────────────── MAC + port uniqueness ─────────────────────────────
+
+
+def _host_values(s, host_id):
+    """Fetch (name, mac_address, port) for a host row from the throwaway test DB."""
+    import asyncio
+    import aiosqlite
+
+    async def _get():
+        async with aiosqlite.connect(s.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT name, mac_address, port FROM hosts WHERE id = ?", (host_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            return None if row is None else (row["name"], row["mac_address"], row["port"])
+
+    return asyncio.run(_get())
+
+
+def _host_count(s):
+    import asyncio
+    import aiosqlite
+
+    async def _count():
+        async with aiosqlite.connect(s.db_path) as db:
+            async with db.execute("SELECT COUNT(*) FROM hosts") as cur:
+                return (await cur.fetchone())[0]
+
+    return asyncio.run(_count())
+
+
+def _edit_form(**overrides):
+    """A complete POST body for /hosts/{id}/edit (the form submits every field)."""
+    form = {
+        "name": "vault", "local_device_name": "", "quiet_enabled": "off",
+        "quiet_start": "", "quiet_end": "", "quiet_mode": "suppress",
+        "domain": "", "mac_address": "aa:bb:cc:dd:ee:ff",
+        "current_ip": "192.168.86.9", "port": 80, "npm_proxy_host_id": "",
+        "subnet_id": "", "grace_minutes": 10, "notes": "", "enabled": "on",
+    }
+    form.update(overrides)
+    return form
+
+
+def test_edit_host_mac_port_conflict_is_prevented(temp_db_file):
+    """Updating a host to another host's MAC + port must not 500 (UNIQUE
+    constraint): the form re-renders with a clear error naming the conflicting
+    host, the row is left unchanged, and the user's input is preserved."""
+    a = _insert_host(temp_db_file, name="alpha", mac_address="aa:bb:cc:dd:ee:01")
+    _insert_host(temp_db_file, name="bravo", mac_address="aa:bb:cc:dd:ee:02")
+
+    resp = TestClient(app).post(
+        f"/hosts/{a}/edit",
+        data=_edit_form(name="alpha", mac_address="aa:bb:cc:dd:ee:02"),
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert "already used by host" in resp.text
+    assert "bravo" in resp.text
+    # The submitted values are repopulated so the user can correct them.
+    assert 'value="aa:bb:cc:dd:ee:02"' in resp.text
+    # Nothing was changed.
+    assert _host_values(temp_db_file, a) == ("alpha", "aa:bb:cc:dd:ee:01", 80)
+
+
+def test_edit_host_own_mac_port_is_not_a_conflict(temp_db_file):
+    """Saving a host's own MAC + port (e.g. a rename) must still work."""
+    a = _insert_host(temp_db_file, name="alpha")
+
+    resp = TestClient(app).post(
+        f"/hosts/{a}/edit",
+        data=_edit_form(name="alpha2"),
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert _host_values(temp_db_file, a) == ("alpha2", "aa:bb:cc:dd:ee:ff", 80)
+
+
+def test_add_host_mac_port_conflict_is_prevented(temp_db_file):
+    _insert_host(temp_db_file, name="bravo", mac_address="aa:bb:cc:dd:ee:02")
+
+    resp = TestClient(app).post(
+        "/hosts/add",
+        data={
+            "name": "charlie", "local_device_name": "", "quiet_enabled": "off",
+            "quiet_start": "", "quiet_end": "", "quiet_mode": "suppress",
+            "domain": "", "mac_address": "aa:bb:cc:dd:ee:02",
+            "current_ip": "", "port": 80, "npm_proxy_host_id": "",
+            "subnet_id": "", "grace_minutes": 10, "notes": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 200
+    assert "already used by host" in resp.text
+    assert "bravo" in resp.text
+    # No new host was created.
+    assert _host_count(temp_db_file) == 1
+    # The repopulated add form shows no controls for a non-existent host.
+    assert 'id="validate-btn"' not in resp.text
+    assert "/hosts//delete" not in resp.text
