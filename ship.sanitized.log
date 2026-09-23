@@ -2,14 +2,14 @@
 == 1/5 tests + lint ==
 [00m 00s] pytest tests/ -q
 ........................................................................ [ 23%]
-........................FF.............................................. [ 46%]
+........................FFFF............................................ [ 46%]
 ........................................................................ [ 69%]
-........................................................................ [ 93%]
-.....................                                                    [100%]
+........................................................................ [ 92%]
+.......................                                                  [100%]
 =================================== FAILURES ===================================
 ________________________ test_start_recovery_reachable _________________________
 
-tmp_path = PosixPath('/tmp/pytest-of-lhoward/pytest-3/test_start_recovery_reachable0')
+tmp_path = PosixPath('/tmp/pytest-of-lhoward/pytest-5/test_start_recovery_reachable0')
 
     async def test_start_recovery_reachable(tmp_path):
         db = await _setup_db(tmp_path)
@@ -47,7 +47,7 @@ app/services/notifications.py:41: in send_event
            ^^^^^^^^^^^^
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <Connection(Thread-148, started 140271718401728)>
+self = <Connection(Thread-148, started 140597186954944)>
 
     def run(self) -> None:
         """
@@ -97,7 +97,7 @@ Traceback (most recent call last):
 sqlite3.OperationalError: no such table: subnets
 ______________________ test_start_recovery_not_reachable _______________________
 
-tmp_path = PosixPath('/tmp/pytest-of-lhoward/pytest-3/test_start_recovery_not_reacha0')
+tmp_path = PosixPath('/tmp/pytest-of-lhoward/pytest-5/test_start_recovery_not_reacha0')
 
     async def test_start_recovery_not_reachable(tmp_path):
         db = await _setup_db(tmp_path)
@@ -131,7 +131,7 @@ app/services/notifications.py:41: in send_event
            ^^^^^^^^^^^^
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-self = <Connection(Thread-149, started 140271484401344)>
+self = <Connection(Thread-149, started 140597088216768)>
 
     def run(self) -> None:
         """
@@ -160,4 +160,160 @@ E               sqlite3.OperationalError: no such table: events
 ------------------------------ Captured log call -------------------------------
 ERROR    healer.scanner:scanner.py:1343 list_subnets: could not read subnets table
 Traceback (most recent call last):
-  File "/mnt/Aquaman/upstream-healer/app/services/scanner.py", line 13
+  File "/mnt/Aquaman/upstream-healer/app/services/scanner.py", line 1334, in list_subnets
+    async with db.execute(
+               ~~~~~~~~~~^
+        "SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1"
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as cursor:
+    ^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/context.py", line 39, in __aenter__
+    self._obj = await self._coro
+                ^^^^^^^^^^^^^^^^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py", line 193, in execute
+    cursor = await self._execute(self._conn.execute, sql, parameters)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py", line 132, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py", line 115, in run
+    result = function()
+sqlite3.OperationalError: no such table: subnets
+____________________ test_start_recovery_npm_update_failure ____________________
+
+tmp_path = PosixPath('/tmp/pytest-of-lhoward/pytest-5/test_start_recovery_npm_update0')
+
+    async def test_start_recovery_npm_update_failure(tmp_path):
+        db = await _setup_db(tmp_path)
+        now = current_time().isoformat()
+        await db.execute(
+            "INSERT INTO hosts (id, name, mac_address, current_ip, npm_proxy_host_id, port, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (3, "testhost3", "aa:aa:aa:aa:aa:03", None, 99, 80, 1, now, now),
+        )
+        await db.execute("INSERT INTO host_state (host_id, status, last_ip) VALUES (?,?,?)", (3, "unreachable", None))
+        await db.commit()
+    
+        mon = Monitor()
+    
+        # Backend reachable, but NPM update fails
+        with patch("app.services.scanner.find_ip_by_mac", new=AsyncMock(return_value="10.0.0.7")), \
+            patch("app.services.scanner.check_host_reachable", new=AsyncMock(return_value=True)), \
+            patch.object(mon.npm, "update_forward_host", return_value=False) as mock_update, \
+            patch.object(mon.npm, "reload_nginx", return_value=True) as mock_reload:
+    
+            host_row = {"id": 3, "name": "testhost3", "mac_address": "aa:aa:aa:aa:aa:03", "npm_proxy_host_id": 99, "port": 80, "subnet_id": None}
+>           await mon._start_recovery(db, host_row, notify=False)
+
+tests/test_monitor_recovery.py:99: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+app/services/monitor.py:253: in _start_recovery
+    await send_event(
+app/services/notifications.py:41: in send_event
+    await db.execute(
+/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py:193: in execute
+    cursor = await self._execute(self._conn.execute, sql, parameters)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py:132: in _execute
+    return await future
+           ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Connection(Thread-150, started 140597177513664)>
+
+    def run(self) -> None:
+        """
+        Execute function calls on a separate thread.
+    
+        :meta private:
+        """
+        while True:
+            # Continues running until all queue items are processed,
+            # even after connection is closed (so we can finalize all
+            # futures)
+    
+            tx_item = self._tx.get()
+            if tx_item is _STOP_RUNNING_SENTINEL:
+                break
+    
+            future, function = tx_item
+    
+            try:
+                LOG.debug("executing %s", function)
+>               result = function()
+                         ^^^^^^^^^^
+E               sqlite3.OperationalError: no such table: events
+
+/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py:115: OperationalError
+------------------------------ Captured log call -------------------------------
+ERROR    healer.scanner:scanner.py:1343 list_subnets: could not read subnets table
+Traceback (most recent call last):
+  File "/mnt/Aquaman/upstream-healer/app/services/scanner.py", line 1334, in list_subnets
+    async with db.execute(
+               ~~~~~~~~~~^
+        "SELECT id, name, cidr, interface FROM subnets WHERE enabled = 1"
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ) as cursor:
+    ^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/context.py", line 39, in __aenter__
+    self._obj = await self._coro
+                ^^^^^^^^^^^^^^^^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py", line 193, in execute
+    cursor = await self._execute(self._conn.execute, sql, parameters)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py", line 132, in _execute
+    return await future
+           ^^^^^^^^^^^^
+  File "/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py", line 115, in run
+    result = function()
+sqlite3.OperationalError: no such table: subnets
+____________________ test_start_recovery_npm_reload_failure ____________________
+
+tmp_path = PosixPath('/tmp/pytest-of-lhoward/pytest-5/test_start_recovery_npm_reload0')
+
+    async def test_start_recovery_npm_reload_failure(tmp_path):
+        db = await _setup_db(tmp_path)
+        now = current_time().isoformat()
+        await db.execute(
+            "INSERT INTO hosts (id, name, mac_address, current_ip, npm_proxy_host_id, port, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (4, "testhost4", "aa:aa:aa:aa:aa:04", None, 100, 80, 1, now, now),
+        )
+        await db.execute("INSERT INTO host_state (host_id, status, last_ip) VALUES (?,?,?)", (4, "unreachable", None))
+        await db.commit()
+    
+        mon = Monitor()
+    
+        # Backend reachable, NPM update succeeds but reload fails
+        with patch("app.services.scanner.find_ip_by_mac", new=AsyncMock(return_value="10.0.0.8")), \
+            patch("app.services.scanner.check_host_reachable", new=AsyncMock(return_value=True)), \
+            patch.object(mon.npm, "update_forward_host", return_value=True) as mock_update, \
+            patch.object(mon.npm, "reload_nginx", return_value=False) as mock_reload:
+    
+            host_row = {"id": 4, "name": "testhost4", "mac_address": "aa:aa:aa:aa:aa:04", "npm_proxy_host_id": 100, "port": 80, "subnet_id": None}
+>           await mon._start_recovery(db, host_row, notify=False)
+
+tests/test_monitor_recovery.py:126: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+app/services/monitor.py:253: in _start_recovery
+    await send_event(
+app/services/notifications.py:41: in send_event
+    await db.execute(
+/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py:193: in execute
+    cursor = await self._execute(self._conn.execute, sql, parameters)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/home/lhoward/.var/app/com.vscodium.codium-insiders/data/python/lib/python3.13/site-packages/aiosqlite/core.py:132: in _execute
+    return await future
+           ^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Connection(Thread-151, started 140597195347648)>
+
+    def run(self) -> None:
+        """
+        Execute function calls on a separate thread.
+    
+        :meta private:
+        """
+        while True:
+            # Continues running until all queue items are processed,
+            # even after connection is closed (so we can finalize all
+           
