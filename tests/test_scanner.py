@@ -1194,8 +1194,10 @@ class TestParseScanOutputL3Line:
 
 async def test_validate_scopes_to_the_given_port_for_a_shared_device():
     """Two records for one box share an ip+mac but each validates its own port:
-    ``result['ip']['port_state']`` reflects the requested port, so the same
-    device can be verified on multiple ports independently (log-only, no DB)."""
+    the requested port is actually probed (so its state is derivable even when
+    it is not a default service-scan port) and ``result['ip']['port_state']``
+    reflects it, so the same device can be verified on multiple ports
+    independently (log-only, no DB)."""
     from app.services.scanner import validate_host_record
 
     row = {"ip": "10.0.0.50", "mac": "aa:bb:cc:dd:ee:77", "detail": "arp"}
@@ -1203,8 +1205,9 @@ async def test_validate_scopes_to_the_given_port_for_a_shared_device():
         {"port": 8787, "protocol": "tcp", "state": "open", "service": "http"},
         {"port": 8181, "protocol": "tcp", "state": "open", "service": "http"},
     ]
+    probe = AsyncMock(return_value={"ok": True, "error": None, "services": services})
     with patch("app.services.scanner.sweep_responder_hosts", new=AsyncMock(return_value=([row], None))), \
-        patch("app.services.scanner.probe_services", new=AsyncMock(return_value={"ok": True, "error": None, "services": services})), \
+        patch("app.services.scanner.probe_services", new=probe), \
         patch("app.services.scanner.discover_hostnames", new=AsyncMock(return_value=({}, {}))), \
         patch("app.services.scanner.resolve_hostname", new=AsyncMock(return_value="batcave")):
         r1 = await validate_host_record(
@@ -1222,6 +1225,10 @@ async def test_validate_scopes_to_the_given_port_for_a_shared_device():
     assert r1["mac"]["found"] is True
     assert r1["mac"]["ip"] == "10.0.0.50"
     assert r2["mac"]["ip"] == "10.0.0.50"
+    # The requested (non-default) port is probed for each record, so a monitored
+    # port outside the standard service-scan list is still checked.
+    assert probe.call_args_list[0].kwargs["tcp_ports"] == [8787]
+    assert probe.call_args_list[1].kwargs["tcp_ports"] == [8181]
 
 
 class TestBuildPortSpec:

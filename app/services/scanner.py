@@ -1656,11 +1656,18 @@ async def validate_host_record(
     found_ip = (mac_row or {}).get("ip") if mac_row else None
     found_mac = (ip_row or {}).get("mac") if ip_row else None  # None when L3-routed
 
-    # One probe per distinct IP, in parallel; ``--open`` means an absent port
-    # is closed/filtered, so the host port's state is derivable below.
+    # One probe per distinct IP, in parallel. Always include the host's own
+    # monitored port so its state is derivable even when it is not a default
+    # service-scan port (e.g. 8787/8181/11000) — ``run_service_scan`` merges
+    # ``tcp_ports`` into the defaults. With ``--open`` an absent port is
+    # closed/filtered, so the host port's state is derivable below.
     probe_targets = sorted({t for t in (ip, found_ip) if t})
+    probe_tcp = [port] if port else None
     probes: dict[str, dict] = dict(
-        zip(probe_targets, await asyncio.gather(*[probe_services(t) for t in probe_targets]))
+        zip(
+            probe_targets,
+            await asyncio.gather(*[probe_services(t, tcp_ports=probe_tcp) for t in probe_targets]),
+        )
     ) if probe_targets else {}
     hostnames: dict[str, str] = {}
     for target in probe_targets:
