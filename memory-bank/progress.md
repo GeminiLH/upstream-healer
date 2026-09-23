@@ -201,6 +201,18 @@ placeholder, and the `POST /api/diagnostic/scan` request contract all live in
 
 ## Done (recent history — full detail in git log)
 
+- **`136a87d` (2026-09-22): monitor recovery tests fixed → pipeline 199 all
+  green (`lint` 1116 / `unit_tests` 1117 / `build_image` 1118) → `deploy_dev`
+  job 1120 success (18 s); dev UI live on `192.168.86.38:8787` (HTTP 200).**
+  The 4 tests added in `014a51a` failed for three independent reasons: (1)
+  `_setup_db` built only hosts/host_state, but `_start_recovery` inserts into
+  `events` (and reads `subnets`) → now executes `app.database.SCHEMA`; (2) mocks
+  patched `app.services.scanner.*` while monitor binds those names via
+  `from ... import` → the real scanner ran; now patches `app.services.monitor.*`;
+  (3) connections were never closed → non-daemon aiosqlite threads hung pytest
+  shutdown after the summary (sandbox; `ps -eLf` showed 4 idle threads = 4 leaked
+  conns) → now `await db.close()` per test. Plus ruff cleanup (unused `asyncio`
+  import, unused `mock_*` bindings). Details in `decisions.md` (Gotchas).
 - **(2026-09-21) arp-scan full-list fix**: the per-sweep command passed the NIC to
   `-i`, but arp-scan 1.10 uses `-i`=`--interval` (numeric) and `-I`=`--interface`.
   `arp-scan -q --retry=3 -i enp6s0 <cidr>` aborted with `"enp6s0" is not a valid

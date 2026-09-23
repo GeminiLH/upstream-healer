@@ -299,6 +299,28 @@ collection with `ValidationError: extra_forbidden`.
   input* (pager/ssh prompt) rather than running slowly — always use
   `core.pager=cat`, `GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND="ssh -o
   BatchMode=yes"`, and `< /dev/null`.
+- **aiosqlite connection threads are non-daemon — every test MUST close its DB
+  (2026-09-22):** `aiosqlite.core.Connection` *is* a `Thread`. If a test opens a
+  connection and never calls `await db.close()`, interpreter shutdown waits on the
+  thread forever — pytest prints the "N passed" summary and then never exits
+  (symptom: `ship.sh` stalls in step 1 with no new log lines; `pgrep` shows the
+  pytest process alive at ~2 s CPU, `cat /proc/<pid>/wchan` = `futex_do_wait`, and
+  `ps -eLf` shows one idle extra thread per leaked connection). CI would hang the
+  same way. All repo tests close their DB explicitly — keep that contract.
+- **Mock patch targets: patch where the code *uses* the name, not where it is
+  defined (2026-09-22):** `app/services/monitor.py` does `from
+  app.services.scanner import find_ip_by_mac, check_host_reachable`, so patching
+  `app.services.scanner.*` in a test leaves monitor's own bindings untouched — the
+  real scanner runs (returns `None` quickly in the sandbox), recovery bails early,
+  and the DB assertions fail with no exception (very quiet failure mode). Patch
+  `app.services.monitor.find_ip_by_mac` / `.check_host_reachable` instead.
+- **Recovery tests need the *full* app schema (2026-09-22):** `_start_recovery`
+  touches `subnets` (via `list_subnets` when the host has no pinned subnet —
+  `list_subnets` swallows the missing-table error itself) and `events` (via
+  `send_event` — an INSERT, *always*, even with `notify=False`) → a minimal
+  hosts/host_state fixture fails with `sqlite3.OperationalError: no such table:
+  events`. `tests/test_monitor_recovery.py::_setup_db` now `executescript`s
+  `app.database.SCHEMA` so the fixture cannot drift.
 - `npm_db_path_in_container` (`/data/database.sqlite`) is a legacy default;
   NPM in the dev stack uses **MariaDB** (`nginx-db-1`), so the SQLite path is
   not where NPM stores state in dev.
