@@ -1,6 +1,6 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-09-21.
+> Last updated: 2026-09-22.
 
 ## Design decisions
 
@@ -282,6 +282,17 @@ collection with `ValidationError: extra_forbidden`.
 
 ## Gotchas
 
+- **GitLab job lists can be empty right after pipeline creation — never trust
+  a vacuous "all green"** (2026-09-22, `6a43c07`): `GET /projects/:id/
+  pipelines/:pid/jobs` returns `[]` for a just-created pipeline (job rows are
+  populated lazily). ship.sh's step-4 snippet then passed every check over an
+  *empty* auto-jobs list (`no failures` + `any(pending…)` is False on `[]`)
+  and printed `READY ` with an **empty** deploy_dev id → step 5 silently
+  skipped the deploy while printing success ("auto jobs green" at 19 s).
+  Now: `len(auto) < 3` → `WARMUP` (re-poll), and a missing `deploy_dev` id
+  → `WARMUP` instead of an empty id. Any "poll until green" logic against
+  this API must treat *incomplete* data as "not ready", and any silent skip
+  of a deploy step is a bug — fail loudly instead.
 - `upstream healer notes.txt` contains **live secrets** (Telegram bot token,
   GitLab API/runner tokens) and ad-hoc LAN data. Do not quote it in code,
   tests, or docs.

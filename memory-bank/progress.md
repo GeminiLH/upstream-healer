@@ -30,6 +30,35 @@
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q` (currently 265 passed, ruff clean).
 
+## Latest (2026-09-22) — MAC+port conflict 500 → clear named-host error; ship.sh empty-jobs trap
+
+- **Host edit/add MAC+port conflict returned a 500** (`f7312dd`, live on dev):
+  `hosts` has `UNIQUE (mac_address, port)`; `POST /hosts/{id}/edit` ran the
+  UPDATE with no pre-check, so assigning another host's MAC+port hit the
+  constraint → `IntegrityError` → 500 (the `/add` INSERT had the same bug).
+  Fix: pre-flight check in both endpoints → re-render `host_form.html` with a
+  rose error banner ("MAC … on port … is already used by host '<name>' —
+  every host needs a unique MAC + port combination."), repopulated with the
+  submitted values (edit merges them over the existing row so `id` is kept).
+  New `_render_host_form_conflict()` helper in `main.py`; `edit_host` also
+  gained a 404 for missing hosts (was a silent no-op UPDATE). Template:
+  error banner + validate/delete/enabled/JS sections now gated on
+  `host and host.id` (repopulated *add* forms have no `id`). 3 tests in
+  `test_main.py` (edit conflict / own mac+port / add conflict); **314 passed**,
+  ruff clean. Verified live on dev: conflict POST → 200 + banner naming
+  `jellyfin`, row unchanged; same-value POST → 303 (urllib shows it as 200
+  Dashboard — it follows the 303; curl shows 303).
+- **ship.sh declared green from an EMPTY jobs list and silently skipped the
+  deploy** (`6a43c07`): GitLab's `GET /pipelines/:id/jobs` can return `[]`
+  right after pipeline creation; the step-4 snippet then had `auto = []` →
+  "no failures" + `any(...)` over the empty list is False → `READY ` with an
+  empty deploy job id → step 5 skipped. Pipeline 201 (`f7312dd`) got no
+  deploy; its `deploy_dev` was left `created`/unplayed. Fixed: `len(auto) < 3`
+  → `WARMUP`, and a missing `deploy_dev` id → `WARMUP` (fail loudly at the 30
+  min deadline, never skip). Re-shipped as `6a43c07` (pipeline 202): full
+  flow worked — auto jobs watched properly, `deploy_dev` job 1144 played,
+  **deploy_dev SUCCESS**, dev UI 200. 6a43c07 is live on dev.
+
 ## Latest (2026-09-22) — validate screens + the nmap 7.93 `-oJ` trap, fixed live
 
 - Edit-screen **Validate** shipped (`4299a52`): Validate button →
