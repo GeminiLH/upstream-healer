@@ -30,6 +30,34 @@
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q` (currently 265 passed, ruff clean).
 
+## Latest (2026-09-23) — host form: quiet-time to bottom, NPM field up, "populate from NPM"
+
+- **Reordered the host add/edit form** for a cleaner flow
+  (`app/templates/host_form.html`): "NPM Proxy Host ID" moved from between
+  *Current IP* and *Port* to just above *Domain* (right after *Local device
+  name*); the "Quiet time" fieldset moved from between *Domain* and *MAC Address*
+  to the bottom, just above the "Enabled (monitor this host)" box. Pure markup
+  relocation — no logic change.
+- **Selecting an NPM proxy host now offers to populate the record.** Each
+  `<option>` carries `data-ip`/`data-port`/`data-domain`/`data-subnet`; a small
+  inline `<script>` (placed after the main `<form>`) listens for `change` and
+  `confirm()`s a summary, then fills `current_ip`/`port`/`domain` and sets
+  `subnet_id` — but only when the derived CIDR is actually present in the subnet
+  dropdown (`form.elements['subnet_id']` options are matched by `value`). Pure
+  client-side, no server round trip, user can dismiss.
+- **Subnet offered where available** (`app/main.py`): new `_subnet_for_ip(host,
+  subnets)` picks the first *known* subnet that contains the proxy host's
+  `forward_host` (so VLANs wider/narrower than /24 resolve correctly), else falls
+  back to the address's own /24; returns `None` for a non-IPv4 forward address
+  (an upstream domain) so no subnet is offered. `_render_host_form` attaches it
+  to each proxy host (`ph["subnet"] = _subnet_for_ip(...)`).
+- **Gotcha caught by the new test:** the /24 fallback had to use
+  `ipaddress.ip_network((addr, 24), strict=False)` — the default `strict=True`
+  raises "has host bits set" for a host address like `192.168.86.249`. Full note
+  in decisions.md.
+- 4 tests added in `tests/test_main.py` (`test_subnet_for_ip_*` ×3 +
+  `test_form_offers_populate_from_npm`); **334 passed**, ruff clean.
+
 ## Latest (2026-09-22) — MAC+port conflict 500 → clear named-host error; ship.sh empty-jobs trap
 
 - **Host edit/add MAC+port conflict returned a 500** (`f7312dd`, live on dev):

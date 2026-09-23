@@ -788,6 +788,60 @@ def test_dashboard_shows_all_subnets_when_unpinned(temp_db_file):
     assert "All known subnets" in resp.text
 
 
+# ─────────────────────────── populate record from NPM ───────────────────────────
+
+
+def test_subnet_for_ip_prefers_known_subnet():
+    from app.main import _subnet_for_ip
+
+    subnets = [
+        {"cidr": "192.168.200.0/24", "interface": "eth9", "source": "auto"},
+        {"cidr": "10.0.0.0/28", "interface": "eth1", "source": "manual"},
+    ]
+    # A VLAN narrower than /24 must win over the /24 fallback.
+    assert _subnet_for_ip("10.0.0.5", subnets) == "10.0.0.0/28"
+    assert _subnet_for_ip("192.168.200.7", subnets) == "192.168.200.0/24"
+
+
+def test_subnet_for_ip_falls_back_to_24_when_unknown():
+    from app.main import _subnet_for_ip
+
+    assert _subnet_for_ip("172.31.5.9", []) == "172.31.5.0/24"
+    # No known subnet contains 10.9.9.9 → its own /24.
+    assert _subnet_for_ip("10.9.9.9", [{"cidr": "192.168.0.0/24"}]) == "10.9.9.0/24"
+
+
+def test_subnet_for_ip_none_for_non_ipv4():
+    from app.main import _subnet_for_ip
+
+    assert _subnet_for_ip("vault.hylla.us", [{"cidr": "192.168.0.0/24"}]) is None
+    assert _subnet_for_ip("", []) is None
+    assert _subnet_for_ip(None, []) is None
+
+
+def test_form_offers_populate_from_npm(temp_db_file):
+    """Selecting an NPM proxy host offers to populate the record: IP, port,
+    domain, and the subnet where one is known (falls back to the /24)."""
+    with patch("app.services.scanner.get_default_subnets", return_value=[]), patch(
+        "app.main.NPMClient"
+    ) as mock_npm:
+        mock_npm.return_value.list_proxy_hosts.return_value = [
+            {
+                "id": 7,
+                "domain_names": '["vault.hylla.us"]',
+                "forward_host": "192.168.86.249",
+                "forward_port": 80,
+            },
+        ]
+        resp = TestClient(app).get("/hosts/add")
+    assert resp.status_code == 200
+    assert 'data-ip="192.168.86.249"' in resp.text
+    assert 'data-port="80"' in resp.text
+    assert 'data-domain="vault.hylla.us"' in resp.text
+    assert 'data-subnet="192.168.86.0/24"' in resp.text
+    assert "Populate this record from NPM proxy host" in resp.text
+
+
 # ─────────────────────────────── force-scan NPM sync ───────────────────────────
 
 

@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
@@ -171,6 +172,33 @@ def _first_domain(domain_names):
     return ""
 
 
+def _subnet_for_ip(host, subnets):
+    """Best-effort subnet CIDR for a proxy host's forward address, offered when
+    the user picks an NPM proxy host in the form. Prefers the first *known*
+    subnet that contains the address (so VLANs wider/narrower than /24 resolve
+    correctly); falls back to the address's own /24. Returns ``None`` when the
+    forward address is not an IPv4 (e.g. an upstream domain) so no subnet is
+    offered.
+    """
+    if not host:
+        return None
+    try:
+        addr = ipaddress.ip_address(str(host).strip())
+    except ValueError:
+        return None
+    if addr.version != 4:
+        return None
+    for s in subnets:
+        try:
+            if addr in ipaddress.ip_network(s.get("cidr"), strict=False):
+                return s.get("cidr")
+        except (ValueError, TypeError):
+            continue
+    # strict=False so a host address (e.g. 192.168.86.249) is normalised to its
+    # /24 network address instead of raising "has host bits set".
+    return str(ipaddress.ip_network((str(addr), 24), strict=False))
+
+
 def _npm_forward_for(npm_id):
     """Return the linked NPM proxy host's ``forward_host:forward_port`` (plus
     the first domain label) so the add/edit form can warn when the record the
@@ -239,6 +267,9 @@ async def _render_host_form(
     except Exception:  # noqa: BLE001
         proxy_hosts = []
     subnets = await list_subnets(db)
+    for ph in proxy_hosts:
+        ph["domain"] = _first_domain(ph.get("domain_names"))
+        ph["subnet"] = _subnet_for_ip(ph.get("forward_host"), subnets)
     return templates.TemplateResponse(
         request,
         "host_form.html",

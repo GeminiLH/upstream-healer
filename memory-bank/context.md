@@ -1,6 +1,9 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-09-21 (arp-scan `-i`/`-I` full-list fix shipped). Re-verify with `git status` and `progress.md` before relying on this.
+> Last updated: 2026-09-23 (host add/edit form: quiet-time moved to the bottom,
+> NPM Proxy Host ID moved above Domain, and picking an NPM proxy host offers to
+> populate the record incl. a best-effort subnet). Re-verify with `git status` and
+> `progress.md` before relying on this.
 
 ## Repository (read this first)
 

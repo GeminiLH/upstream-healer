@@ -1,8 +1,19 @@
 # Decisions & Gotchas — Upstream Healer
 
-> Last updated: 2026-09-22.
+> Last updated: 2026-09-23.
 
 ## Design decisions
+
+- **`ip_network(..., strict=False)` is required when normalising a host address to
+  its /24** (2026-09-23, "populate from NPM" subnet fallback): `main.py::_subnet_for_ip`
+  falls back to the proxy host's own /24 when no known subnet contains its
+  `forward_host`. The first draft used `ipaddress.ip_network((addr, 24))`, which
+  defaults to `strict=True` and **raises `ValueError: …/24 has host bits set`** for
+  a real host address (e.g. `192.168.86.249`) — the /24 of a host is never a
+  canonical network address. Use `ip_network((str(addr), 24), strict=False)` so it
+  normalises to `192.168.86.0/24`. The "contains" test loop above it already passes
+  `strict=False` for the same reason. Caught by
+  `test_subnet_for_ip_falls_back_to_24_when_unknown` + `test_form_offers_populate_from_npm`.
 
 - **nmap 7.93 has no `-oJ` — service probes use `-oX -` (XML to stdout)**
   (2026-09-22, "validate flash" bug): the batcave nmap 7.93 build (Debian

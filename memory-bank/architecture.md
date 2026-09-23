@@ -1,6 +1,6 @@
 # Architecture — Upstream Healer
 
-> Last updated: 2026-09-20.
+> Last updated: 2026-09-23.
 
 ## Repository
 
@@ -90,3 +90,15 @@ Tables: `hosts` (identity = MAC + port, unique), `settings`, `notification_chann
   alongside `mdns.browse_mdns()` (8 s window, returns `{ip:name, mac:name}`);
   `apply_hostnames` layers known-DB → live-mDNS → cached-mDNS (`mdns_names`) →
   reverse-DNS and sorts named-first; `remember_mdns_names` persists new names.
+- **Host add/edit form (`host_form.html`) — "populate from NPM":** field order is
+  Name → Local device name → **NPM Proxy Host ID** → Domain → MAC → Current IP →
+  Port → Subnet → Grace → Notes → **Quiet time** → Enabled → buttons. The NPM
+  `<select>` options carry `data-ip`/`data-port`/`data-domain`/`data-subnet`; an
+  inline `<script>` after the form fills the corresponding inputs after a
+  `confirm()` when the user picks a proxy host (subnet is set only if its CIDR is
+  an option in the subnet dropdown). The backend (`_render_host_form`) enriches
+  each proxy host: `domain = _first_domain(domain_names)` and
+  `subnet = _subnet_for_ip(forward_host, subnets)` — the latter returns the first
+  *known* subnet containing the IP, else the address's own /24 (`strict=False`),
+  else `None` for a non-IPv4 forward host. All client-side + a render-time lookup;
+  no extra endpoint.

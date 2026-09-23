@@ -74,48 +74,30 @@
     </div>
 
     <div>
+      <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">NPM Proxy Host ID</label>
+      <select name="npm_proxy_host_id" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
+                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
+                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
+        <option value="">— Select —</option>
+        {% for ph in proxy_hosts %}
+        <option value="{{ ph.id }}" data-ip="{{ ph.forward_host }}" data-port="{{ ph.forward_port }}"
+                data-domain="{{ ph.domain }}" data-subnet="{{ ph.subnet or '' }}"
+                {% if host and host.npm_proxy_host_id==ph.id %}selected{% endif %}>
+          #{{ ph.id }} — {{ ph.domain_names }} → {{ ph.forward_host }}:{{ ph.forward_port }}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">From your Nginx Proxy Manager. This is the row that
+        will be updated. Selecting one offers to populate the record.</p>
+    </div>
+
+    <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Domain</label>
       <input type="text" name="domain" value="{{ host.domain if host else '' }}" placeholder="vault.hylla.us" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                     placeholder-slate-400 dark:placeholder-slate-500
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
     </div>
-
-    <fieldset class="space-y-3 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
-      <legend class="px-1 text-sm font-medium text-slate-700 dark:text-slate-300">Quiet time</legend>
-      <div class="flex items-center gap-2">
-        <input type="checkbox" name="quiet_enabled" id="quiet_enabled" {% if host and host.quiet_enabled %}checked{%
-          endif %} class="rounded border-slate-300 dark:border-slate-600 text-brand-600 focus:ring-brand-500">
-        <label for="quiet_enabled" class="text-sm text-slate-700 dark:text-slate-300">Enable quiet time for this
-          host</label>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label for="quiet_start"
-            class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Start</label>
-          <input type="time" name="quiet_start" id="quiet_start" value="{{ host.quiet_start if host else '' }}"
-            class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
-        </div>
-        <div>
-          <label for="quiet_end" class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">End</label>
-          <input type="time" name="quiet_end" id="quiet_end" value="{{ host.quiet_end if host else '' }}"
-            class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
-        </div>
-      </div>
-      <div>
-        <label for="quiet_mode" class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">During quiet
-          time</label>
-        <select name="quiet_mode" id="quiet_mode"
-          class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
-          <option value="suppress" {% if not host or host.quiet_mode !='delete' %}selected{% endif %}>Suppress
-            notifications, continue monitoring</option>
-          <option value="delete" {% if host and host.quiet_mode=='delete' %}selected{% endif %}>Stop monitoring and
-            delete checks</option>
-        </select>
-      </div>
-      <p class="text-xs text-slate-500 dark:text-slate-400">Times use the configured application timezone. Overnight
-        periods are supported.</p>
-    </fieldset>
 
     <div>
       <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">MAC Address *</label>
@@ -135,22 +117,6 @@
                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
                     placeholder-slate-400 dark:placeholder-slate-500 font-mono
                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
-    </div>
-
-    <div>
-      <label class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">NPM Proxy Host ID</label>
-      <select name="npm_proxy_host_id" class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600
-                     bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100
-                     focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
-        <option value="">— Select —</option>
-        {% for ph in proxy_hosts %}
-        <option value="{{ ph.id }}" {% if host and host.npm_proxy_host_id==ph.id %}selected{% endif %}>
-          #{{ ph.id }} — {{ ph.domain_names }} → {{ ph.forward_host }}:{{ ph.forward_port }}
-        </option>
-        {% endfor %}
-      </select>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">From your Nginx Proxy Manager. This is the row that
-        will be updated.</p>
     </div>
 
     <div>
@@ -208,6 +174,42 @@
                        focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">{{ host.notes if host else '' }}</textarea>
     </div>
 
+    <fieldset class="space-y-3 rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+      <legend class="px-1 text-sm font-medium text-slate-700 dark:text-slate-300">Quiet time</legend>
+      <div class="flex items-center gap-2">
+        <input type="checkbox" name="quiet_enabled" id="quiet_enabled" {% if host and host.quiet_enabled %}checked{%
+          endif %} class="rounded border-slate-300 dark:border-slate-600 text-brand-600 focus:ring-brand-500">
+        <label for="quiet_enabled" class="text-sm text-slate-700 dark:text-slate-300">Enable quiet time for this
+          host</label>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label for="quiet_start"
+            class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Start</label>
+          <input type="time" name="quiet_start" id="quiet_start" value="{{ host.quiet_start if host else '' }}"
+            class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+        </div>
+        <div>
+          <label for="quiet_end" class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">End</label>
+          <input type="time" name="quiet_end" id="quiet_end" value="{{ host.quiet_end if host else '' }}"
+            class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+        </div>
+      </div>
+      <div>
+        <label for="quiet_mode" class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">During quiet
+          time</label>
+        <select name="quiet_mode" id="quiet_mode"
+          class="form-control w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100">
+          <option value="suppress" {% if not host or host.quiet_mode !='delete' %}selected{% endif %}>Suppress
+            notifications, continue monitoring</option>
+          <option value="delete" {% if host and host.quiet_mode=='delete' %}selected{% endif %}>Stop monitoring and
+            delete checks</option>
+        </select>
+      </div>
+      <p class="text-xs text-slate-500 dark:text-slate-400">Times use the configured application timezone. Overnight
+        periods are supported.</p>
+    </fieldset>
+
     {% if host and host.id %}
     <div class="flex items-center gap-2">
       <input type="checkbox" name="enabled" id="enabled" {% if host.enabled %}checked{% endif %}
@@ -240,6 +242,36 @@
       </a>
     </div>
   </form>
+
+  <script>
+    (function () {
+      const sel = document.querySelector('select[name="npm_proxy_host_id"]');
+      if (!sel) return;
+      const form = sel.closest('form');
+      sel.addEventListener('change', () => {
+        const opt = sel.selectedOptions[0];
+        if (!opt || !opt.value || !form) return;
+        const ip = opt.dataset.ip || '';
+        const port = opt.dataset.port || '';
+        const domain = opt.dataset.domain || '';
+        const subnet = opt.dataset.subnet || '';
+        const subnetSel = form.elements['subnet_id'];
+        const subnetAvailable = !!(subnet && subnetSel &&
+          Array.from(subnetSel.options).some((o) => o.value === subnet));
+        const lines = [`Populate this record from NPM proxy host #${opt.value}?`, ''];
+        if (ip) lines.push(`  Current IP   → ${ip}`);
+        if (port) lines.push(`  Port         → ${port}`);
+        if (domain) lines.push(`  Domain       → ${domain}`);
+        if (subnetAvailable) lines.push(`  Subnet       → ${subnet}`);
+        if (lines.length <= 2) return;
+        if (!confirm(lines.join('\n'))) return;
+        if (ip) form.elements['current_ip'].value = ip;
+        if (port) form.elements['port'].value = port;
+        if (domain) form.elements['domain'].value = domain;
+        if (subnetAvailable) form.elements['subnet_id'].value = subnet;
+      });
+    })();
+  </script>
 
   {% if host and host.id %}
   <form method="post" action="/hosts/{{ host.id }}/delete" class="mt-8"
