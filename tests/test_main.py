@@ -499,6 +499,27 @@ def test_add_host_mac_port_conflict_is_prevented(temp_db_file):
     assert "/hosts//delete" not in resp.text
 
 
+def test_add_host_same_mac_different_port_is_allowed(temp_db_file):
+    """The same MAC may be watched on several ports: a second record for the same
+    box (same MAC, different port) is accepted — only a duplicate MAC+port pair is
+    rejected. This is the transparent multi-port-per-box workflow."""
+    _insert_host(temp_db_file, name="batcave", mac_address="aa:bb:cc:dd:ee:88", port=8787)
+
+    resp = TestClient(app).post(
+        "/hosts/add",
+        data={
+            "name": "batcave", "local_device_name": "", "quiet_enabled": "off",
+            "quiet_start": "", "quiet_end": "", "quiet_mode": "suppress",
+            "domain": "", "mac_address": "aa:bb:cc:dd:ee:88",
+            "current_ip": "", "port": 8181, "npm_proxy_host_id": "",
+            "subnet_id": "", "grace_minutes": 10, "notes": "",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert _host_count(temp_db_file) == 2
+
+
 # ───────────────────── NPM mismatch on add/edit + subnet display ───────────────
 
 _NPM_FORWARD = {
@@ -786,6 +807,33 @@ def test_dashboard_shows_all_subnets_when_unpinned(temp_db_file):
     resp = TestClient(app).get("/")
     assert resp.status_code == 200
     assert "All known subnets" in resp.text
+
+
+def test_dashboard_labels_two_ports_on_the_same_device(temp_db_file):
+    """Two records for one box (same MAC, two ports) each render with their port
+    in the header and a shared-device badge, so the pair is transparent and each
+    shows its own health at a glance."""
+    _insert_host(temp_db_file, name="batcave", mac_address="aa:bb:cc:dd:ee:77", port=8787)
+    _insert_host(temp_db_file, name="batcave", mac_address="aa:bb:cc:dd:ee:77", port=8181)
+
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    # Each monitored port is surfaced in its card header.
+    assert ":8787" in resp.text
+    assert ":8181" in resp.text
+    # Both cards flag the other record on the same device.
+    assert resp.text.count("+1 on this device") == 2
+
+
+def test_dashboard_no_shared_device_badge_for_single_port(temp_db_file):
+    """A lone record (no other record shares its MAC) shows its port but no
+    shared-device badge."""
+    _insert_host(temp_db_file, name="solo", mac_address="aa:bb:cc:dd:ee:78", port=9000)
+
+    resp = TestClient(app).get("/")
+    assert resp.status_code == 200
+    assert ":9000" in resp.text
+    assert "+1 on this device" not in resp.text
 
 
 # ─────────────────────────── populate record from NPM ───────────────────────────

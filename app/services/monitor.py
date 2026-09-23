@@ -322,6 +322,28 @@ class Monitor:
                  WHERE host_id = ?""",
                 (now, now, new_ip, host_id),
             )
+            # A box move affects every record tracking the same MAC. Propagate the
+            # confirmed new IP to sibling records (other ports on the same device)
+            # so they stop chasing the stale address and confirm healthy on their
+            # own port next cycle instead of burning a full grace period. Only
+            # ``current_ip`` is touched — each sibling is still confirmed on its
+            # own monitored port before it is marked healthy.
+            async with db.execute(
+                "SELECT id, name FROM hosts WHERE mac_address = ? AND id != ?",
+                (mac, host_id),
+            ) as sib_cur:
+                siblings = [dict(r) for r in await sib_cur.fetchall()]
+            if siblings:
+                await db.execute(
+                    "UPDATE hosts SET current_ip = ?, updated_at = ? "
+                    "WHERE mac_address = ? AND id != ?",
+                    (new_ip, now, mac, host_id),
+                )
+                logger.info(
+                    "%s (id=%s, MAC %s) moved to %s; new IP propagated to %d sibling record(s): %s",
+                    name, host_id, mac, new_ip, len(siblings),
+                    [(s["id"], s["name"]) for s in siblings],
+                )
             await db.commit()
 
             # Now that the backend answers, update NPM proxy host and reload

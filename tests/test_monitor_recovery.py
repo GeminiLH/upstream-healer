@@ -137,3 +137,43 @@ async def test_start_recovery_npm_reload_failure(tmp_path):
         row = await cur.fetchone()
         assert row["current_ip"] == "10.0.0.8"
     await db.close()
+
+
+async def test_start_recovery_propagates_new_ip_to_same_mac_siblings(tmp_path):
+    """When a box recovers at a new IP, every other record tracking the same MAC
+    (other ports on the same device) adopts that IP too — so it confirms healthy
+    on its own port next cycle instead of burning a grace period. Only
+    ``current_ip`` is propagated; the sibling is not force-marked healthy."""
+    db = await _setup_db(tmp_path)
+    now = current_time().isoformat()
+    await db.execute(
+        "INSERT INTO hosts (id, name, mac_address, current_ip, npm_proxy_host_id, port, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (10, "batcave-web", "aa:bb:cc:dd:ee:99", None, None, 8787, 1, now, now),
+    )
+    await db.execute(
+        "INSERT INTO hosts (id, name, mac_address, current_ip, npm_proxy_host_id, port, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (11, "batcave-npm", "aa:bb:cc:dd:ee:99", None, None, 8181, 1, now, now),
+    )
+    await db.execute("INSERT INTO host_state (host_id, status, last_ip) VALUES (?,?,?)", (10, "unreachable", None))
+    await db.execute("INSERT INTO host_state (host_id, status, last_ip) VALUES (?,?,?)", (11, "unreachable", None))
+    await db.commit()
+
+    mon = Monitor()
+    with patch("app.services.monitor.find_ip_by_mac", new=AsyncMock(return_value="10.0.0.5")), \
+        patch("app.services.monitor.check_host_reachable", new=AsyncMock(return_value=True)):
+        host_row = {
+            "id": 10, "name": "batcave-web", "mac_address": "aa:bb:cc:dd:ee:99",
+            "npm_proxy_host_id": None, "port": 8787, "subnet_id": None,
+        }
+        await mon._start_recovery(db, host_row, notify=False)
+
+    # The recovering record adopts the new IP…
+    async with db.execute("SELECT current_ip FROM hosts WHERE id = 10") as cur:
+        assert (await cur.fetchone())["current_ip"] == "10.0.0.5"
+    # …and the sibling record on the same box does too.
+    async with db.execute("SELECT current_ip FROM hosts WHERE id = 11") as cur:
+        assert (await cur.fetchone())["current_ip"] == "10.0.0.5"
+    # The sibling is NOT force-marked healthy — its own port is confirmed next cycle.
+    async with db.execute("SELECT status FROM host_state WHERE host_id = 11") as cur:
+        assert (await cur.fetchone())["status"] == "unreachable"
+    await db.close()

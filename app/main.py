@@ -74,9 +74,20 @@ async def dashboard(request: Request, db: aiosqlite.Connection = Depends(get_db)
             FROM hosts h
             LEFT JOIN host_state s ON s.host_id = h.id
             LEFT JOIN subnets sn ON sn.id = h.subnet_id
-            ORDER BY h.name"""
+            ORDER BY h.name, h.port"""
     ) as cursor:
         hosts = [dict(r) for r in await cursor.fetchall()]
+    # A box can be watched on several ports via several records that share one
+    # MAC. Count the other records per MAC so each card can flag the device it
+    # belongs to — transparent multi-port monitoring at a glance.
+    mac_counts: dict[str, int] = {}
+    for host in hosts:
+        key = (host.get("mac_address") or "").strip().lower()
+        if key:
+            mac_counts[key] = mac_counts.get(key, 0) + 1
+    for host in hosts:
+        key = (host.get("mac_address") or "").strip().lower()
+        host["device_peer_count"] = max(0, mac_counts.get(key, 0) - 1)
     for host in hosts:
         if host["last_check_at"]:
             host["last_check_display"] = format_timestamp(host["last_check_at"])
@@ -629,6 +640,14 @@ async def force_scan(host_id: int, db: aiosqlite.Connection = Depends(get_db)):
     )
     await db.commit()
 
+    logger.info(
+        "force_scan %s (id=%s, port=%s): ip/port=%s mac_verified=%s reached=%s%s",
+        name, host_id, port,
+        "ok" if ip_port_ok else "fail",
+        "ok" if mac_ok else "fail",
+        "yes" if reached else "no",
+        f" ip {old_ip} -> {mac_ip}" if ip_changed else "",
+    )
     npm_summary = f"configured (ID {npm_id})" if npm_id else "not configured"
     details = (
         f"IP/port check: {'SUCCESS' if ip_port_ok else 'FAILURE'}; "
@@ -740,7 +759,7 @@ async def validate_host(host_id: int, body: ValidateHostRequest, db: aiosqlite.C
         )
     if ip_res:
         summary.append(f"{ip} answers as {ip_res.get('mac') or 'no MAC (routed)'}")
-    message = f"Validation for {host['name']}: " + ("; ".join(summary) if summary else "no results")
+    message = f"Validation for {host['name']} (port {port}): " + ("; ".join(summary) if summary else "no results")
     await send_event(
         db, "manual", message.strip() or f"Validation for {host['name']}",
         details=(

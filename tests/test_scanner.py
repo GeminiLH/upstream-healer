@@ -1192,6 +1192,38 @@ class TestParseScanOutputL3Line:
 # ───────────────────────────── Host validation (Validate button) ─────────────────────────────
 
 
+async def test_validate_scopes_to_the_given_port_for_a_shared_device():
+    """Two records for one box share an ip+mac but each validates its own port:
+    ``result['ip']['port_state']`` reflects the requested port, so the same
+    device can be verified on multiple ports independently (log-only, no DB)."""
+    from app.services.scanner import validate_host_record
+
+    row = {"ip": "10.0.0.50", "mac": "aa:bb:cc:dd:ee:77", "detail": "arp"}
+    services = [
+        {"port": 8787, "protocol": "tcp", "state": "open", "service": "http"},
+        {"port": 8181, "protocol": "tcp", "state": "open", "service": "http"},
+    ]
+    with patch("app.services.scanner.sweep_responder_hosts", new=AsyncMock(return_value=([row], None))), \
+        patch("app.services.scanner.probe_services", new=AsyncMock(return_value={"ok": True, "error": None, "services": services})), \
+        patch("app.services.scanner.discover_hostnames", new=AsyncMock(return_value=({}, {}))), \
+        patch("app.services.scanner.resolve_hostname", new=AsyncMock(return_value="batcave")):
+        r1 = await validate_host_record(
+            None, name="batcave-web", mac="aa:bb:cc:dd:ee:77", ip="10.0.0.50", port=8787,
+        )
+        r2 = await validate_host_record(
+            None, name="batcave-npm", mac="aa:bb:cc:dd:ee:77", ip="10.0.0.50", port=8181,
+        )
+
+    assert r1["ip"]["port"] == 8787
+    assert r1["ip"]["port_state"] == "open"
+    assert r2["ip"]["port"] == 8181
+    assert r2["ip"]["port_state"] == "open"
+    # Both records resolve the same device identity (same IP the MAC answers on).
+    assert r1["mac"]["found"] is True
+    assert r1["mac"]["ip"] == "10.0.0.50"
+    assert r2["mac"]["ip"] == "10.0.0.50"
+
+
 class TestBuildPortSpec:
     def test_combined(self):
         assert build_port_spec([22, 80], [53, 161]) == "T:22,80,U:53,161"
