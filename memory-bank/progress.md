@@ -1,34 +1,60 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-20 — **Scan debug logging + positive-test seed shipped**
-> (commit after this note; pipeline via `scripts/ship.sh`, then
-> `deploy_dev` plays automatically). Changes: new `app/services/diag_log.py`
-> (opt-in per-scan file logs: self-identity header, self-target WARNING,
-> per-sweep classification/egress, raw tool output + exceptions; gated by
-> `UPSTREAM_HEALER_DEBUG_LOG_DIR`, prod tripwire, capped + rotated, 10
-> tests); scanner + `/api/diagnostic/scan` instrumented; dev compose mounts
-> `/mnt/data/upstream-healer/logs` → `/logs` (base compose untouched —
-> prod stays silent); seeder adds disabled `batcave` + `fash` (real devices,
-> names for the diagnostic page); seed tests updated to 8 hosts.
-> **Why now:** the user's three batcave diagnostic scans came back no-match
-> (arp-scan + "enp6s0 is not a valid numeric value" ERROR / scapy silent /
-> nmap no IP) — that ERROR is the scapy `int("enp6s0")` route bug fixed in
-> `00062a6`, i.e. batcave runs a pre-00062a6 release; deploying the new build
-> ships that fix + the L3/nmap release (b09cd4d) AND turns on logging.
-> `deploy_dev` played via the GitLab API (ship.sh's background wait was
-> reaped by the tool timeout; jobs 999/1000/1001 green, job 1003
-> `deploy_dev` **succeeded** — the sandbox now runs `e650153`, which is
-> the first image containing the `00062a6` scapy route fix + the L3/nmap
-> release). **Deploy revealed:** the "no match" rows were hosts the user
-> had *already* added via the UI — `batcave` (b4:2e…, current_ip NULL) and
-> `flash` (dc:a6…, **ip 192.168.86.37**, enabled) — the page renders
-> `ip_address if ip_address else hostname`, so they showed as nameless
-> "Unresolved (nmap)" rows. The seeder added a second, disabled `batcave`
-> row (port 8787 ≠ the user row's port → duplicate; harmless — tell the
-> user it can be deleted) but NOT a fash duplicate (the user's `flash`
-> row matched the (mac, port) dedupe).
+> Snapshot: 2026-09-24 — **Nameless no-MAC nmap sweep fixed + scan debug log
+> endpoint** (commit `7e091a9`, pipeline 211, `deploy_dev` green, live-verified
+> on batcave). Root cause of `frick`/`frack` never showing in the no-MAC nmap
+> sweep: the reverse-DNS fallback in `app/services/scanner.py` read `.hostname`
+> off `socket.gethostbyaddr()` — which returns a **tuple** — so every lookup
+> threw `AttributeError`, swallowed by `except` → the fallback silently never
+> worked (unit tests mocked a `SimpleNamespace` — wrong shape — so the suite
+> stayed green). Fixed with `gethostbyaddr(ip)[0]` (scan + validate paths) and
+> the 4 mocks switched to the real tuple shape. Also added dev-only
+> `GET /api/diagnostic/scan-log` (404 when `UPSTREAM_HEALER_DEBUG_LOG_DIR`
+> unset or prod) + a "Scan debug log" button/panel on the diagnostic page so
+> any sweep's exact nmap command, raw output, hostname maps, and
+> `reverse-dns attempted=/resolved=` summary are inspectable without box
+> access. **Live result:** 19 hosts swept, **16 labeled** (was 7) —
+> `192.168.86.52 → frack.lan`, `192.168.86.226 → frick.lan`; only .24/.27/.248
+> remain unnamed (no PTR from the dev box's resolver, no mDNS — curated
+> `hosts.current_ip` row remains the escape hatch). 372 tests passing,
+> ruff clean.
 > Verify before acting: `git status`, `git log -5`,
-> `python3 -m pytest tests/ -q` (currently 265 passed, ruff clean).
+> `python3 -m pytest tests/ -q` (currently 372 passed, ruff clean).
+
+## Latest (2026-09-24) — nameless no-MAC sweep fixed + scan debug log endpoint
+
+- **Root cause of the nameless no-MAC sweep was not missing data — the
+  reverse-DNS fallback had been silently dead all along.**
+  `app/services/scanner.py` (`resolve_hostnames` and `resolve_hostname`) called
+  `.hostname` on the result of `socket.gethostbyaddr(ip)` — which returns the
+  tuple `(name, aliases, addrlist)` — no `.hostname` attribute → `AttributeError`
+  on every lookup → swallowed by the bare `except` → every host without a
+  curated/mDNS name rendered `None`. The LAN *does* have PTR records
+  (`frack` = 192.168.86.52, `frick.lan` = 192.168.86.226 — confirmed from the
+  workstation resolver). Fixed with `gethostbyaddr(ip)[0]` + trailing-dot strip
+  in both paths; a `reverse-dns: attempted=/resolved=` line was added to the
+  diag log. nmap's *own* reverse DNS is empty on this LAN (nmap drops a PTR
+  when the forward A doesn't round-trip — raw output: `Host: 192.168.86.52 ()
+  Status: Up`), which is why the app-side fallback is the name source.
+- **The tests masked the bug.** 4 mocks in `tests/test_scanner.py` returned
+  `SimpleNamespace(hostname=…)` — the mock's shape, not the stdlib's. Switched
+  to the real tuple shape so the regression tests exercise the actual code
+  path. Rule (pairs with the `_match_mac_in_output` dict-attrs gotcha in
+  decisions.md): **when mocking a stdlib function, return the real type**.
+- **New "more detail" channel:** `app/services/diag_log.py` gained
+  `recent_scans()` (name/size/mtime/size_str, newest first, capped at 10);
+  `app/main.py` got `GET /api/diagnostic/scan-log` returning the newest
+  `diag_*.log` content (200 KB truncated) + recent-file metadata; 404 when
+  `UPSTREAM_HEALER_DEBUG_LOG_DIR` is unset or `ENV == "production"` (dev-only —
+  base/prod compose never set the dir). The diagnostic page has a "Scan debug
+  log" button + `<pre>` panel (fetch → fill; recent logs listed in the caption).
+  3 new endpoint tests (no-dir 404 / prod 404 / dev 200 + content + files list).
+- **Live-verified after deploy (`7e091a9`, pipeline 211, `deploy_dev` OK):**
+  no-MAC `nmap` sweep → 19 hosts, 16 labeled (pre-fix scan the same day: 7).
+  `192.168.86.52 → frack.lan` (the exact IP the user expected) and
+  `192.168.86.226 → frick.lan`; also pixel-fold.lan, dustinodroid.lan,
+  tl-sg608e.lan, `_gateway`, WDMyCloud, … Unnamed: .24/.27/.248.
+- Tests: 372 passed, ruff clean.
 
 ## Latest (2026-09-23) — host form: quiet-time to bottom, NPM field up, "populate from NPM"
 

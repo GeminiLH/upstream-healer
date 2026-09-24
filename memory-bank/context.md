@@ -1,8 +1,8 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-09-23 (host add/edit form: quiet-time moved to the bottom,
-> NPM Proxy Host ID moved above Domain, and picking an NPM proxy host offers to
-> populate the record incl. a best-effort subnet). Re-verify with `git status` and
+> Last updated: 2026-09-24 (no-MAC nmap sweep now labels hosts via the fixed
+> reverse-DNS fallback; dev-only `GET /api/diagnostic/scan-log` + "Scan debug
+> log" button expose the newest `diag_*.log`). Re-verify with `git status` and
 > `progress.md` before relying on this.
 
 ## Repository (read this first)
@@ -161,12 +161,28 @@ curl -s -m 105 -X POST http://192.168.86.38:8787/api/diagnostic/scan \
   -H 'Content-Type: application/json' \
   -d '{"target_mac":"dc:a6:32:02:59:63","method":"arp-scan","subnet_cidr":"192.168.86.0/24"}'
 # → {found_ip, found_via, output, error, hosts[], subnets}
+
+# No-MAC sweep (L3; hosts labeled by curated/mDNS/reverse-DNS — 2026-09-24+):
+curl -s -m 240 -X POST http://192.168.86.38:8787/api/diagnostic/scan \
+  -H 'Content-Type: application/json' \
+  -d '{"method":"nmap","scan_ports":false}'
+# a run takes 60–120 s → use -m 240 and run it backgrounded (gotcha below)
 ```
 
 `method` ∈ `arp-scan|scapy|nmap`; `subnet_cidr` scopes the sweep (leave `""` +
 `subnet_id:0` for all effective subnets). Use a known-up target so `found_ip`
 populates. Verified the arp-scan `--interface=` fix this way on 2026-09-21
 (17 hosts, `rc=0`, `error=None`, `--interface=enp6s0` in the diag log).
+
+**Scan debug log (dev-only, added 2026-09-24):** `GET
+http://192.168.86.38:8787/api/diagnostic/scan-log` returns the newest per-scan
+log (`diag_*.log`) content (200 KB truncated) plus a `files` metadata list —
+exact nmap command, full raw output, hostname maps, `reverse-dns
+attempted=/resolved=` summary. The diagnostic page has a "Scan debug log"
+button for the same. 404 on test/prod (`UPSTREAM_HEALER_DEBUG_LOG_DIR` unset
+there; also 404 when `ENV == "production"`). The logs also live at
+`/mnt/data/upstream-healer/logs` on batcave (dev compose mounts them to
+`/logs` in the app container).
 
 **Agent-tool gotcha (this sandbox, learned 2026-09-21):** a `run_commands` shell
 is reaped at ~30 s and takes anything backgrounded behind `&`/`nohup` down with

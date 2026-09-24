@@ -1,6 +1,7 @@
 # Architecture — Upstream Healer
 
-> Last updated: 2026-09-23.
+> Last updated: 2026-09-24 (diag_log service + dev-only scan-log endpoint;
+> no-MAC sweeps now labeled via curated-IP / mDNS / reverse-DNS fallback).
 
 ## Repository
 
@@ -24,6 +25,7 @@ upstream-healer/
 │   │   ├── scanner.py       # MAC→IP discovery: arp-scan→scapy sweep; hostnames; mDNS name cache;
 │   │   │                    #   L3 probe for tunnel/routed subnets (scapy ICMP → nmap -sn → ping)
 │   │   ├── mdns.py          # mDNS/avahi browse (zeroconf): live hostnames, runs alongside the sweep
+│   │   ├── diag_log.py      # opt-in per-scan debug logs (dev-only via UPSTREAM_HEALER_DEBUG_LOG_DIR; recent_scans)
 │   │   ├── npm.py           # NPMClient: NPM MariaDB access via docker; proxy_host updates
 │   │   └── notifications.py # EVENT_TYPES; send_event → telegram + email channels
 │   ├── templates/       # Jinja2: base, dashboard, host_form, host_events, notifications,
@@ -86,10 +88,15 @@ Tables: `hosts` (identity = MAC + port, unique), `settings`, `notification_chann
 - Dashboard + host CRUD + notifications + settings pages (templates)
 - `/api/...` JSON endpoints; `/diagnostic` (HTML) + `/api/diagnostic` (JSON)
   expose NPM availability, proxy_host rows, and SQLite host rows.
-- **Diagnostic hostname flow**: `run_scan` runs the ARP sweep (arp-scan→scapy)
-  alongside `mdns.browse_mdns()` (8 s window, returns `{ip:name, mac:name}`);
-  `apply_hostnames` layers known-DB → live-mDNS → cached-mDNS (`mdns_names`) →
-  reverse-DNS and sorts named-first; `remember_mdns_names` persists new names.
+- **Diagnostic hostname flow**: `run_scan` runs the ARP/L3 sweep (arp-scan→scapy,
+  or `nmap -sn` for no-MAC) alongside `mdns.browse_mdns()` (8 s window, returns
+  `{ip:name, mac:name}`); `apply_hostnames` layers known-DB → live-mDNS →
+  cached-mDNS (`mdns_names`) → curated `hosts.current_ip` (for no-MAC sweeps) →
+  reverse-DNS (`socket.gethostbyaddr(ip)[0]` — note the TUPLE; fixed in
+  `7e091a9`) and sorts named-first; `remember_mdns_names` persists new names.
+  Dev-only `GET /api/diagnostic/scan-log` (404 in prod / when
+  `UPSTREAM_HEALER_DEBUG_LOG_DIR` unset) serves the newest `diag_*.log` for
+  post-mortem detail; the diagnostic page has a "Scan debug log" button.
 - **Host add/edit form (`host_form.html`) — "populate from NPM":** field order is
   Name → Local device name → **NPM Proxy Host ID** → Domain → MAC → Current IP →
   Port → Subnet → Grace → Notes → **Quiet time** → Enabled → buttons. The NPM

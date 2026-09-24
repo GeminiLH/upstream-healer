@@ -515,6 +515,35 @@ idempotent re-run reuses them, zero duplicates). Keep these gotchas when editing
   `owner_user_id`/`access_list_id`/`certificate_id` — the current INSERT already
   supplies all three.
 
+## Hostname resolution / reverse DNS (added 2026-09-24)
+
+- **`socket.gethostbyaddr()` returns a TUPLE, not an object.** The
+  reverse-DNS fallback in `scanner.py` (`resolve_hostnames` and
+  `resolve_hostname`) used to read `.hostname` off the result — an attribute
+  that never exists — so **every** lookup raised `AttributeError`, the bare
+  `except` swallowed it, and the fallback silently never worked in production
+  while the unit tests stayed green (they mocked a `SimpleNamespace(hostname=…)`
+  — the mock's shape, not the stdlib's shape). Fixed in `7e091a9`:
+  `gethostbyaddr(ip)[0]`. **Lesson (pairs with the `_match_mac_in_output`
+  dict-attrs gotcha below): when mocking a stdlib function, return the real
+  return type — otherwise the test validates the mock, not the code.**
+- **nmap's own reverse DNS is empty on this LAN.** nmap discards a PTR when the
+  forward A doesn't round-trip, so `nmap -sn -oG` prints `Host: 192.168.86.52
+  ()  Status: Up`; glibc's `gethostbyaddr` (PTR only) resolves fine — that's
+  why the app-side fallback is the name source, and why no-MAC sweeps must not
+  rely on nmap's `Host:` name field. Verified live 2026-09-24: 19 swept hosts,
+  `reverse-dns attempted=19 | resolved=16` (`frack.lan`=192.168.86.52,
+  `frick.lan`=192.168.86.226, plus pixel-fold/dustinodroid/tl-sg608e/
+  `_gateway`…). Hosts with no PTR at all (.24/.27/.248) can be labeled via the
+  curated hosts page — `hosts.current_ip` is the last fallback before mDNS.
+- **Scan-log endpoint is dev-gated by env, not by flag:** `GET
+  /api/diagnostic/scan-log` 404s when `UPSTREAM_HEALER_DEBUG_LOG_DIR` is unset
+  (base/prod compose never set it — dev compose sets `/logs` + mounts
+  `/mnt/data/upstream-healer/logs`) **or** `ENV == "production"`. The
+  env-var gate is the effective one; the ENV tripwire is defense in depth.
+  Do not expose per-scan debug content (raw nmap output incl. self-identity
+  warnings) on test/prod tiers.
+
 ## UI / templates
 
 - **Settings "add subnet" form: 3 fields + how they're used** (template
