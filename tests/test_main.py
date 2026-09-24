@@ -30,11 +30,33 @@ def test_scan_endpoint_rejects_bad_method(temp_db_file):
     assert "Unknown scanner method" in resp.json()["detail"]
 
 
-def test_scan_endpoint_rejects_empty_mac(temp_db_file):
+def test_scan_endpoint_allows_empty_mac_sweep(temp_db_file):
+    # An empty target MAC is now valid: it performs a plain sweep that lists
+    # every host instead of hunting for one specific device.
     client = TestClient(app)
-    resp = client.post("/api/diagnostic/scan", json={"target_mac": "   ", "method": "arp-scan"})
-    assert resp.status_code == 400
-    assert "target_mac is required" in resp.json()["detail"]
+    with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
+         patch(
+            "app.main.run_scan",
+            new=AsyncMock(return_value={"method": "arp-scan", "found_ip": None, "found_via": None, "output": "", "error": None, "hosts": []}),
+         ) as mock_scan:
+        resp = client.post("/api/diagnostic/scan", json={"target_mac": "", "method": "arp-scan"})
+    assert resp.status_code == 200
+    assert mock_scan.call_args.args[0] == ""
+
+
+def test_scan_endpoint_passes_scan_ports(temp_db_file):
+    client = TestClient(app)
+    with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
+         patch(
+            "app.main.run_scan",
+            new=AsyncMock(return_value={"method": "nmap", "found_ip": None, "found_via": None, "output": "", "error": None, "hosts": []}),
+         ) as mock_scan:
+        resp = client.post(
+            "/api/diagnostic/scan",
+            json={"target_mac": "", "method": "nmap", "scan_ports": True},
+        )
+    assert resp.status_code == 200
+    assert mock_scan.call_args.kwargs.get("scan_ports") is True
 
 
 def test_scan_endpoint_scopes_to_subnet_cidr(temp_db_file):

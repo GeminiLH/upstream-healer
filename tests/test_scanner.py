@@ -5,7 +5,7 @@ import json
 import subprocess
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -18,6 +18,7 @@ from app.services.scanner import (
     _usable_hosts,
     apply_hostnames,
     build_port_spec,
+    parse_nmap_services_by_host,
     parse_nmap_services_json,
     parse_nmap_services_xml,
     check_host_reachable,
@@ -31,6 +32,7 @@ from app.services.scanner import (
     is_tunnel_interface,
     list_subnets,
     load_known_hostnames,
+    load_known_hostnames_by_ip,
     load_mdns_names,
     load_suppressed_subnets,
     normalize_mac,
@@ -41,6 +43,7 @@ from app.services.scanner import (
     run_arp_scan,
     run_l3_probe,
     run_nmap_scan,
+    run_port_scan,
     run_scan,
     run_scapy_scan,
     run_service_scan,
@@ -657,6 +660,38 @@ class TestResolveHostnames:
             got = await resolve_hostnames([{"ip": "10.0.0.5", "mac": "aa"}])
         assert got[0]["hostname"] is None
 
+    async def test_existing_hostname_is_kept_and_not_reversed(self):
+        # Reverse DNS is the *last-resort* source: a host that already carries a
+        # name (e.g. parsed from nmap's grepable output) must keep it, and no
+        # gethostbyaddr call is made for it.
+        calls = []
+
+        def fake(addr):
+            calls.append(addr)
+            import types
+
+            return types.SimpleNamespace(hostname="wrong.lan", aliases=[], ipaddr_list=[addr])
+
+        with patch("socket.gethostbyaddr", side_effect=fake):
+            got = await resolve_hostnames(
+                [
+                    {"ip": "10.0.0.5", "mac": None, "hostname": "frick"},
+                    {"ip": "10.0.0.9", "mac": None},
+                ]
+            )
+        assert got[0]["hostname"] == "frick"
+        assert calls == ["10.0.0.9"]  # only the unnamed host was reversed
+
+    async def test_falsy_existing_hostname_is_resolved(self):
+        import types
+
+        with patch(
+            "socket.gethostbyaddr",
+            side_effect=lambda a: types.SimpleNamespace(hostname="a.lan", aliases=[], ipaddr_list=[a]),
+        ):
+            got = await resolve_hostnames([{"ip": "10.0.0.5", "mac": None, "hostname": ""}])
+        assert got[0]["hostname"] == "a.lan"
+
 
 class TestRunScanHosts:
     async def test_result_includes_structured_hosts(self):
@@ -753,12 +788,78 @@ class TestLoadKnownHostnames:
         assert await load_known_hostnames(_BoomDb()) == {}
 
 
+class TestLoadKnownHostnamesByIp:
+    async def test_none_db(self):
+        assert await load_known_hostnames_by_ip(None) == {}
+
+    async def test_maps_current_ip_to_name(self):
+        db = _KnownHostsDb(
+            [
+                {"name": "frick", "current_ip": "10.66.0.7"},
+                {"name": "frack", "current_ip": "10.66.0.9"},
+            ]
+        )
+        assert await load_known_hostnames_by_ip(db) == {
+            "10.66.0.7": "frick",
+            "10.66.0.9": "frack",
+        }
+
+    async def test_skips_blank_rows(self):
+        db = _KnownHostsDb(
+            [
+                {"name": "noip", "current_ip": ""},
+                {"name": "", "current_ip": "10.0.0.5"},
+                {"name": "ok", "current_ip": "10.0.0.6"},
+            ]
+        )
+        assert await load_known_hostnames_by_ip(db) == {"10.0.0.6": "ok"}
+
+    async def test_db_error_returns_empty(self):
+        class _BoomDb:
+            def execute(self, *args, **kwargs):
+                raise RuntimeError("no hosts table")
+
+        assert await load_known_hostnames_by_ip(_BoomDb()) == {}
+
+
 class TestApplyHostnames:
     def test_known_name_wins_over_mdns_and_ptr(self):
         hosts = [{"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "ptr-name"}]
         mdns = ({"10.0.0.5": "mdns-by-ip"}, {"aa:bb:cc:dd:ee:ff": "mdns-by-mac"})
         out = apply_hostnames(hosts, mdns=mdns, known={"aa:bb:cc:dd:ee:ff": "vault"})
         assert out[0]["hostname"] == "vault"
+
+    def test_known_by_ip_labels_macless_routed_host(self):
+        # A routed/tunnel host has no visible MAC — its curated name is matched
+        # by ``current_ip`` instead (the ``frick``/``frack`` case).
+        hosts = [{"ip": "10.0.0.5", "mac": None, "hostname": None}]
+        out = apply_hostnames(hosts, mdns=({}, {}), known={}, known_by_ip={"10.0.0.5": "frick"})
+        assert out[0]["hostname"] == "frick"
+
+    def test_known_by_mac_beats_known_by_ip(self):
+        hosts = [{"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff", "hostname": None}]
+        out = apply_hostnames(
+            hosts,
+            mdns=({}, {}),
+            known={"aa:bb:cc:dd:ee:ff": "vault"},
+            known_by_ip={"10.0.0.5": "other"},
+        )
+        assert out[0]["hostname"] == "vault"
+
+    def test_known_by_ip_beats_mdns_and_ptr(self):
+        hosts = [{"ip": "10.0.0.5", "mac": None, "hostname": "ptr-name"}]
+        out = apply_hostnames(
+            hosts,
+            mdns=({"10.0.0.5": "mdns-by-ip"}, {}),
+            known_by_ip={"10.0.0.5": "frick"},
+        )
+        assert out[0]["hostname"] == "frick"
+
+    def test_known_by_ip_ignored_when_ip_not_listed(self):
+        # No mislabeling: a host whose IP is not a stored ``current_ip`` gets no name.
+        hosts = [{"ip": "10.0.0.99", "mac": None, "hostname": None}]
+        out = apply_hostnames(hosts, mdns=({}, {}), known_by_ip={"10.0.0.5": "frick"})
+        assert out[0]["hostname"] is None
 
     def test_mdns_by_ip_beats_ptr(self):
         hosts = [{"ip": "10.0.0.5", "mac": "aa:bb:cc:dd:ee:ff", "hostname": "ptr-name"}]
@@ -1020,7 +1121,24 @@ class TestL3AliveNmap:
             "- HOSTS: 256 total, 2 up\n"
         )
         with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
-            assert _l3_alive_nmap("10.0.0.0/24", "wg0") == {"10.0.0.5", "10.0.0.7"}
+            assert _l3_alive_nmap("10.0.0.0/24", "wg0") == {
+                # no reverse-DNS name → nmap echoes the IP → hostname stays None
+                "10.0.0.5": {"mac": None, "hostname": None},
+                "10.0.0.7": {"mac": None, "hostname": None},
+            }
+
+    def test_parses_hostname_from_grepable_line(self):
+        # ``nmap -sn`` does reverse DNS by default; the name (possibly with
+        # spaces) rides in the parenthesised part of the ``Host:`` line.
+        out = (
+            "Host: 192.168.1.5 (frick) Status: up\n"
+            "Host: 192.168.1.9 (frick) Status: up\n"
+        )
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            assert _l3_alive_nmap("192.168.1.0/24", None) == {
+                "192.168.1.5": {"mac": None, "hostname": "frick"},
+                "192.168.1.9": {"mac": None, "hostname": "frick"},
+            }
 
     def test_nmap_missing_returns_none(self):
         with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
@@ -1029,7 +1147,22 @@ class TestL3AliveNmap:
     def test_all_down_is_empty(self):
         out = "Host: 10.0.0.99 (10.0.0.99) Status: down\n"
         with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
-            assert _l3_alive_nmap("10.0.0.0/24", None) == set()
+            assert _l3_alive_nmap("10.0.0.0/24", None) == {}
+
+    def test_captures_mac_and_hostname_when_present(self):
+        # A locally-attached host emits a MAC line right after its Host line; a
+        # routed/tunnel host has none (its MAC stays None).  ``nmap -sn`` also
+        # reverse-resolves both, so both carry a hostname.
+        out = (
+            "Host: 192.168.1.5 (frick)\tStatus: Up\n"
+            "MAC Address: aa:bb:cc:dd:ee:ff (VMware)\n"
+            "Host: 192.168.1.9 (flash)\tStatus: Up\n"
+        )
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc(out)):
+            assert _l3_alive_nmap("192.168.1.0/24", None) == {
+                "192.168.1.5": {"mac": "aa:bb:cc:dd:ee:ff", "hostname": "frick"},
+                "192.168.1.9": {"mac": None, "hostname": "flash"},
+            }
 
 
 class TestL3AlivePing:
@@ -1077,13 +1210,31 @@ class TestRunNmapScan:
         with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)) as mock_run, \
              patch("app.services.scanner.classify_subnet",
                    return_value={"kind": "routed", "cidr": "10.0.0.0/24", "iface": "wg0", "egress": "wg0"}), \
-             patch("app.services.scanner._l3_alive_nmap", return_value={"10.0.0.5", "10.0.0.7"}):
+             patch("app.services.scanner._l3_alive_nmap",
+                   return_value={"10.0.0.5": {"mac": None, "hostname": None},
+                                 "10.0.0.7": {"mac": None, "hostname": "box7"}}):
             found, output, error = run_nmap_scan(subnets=["10.0.0.0/24"], interface="wg0")
         assert error is None
         assert "10.0.0.5" in output and "10.0.0.7" in output and "--" in output
         assert "routed via wg0" in output
+        # nmap's reverse-DNS name rides through to the parseable output line
+        assert "hostname:box7" in output
         # the only subprocess call is the `nmap -V` availability probe
         assert mock_run.call_count == 1 and mock_run.call_args[0][0] == ["nmap", "-V"]
+
+    def test_local_host_carries_mac(self):
+        # A locally-attached host (kind "local") carries its real MAC in the
+        # output line — what lets the UI do MAC-keyed hostname lookup.
+        with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)), \
+             patch("app.services.scanner.classify_subnet",
+                   return_value={"kind": "local", "egress": "enp6s0"}), \
+             patch("app.services.scanner._l3_alive_nmap",
+                   return_value={"192.168.1.5": {"mac": "aa:bb:cc:dd:ee:ff", "hostname": "frick"}}):
+            found, output, error = run_nmap_scan(subnets=["192.168.1.0/24"])
+        assert error is None
+        assert "192.168.1.5  aa:bb:cc:dd:ee:ff" in output
+        assert "hostname:frick" in output
+        assert "routed" not in output
 
     def test_nmap_not_installed(self):
         with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
@@ -1102,7 +1253,7 @@ class TestRunNmapScan:
         # the failed CIDR is named in ``error`` while the good subnet's hosts are
         # still returned (the old code returned immediately, losing everything).
         def fake_alive(cidr, egress, kind=None):
-            return None if cidr == "10.0.0.0/24" else {"192.168.100.5"}
+            return None if cidr == "10.0.0.0/24" else {"192.168.100.5": None}
         with patch("app.services.scanner.subprocess.run", return_value=_FakeProc("", code=0)), \
              patch("app.services.scanner.classify_subnet",
                     return_value={"kind": "routed", "egress": "enp6s0"}), \
@@ -1182,11 +1333,30 @@ class TestL3BranchDelegation:
 class TestParseScanOutputL3Line:
     def test_dash_mac_maps_to_none(self):
         hosts = _parse_scan_output("10.0.0.5  --  (routed via wg0, nmap -sn)")
-        assert hosts == [{"ip": "10.0.0.5", "mac": None, "detail": "(routed via wg0, nmap -sn)"}]
+        assert hosts == [
+            {
+                "ip": "10.0.0.5",
+                "mac": None,
+                "detail": "(routed via wg0, nmap -sn)",
+                "hostname": None,
+            }
+        ]
 
     def test_real_mac_parsed(self):
         hosts = _parse_scan_output("10.0.0.5  aa:bb:cc:dd:ee:ff  Vendor")
         assert hosts[0]["mac"] == "aa:bb:cc:dd:ee:ff"
+
+    def test_hostname_token_is_extracted(self):
+        # A name learned by the sweep itself (``nmap -sn`` reverse DNS) is
+        # carried in a trailing ``hostname:<name>`` token; it is lifted out of
+        # ``detail`` (names may contain spaces).
+        hosts = _parse_scan_output("10.0.0.5  --  (routed via wg0, nmap -sn)  hostname:frick")
+        assert hosts[0]["hostname"] == "frick"
+        assert "hostname:" not in hosts[0]["detail"]
+
+    def test_hostname_token_with_spaces(self):
+        hosts = _parse_scan_output("10.0.0.9  --  (routed via wg0, nmap -sn)  hostname:my box")
+        assert hosts[0]["hostname"] == "my box"
 
 
 # ───────────────────────────── Host validation (Validate button) ─────────────────────────────
@@ -1386,7 +1556,14 @@ class TestSweepResponderHosts:
         ):
             rows, error = await sweep_responder_hosts()
         assert error is None
-        assert rows == [{"ip": "192.168.86.9", "mac": "aa:bb:cc:dd:ee:ff", "detail": "VENDOR"}]
+        assert rows == [
+            {
+                "ip": "192.168.86.9",
+                "mac": "aa:bb:cc:dd:ee:ff",
+                "detail": "VENDOR",
+                "hostname": None,
+            }
+        ]
 
     async def test_scapy_fallback_when_arp_scan_fails(self):
         with patch(
@@ -1525,4 +1702,111 @@ class TestValidateHostRecord:
         assert result["mac"] is None
         assert result["ip"] is not None
         assert result["ip"]["mac"] == "aa:bb:cc:dd:ee:ff"
+
+
+class TestParseNmapServicesByHost:
+    def test_groups_by_host(self):
+        doc = (
+            "<nmaprun>"
+            "<host><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports>"
+            "<port protocol=\"tcp\" portid=\"80\"><state state=\"open\"/><service name=\"http\"/></port>"
+            "<port protocol=\"tcp\" portid=\"443\"><state state=\"open\"/><service name=\"https\"/></port>"
+            "</ports></host>"
+            "<host><address addr=\"10.0.0.7\" addrtype=\"ipv4\"/><ports>"
+            "<port protocol=\"tcp\" portid=\"22\"><state state=\"open\"/><service name=\"ssh\"/></port>"
+            "</ports></host>"
+            "</nmaprun>"
+        )
+        out = parse_nmap_services_by_host(doc)
+        assert set(out) == {"10.0.0.5", "10.0.0.7"}
+        assert {p["port"] for p in out["10.0.0.5"]} == {80, 443}
+        assert {p["service"] for p in out["10.0.0.5"]} == {"http", "https"}
+        assert out["10.0.0.7"][0]["service"] == "ssh"
+
+    def test_skips_host_with_no_ports(self):
+        doc = (
+            "<nmaprun>"
+            "<host><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports></ports></host>"
+            "</nmaprun>"
+        )
+        assert parse_nmap_services_by_host(doc) == {}
+
+    def test_empty_and_bad(self):
+        assert parse_nmap_services_by_host("") == {}
+        assert parse_nmap_services_by_host("not xml at all") == {}
+
+
+class TestRunPortScan:
+    def test_no_hosts_is_noop(self):
+        assert run_port_scan([]) == ({}, None)
+
+    def test_nmap_missing_reports_error(self):
+        with patch("app.services.scanner.subprocess.run", side_effect=FileNotFoundError):
+            out, err = run_port_scan(["10.0.0.5"])
+        assert out == {}
+        assert "not installed" in err
+
+    def test_happy_path_scans_all_ports(self):
+        doc = (
+            "<nmaprun><host><address addr=\"10.0.0.5\" addrtype=\"ipv4\"/><ports>"
+            "<port protocol=\"tcp\" portid=\"80\"><state state=\"open\"/><service name=\"http\"/></port>"
+            "</ports></host></nmaprun>"
+        )
+
+        def fake_run(cmd, **_kw):
+            if cmd[:2] == ["nmap", "-V"]:
+                return _FakeProc("", code=0)
+            assert "-p-" in cmd and "-oX" in cmd and "-sT" in cmd
+            return _FakeProc(doc, code=0)
+
+        with patch("app.services.scanner.subprocess.run", side_effect=fake_run):
+            out, err = run_port_scan(["10.0.0.5"], timeout=10)
+        assert err is None
+        assert out["10.0.0.5"][0]["port"] == 80
+        assert out["10.0.0.5"][0]["service"] == "http"
+
+
+class TestRunScanPorts:
+    async def test_scan_ports_attaches_open_ports(self):
+        table = "192.168.86.5  aa:bb:cc:dd:ee:ff  VMWARE\n"
+        with patch("app.services.scanner.run_arp_scan", return_value=(None, table, None)), \
+             patch("app.services.scanner.resolve_hostnames",
+                   new=AsyncMock(side_effect=lambda hosts, **_kw: hosts)), \
+             patch("app.services.scanner.run_port_scan",
+                   new=MagicMock(
+                       return_value=(
+                           {"192.168.86.5": [{"port": 80, "protocol": "tcp", "state": "open", "service": "http"}]},
+                           None,
+                       )
+                   )):
+            result = await run_scan("", "arp-scan", scan_ports=True)
+        assert result["found_ip"] is None
+        assert result["hosts"][0]["ip"] == "192.168.86.5"
+        assert result["hosts"][0]["ports"][0]["port"] == 80
+        assert "ports_error" not in result
+
+    async def test_scan_ports_error_is_reported(self):
+        table = "192.168.86.5  aa:bb:cc:dd:ee:ff  VMWARE\n"
+        with patch("app.services.scanner.run_arp_scan", return_value=(None, table, None)), \
+             patch("app.services.scanner.resolve_hostnames",
+                   new=AsyncMock(side_effect=lambda hosts, **_kw: hosts)), \
+             patch("app.services.scanner.run_port_scan",
+                   new=MagicMock(
+                       return_value=({}, "nmap is not installed; open ports could not be scanned.")
+                   )):
+            result = await run_scan("", "arp-scan", scan_ports=True)
+        assert result["hosts"][0]["ports"] == []
+        assert "nmap is not installed" in result["ports_error"]
+
+    async def test_empty_mac_target_is_plain_sweep(self):
+        table = "192.168.86.5  aa:bb:cc:dd:ee:ff  VMWARE\n"
+        with patch("app.services.scanner.run_arp_scan", return_value=(None, table, None)), \
+             patch("app.services.scanner.resolve_hostnames",
+                   new=AsyncMock(side_effect=lambda hosts, **_kw: hosts)):
+            result = await run_scan("", "arp-scan")
+        assert result["found_ip"] is None
+        assert result["found_via"] is None
+        assert result["error"] is None
+        assert len(result["hosts"]) == 1
+        assert "ports" not in result["hosts"][0]  # no port scan requested
 

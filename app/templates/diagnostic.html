@@ -125,6 +125,12 @@
             {% endfor %}
           </select>
         </div>
+        <div class="sm:self-end">
+          <label class="inline-flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer select-none pb-2">
+            <input type="checkbox" id="scan-ports" checked class="w-4 h-4" />
+            Scan open ports
+          </label>
+        </div>
         <button id="scan-run" type="button"
           class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed sm:self-end">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -163,6 +169,7 @@
                   <th class="px-3 py-2">IP</th>
                   <th class="px-3 py-2">MAC</th>
                   <th class="px-3 py-2">Info</th>
+                  <th class="px-3 py-2">Ports</th>
                 </tr>
               </thead>
               <tbody id="scan-hosts" class="divide-y divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800"></tbody>
@@ -236,6 +243,7 @@
     const hostsBody = document.getElementById('scan-hosts');
     const hostsCount = document.getElementById('scan-hosts-count');
     const methodDescEl = document.getElementById('scan-method-desc');
+    const portsEl = document.getElementById('scan-ports');
 
     function esc(v) {
       const d = document.createElement('div');
@@ -292,21 +300,15 @@
 
     runBtn.addEventListener('click', async () => {
       const mac = macEl.value.trim();
-      if (!mac) {
-        statusEl.textContent = 'Enter a MAC address first.';
-        statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
-        resultEl.classList.remove('hidden');
-        outputEl.textContent = '';
-        return;
-      }
       const method = methodEl.value;
       const subnetId = _selectedSubnetId();
       // Auto-detected subnets have no DB id; the server scopes by CIDR.
       const subnetCidr = subnetEl ? ((subnetEl.selectedOptions[0] || {}).dataset?.cidr || "") : "";
       const scope = subnetId ? subnetId : subnetCidr;
+      const scanPorts = portsEl ? portsEl.checked : false;
       runBtn.disabled = true;
       runLabel.textContent = 'Running…';
-      statusEl.textContent = `Running ${method} for ${mac}${scope ? ' on ' + scope : ''}…`;
+      statusEl.textContent = `Running ${method}${mac ? ' for ' + mac : ''}${scope ? ' on ' + scope : ''}${scanPorts ? ' (scanning open ports…)' : ''}`;
       statusEl.className = 'mb-2 text-sm text-slate-500 dark:text-slate-400';
       resultEl.classList.remove('hidden');
       outputEl.textContent = '…';
@@ -315,7 +317,7 @@
         const res = await fetch('/api/diagnostic/scan', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ target_mac: mac, method: method, subnet_id: subnetId, subnet_cidr: subnetCidr }),
+          body: JSON.stringify({ target_mac: mac, method: method, subnet_id: subnetId, subnet_cidr: subnetCidr, scan_ports: scanPorts }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -324,27 +326,46 @@
           outputEl.textContent = '';
           return;
         }
+        const foundCount = (data.hosts || []).length;
+        let statusMsg;
+        let statusCls = 'mb-2 text-sm';
         if (data.error) {
-          statusEl.textContent = `${method}: ${data.error}`;
-          statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+          statusMsg = `${method}: ${data.error}`;
+          statusCls += ' text-rose-600 dark:text-rose-400';
         } else if (data.found_ip) {
           const fh = (data.hosts || []).find((h) => h.ip === data.found_ip);
-          statusEl.textContent = `Found ${mac} at ${data.found_ip}` +
+          statusMsg = `Found ${mac} at ${data.found_ip}` +
             (fh && fh.hostname ? ` (${fh.hostname})` : '') + ` (via ${data.found_via})`;
-          statusEl.className = 'mb-2 text-sm text-emerald-600 dark:text-emerald-400';
+          statusCls += ' text-emerald-600 dark:text-emerald-400';
+        } else if (mac) {
+          statusMsg = `No match for ${mac} (${method} finished)`;
+          statusCls += ' text-amber-600 dark:text-amber-400';
         } else {
-          statusEl.textContent = `No match for ${mac} (${method} finished)`;
-          statusEl.className = 'mb-2 text-sm text-amber-600 dark:text-amber-400';
+          statusMsg = `Sweep complete: ${foundCount} host${foundCount === 1 ? '' : 's'} found (${method})`;
+          statusCls += ' text-emerald-600 dark:text-emerald-400';
         }
+        if (data.ports_error) {
+          statusMsg += ` · ${data.ports_error}`;
+        }
+        statusEl.textContent = statusMsg;
+        statusEl.className = statusCls;
         outputEl.textContent = data.output || '(no output)';
         const hosts = data.hosts || [];
-        hostsBody.innerHTML = hosts.map((h) =>
-          `<tr class="text-slate-700 dark:text-slate-200">
+        const fmtPorts = (h) => {
+          const list = (h.ports || []).map((p) =>
+            `${p.port}/${p.protocol || 'tcp'}${p.service ? ' ' + p.service : ''}`);
+          return list.length ? list.join(', ') : '';
+        };
+        hostsBody.innerHTML = hosts.map((h) => {
+          const ports = fmtPorts(h);
+          return `<tr class="text-slate-700 dark:text-slate-200">
             <td class="px-3 py-1.5 font-mono">${h.hostname ? esc(h.hostname) : '<span class="text-slate-400 dark:text-slate-600">—</span>'}</td>
             <td class="px-3 py-1.5 font-mono">${esc(h.ip)}</td>
             <td class="px-3 py-1.5 font-mono">${h.mac ? esc(h.mac) : '<span class="text-slate-400 dark:text-slate-600">--</span> <span class="routed-badge" title="Reached via an L3 route (WireGuard/tunnel or gateway), not a local ARP segment">routed</span>'}</td>
             <td class="px-3 py-1.5 text-xs text-slate-500 dark:text-slate-400">${esc(h.detail)}</td>
-          </tr>`).join('');
+            <td class="px-3 py-1.5 text-xs font-mono text-slate-600 dark:text-slate-300">${ports ? esc(ports) : '<span class="text-slate-400 dark:text-slate-600">—</span>'}</td>
+          </tr>`;
+        }).join('');
         hostsCount.textContent = `(${hosts.length})`;
         hostsWrap.classList.toggle('hidden', !hosts.length);
       } catch (err) {

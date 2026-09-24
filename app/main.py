@@ -25,6 +25,7 @@ from app.services.scanner import (
     get_local_interfaces,
     list_subnets,
     load_known_hostnames,
+    load_known_hostnames_by_ip,
     load_mdns_names,
     load_suppressed_subnets,
     normalize_mac,
@@ -1236,10 +1237,11 @@ async def save_settings(
 class ScanRequest(BaseModel):
     """Body for ``POST /api/diagnostic/scan`` — run one scanner on demand."""
 
-    target_mac: str = Field(..., description="MAC address to look for (normalised server-side)")
+    target_mac: str = Field("", description="MAC address to look for; empty = sweep and list every host")
     method: str = Field("arp-scan", description="'arp-scan', 'scapy' or 'nmap'")
     subnet_id: int = Field(0, description="Optional subnet id to scope the scan; 0 = all known subnets")
     subnet_cidr: str = Field("", description="Optional CIDR for auto-detected subnets (they have no DB id)")
+    scan_ports: bool = Field(False, description="Also scan every discovered host's open ports")
 
 
 @app.get("/diagnostic", response_class=HTMLResponse)
@@ -1320,7 +1322,7 @@ async def diagnostic_api(db: aiosqlite.Connection = Depends(get_db)):
 
 @app.post("/api/diagnostic/scan")
 async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(get_db)):
-    """Run an ARP or scapy scan on demand and return the raw output.
+    """Run an ARP, scapy or nmap scan on demand and return the raw output.
 
     The scanner work is executed in a thread pool (see ``run_scan``) so a slow
     ``arp-scan`` never blocks the event loop. Returns the found IP (if any), the
@@ -1333,9 +1335,6 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
     method = body.method.strip().lower()
     if method not in ("arp-scan", "scapy", "nmap"):
         raise HTTPException(status_code=400, detail=f"Unknown scanner method: {body.method!r}")
-    if not body.target_mac.strip():
-        raise HTTPException(status_code=400, detail="target_mac is required")
-
     subnet_ids: list[str] = []
     if body.subnet_id:
         async with db.execute("SELECT cidr FROM subnets WHERE id = ?", (body.subnet_id,)) as cur:
@@ -1359,11 +1358,14 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
         # Kick off mDNS hostname discovery concurrently with the (blocking) ARP
         # sweep so the multicast window overlaps the scan instead of adding to it.
         mdns_task = asyncio.create_task(discover_hostnames())
-        result = await run_scan(body.target_mac, method, subnets=subnet_ids or None)
+        result = await run_scan(
+            body.target_mac, method, subnets=subnet_ids or None, scan_ports=body.scan_ports
+        )
         result["subnets"] = subnet_ids
         logger.info(
-            f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac)} "
-            f"subnets={subnet_ids} found_ip={result['found_ip']} error={result['error']}"
+            f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac) or '(sweep)'} "
+            f"subnets={subnet_ids} scan_ports={body.scan_ports} "
+            f"found_ip={result['found_ip']} error={result['error']}"
         )
         # Layer real hostnames onto the swept hosts (curated DB name, then mDNS,
         # then the usually-empty reverse-DNS result).  Best-effort: a discovery
@@ -1383,16 +1385,22 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
         except Exception:  # noqa: BLE001
             known_names = {}
         try:
+            known_by_ip = await load_known_hostnames_by_ip(db)
+        except Exception:  # noqa: BLE001
+            known_by_ip = {}
+        try:
             cached_names = await load_mdns_names(db)
         except Exception:  # noqa: BLE001
             cached_names = {}
         hosts = result.get("hosts") or []
         result["hosts"] = apply_hostnames(
-            hosts, mdns=mdns_names, known=known_names, cached=cached_names
+            hosts, mdns=mdns_names, known=known_names, cached=cached_names,
+            known_by_ip=known_by_ip,
         )
         diag_log.emit(
             "hostnames",
             f"known_names={known_names}",
+            f"known_by_ip={known_by_ip}",
             f"mdns_live={mdns_names[0]}",
             f"mdns_cached_source={mdns_names[1]}",
             f"cached_names={cached_names}",

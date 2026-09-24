@@ -59,6 +59,7 @@ async def run_scan(
     method: str = "arp-scan",
     interface: Optional[str] = None,
     subnets: Optional[list[str]] = None,
+    scan_ports: bool = False,
 ) -> dict:
     """Run one scanner and return a JSON-ready dict for the diagnostic UI.
 
@@ -94,15 +95,25 @@ async def run_scan(
         if not error:
             found_ip = _match_mac_in_output(target_mac, output, subnets=subnets)
 
+    hosts = await resolve_hostnames(_parse_scan_output(output, subnets=subnets))
+    ports_error: Optional[str] = None
+    if scan_ports and hosts:
+        port_map, ports_error = await asyncio.to_thread(
+            run_port_scan, [h["ip"] for h in hosts]
+        )
+        for h in hosts:
+            h["ports"] = port_map.get(h["ip"], [])
     result = {
         "method": method,
         "found_ip": found_ip,
         "found_via": method if found_ip else None,
         "output": output,
         "error": error,
-        # Structured view of the sweep for the UI (IP / MAC / hostname).
-        "hosts": await resolve_hostnames(_parse_scan_output(output, subnets=subnets)),
+        # Structured view of the sweep for the UI (IP / MAC / hostname / ports).
+        "hosts": hosts,
     }
+    if ports_error:
+        result["ports_error"] = ports_error
     return result
 
 
@@ -111,7 +122,10 @@ def _parse_scan_output(output: str, subnets: Optional[list[str]] = None) -> list
 
     Both scanner output shapes share the same first two columns (IP, MAC):
     arp-scan's ``ip  mac  vendor`` and scapy's synthetic ``ip  mac  (via net)``.
-    ``detail`` keeps whatever trailing columns exist.  When ``subnets`` is
+    ``detail`` keeps whatever trailing columns exist.  An optional trailing
+    ``hostname:<name>`` token (emitted by :func:`_host_line` when the sweep
+    itself resolved a name, e.g. ``nmap -sn`` reverse DNS) is moved into the
+    host's ``hostname`` field and stripped from ``detail``.  When ``subnets`` is
     given, responders outside them are dropped (same rule as the raw filter).
     """
     hosts: list[dict] = []
@@ -133,7 +147,21 @@ def _parse_scan_output(output: str, subnets: Optional[list[str]] = None) -> list
         if key in seen:
             continue
         seen.add(key)
-        hosts.append({"ip": parts[0], "mac": mac, "detail": " ".join(parts[2:])})
+        detail_parts = list(parts[2:])
+        hostname = None
+        for i, tok in enumerate(detail_parts):
+            if tok.startswith("hostname:"):
+                val = tok.split("hostname:", 1)[1]
+                if i + 1 < len(detail_parts):
+                    # The name may contain spaces — take everything after the token.
+                    val = f"{val} " + " ".join(detail_parts[i + 1 :])
+                if val:
+                    hostname = val
+                detail_parts = detail_parts[:i]
+                break
+        hosts.append(
+            {"ip": parts[0], "mac": mac, "detail": " ".join(detail_parts), "hostname": hostname}
+        )
     return hosts
 
 
@@ -142,11 +170,17 @@ async def resolve_hostnames(hosts: list[dict], limit: int = 256) -> list[dict]:
 
     Mirrors what ``ip neigh`` does: NSS resolution (files, then DNS/PTR).
     Runs in the thread pool — a slow or wedged resolver must not stall the
-    event loop; failures simply leave ``hostname`` as ``None``.
+    event loop; failures simply leave ``hostname`` as ``None``.  This is the
+    *last-resort* naming source: a host that already carries a name parsed from
+    the scanner output (e.g. ``nmap -sn``'s reverse DNS in its grepable
+    ``Host:`` lines) keeps it — reverse DNS from this machine is the
+    lowest-confidence source.
     """
     import socket
 
     async def _one(host: dict) -> None:
+        if host.get("hostname"):
+            return  # already named — reverse DNS is only the fallback
         try:
             host["hostname"] = (await asyncio.to_thread(socket.gethostbyaddr, host["ip"])).hostname
         except Exception:  # noqa: BLE001 - best-effort; display falls back to IP
@@ -177,6 +211,31 @@ async def load_known_hostnames(db) -> dict[str, str]:
                 name = (row["name"] or "").strip()
                 if mac and name:
                     out[mac] = name
+    except Exception:  # noqa: BLE001 - a missing/odd table shouldn't abort a scan
+        return {}
+    return out
+
+
+async def load_known_hostnames_by_ip(db) -> dict[str, str]:
+    """Map ``current_ip -> name`` for every monitored host that has a stored IP.
+
+    An IP is a weaker identity than a MAC (an address can be reassigned), so the
+    caller should prefer the MAC-keyed lookup (:func:`load_known_hostnames`).
+    This exists so a swept host whose source MAC is not visible from this side —
+    the routed/tunnel hosts that show ``--`` — can still be labelled with the
+    user's curated name when it answers at its last known address.  A ``None``
+    ``db`` (a bare worker thread with no connection) yields ``{}``.
+    """
+    if db is None:
+        return {}
+    out: dict[str, str] = {}
+    try:
+        async with db.execute("SELECT name, current_ip FROM hosts") as cursor:
+            for row in await cursor.fetchall():
+                ip = (row["current_ip"] or "").strip()
+                name = (row["name"] or "").strip()
+                if ip and name:
+                    out[ip] = name
     except Exception:  # noqa: BLE001 - a missing/odd table shouldn't abort a scan
         return {}
     return out
@@ -247,14 +306,17 @@ def apply_hostnames(
     mdns: Optional[tuple[dict[str, str], dict[str, str]]] = None,
     known: Optional[dict[str, str]] = None,
     cached: Optional[dict[str, str]] = None,
+    known_by_ip: Optional[dict[str, str]] = None,
 ) -> list[dict]:
     """Assign a ``hostname`` to each swept host from every available source.
 
     Priority (highest first): a monitored host's curated DB name (matched by
-    MAC), then an mDNS/avahi name discovered *this* scan (by IP, then by MAC),
-    then the persistent mDNS cache (by MAC, from prior scans), then the
-    reverse-DNS value ``resolve_hostnames`` already stored on the host.  A host
-    with no matching name keeps ``hostname=None`` (the UI renders ``—``).
+    MAC), then that same curated name matched by ``current_ip`` (so routed/
+    tunnel hosts with no visible MAC are still labelled), then an mDNS/avahi
+    name discovered *this* scan (by IP, then by MAC), then the persistent mDNS
+    cache (by MAC, from prior scans), then the scanner-provided / reverse-DNS
+    value already stored on the host.  A host with no matching name keeps
+    ``hostname=None`` (the UI renders ``—``).
 
     Returns the hosts ordered named-first, the rest in their original relative
     order — a sensible display order for the diagnostic table.
@@ -265,6 +327,7 @@ def apply_hostnames(
         mdns_ip = mdns[0] or {}
         mdns_mac = mdns[1] or {}
     known = known or {}
+    known_by_ip = known_by_ip or {}
     cached = cached or {}
 
     for h in hosts:
@@ -272,6 +335,7 @@ def apply_hostnames(
         mac = normalize_mac(h.get("mac") or "")
         h["hostname"] = (
             known.get(mac)
+            or (known_by_ip.get(ip) if ip else None)
             or (mdns_ip.get(ip) if ip else None)
             or (mdns_mac.get(mac) if mac else None)
             or (cached.get(mac) if mac else None)
@@ -1083,13 +1147,19 @@ _NMAP_TIMEOUT_L3 = 30
 
 def _l3_alive_nmap(
     cidr: str, egress: Optional[str], kind: Optional[str] = None,
-) -> Optional[set]:
-    """Host discovery via ``nmap -sn`` (robust: ICMP + TCP/UDP probes).  Returns the
-    set of live IPs, or ``None`` when ``nmap`` is absent or the run fails.
+) -> Optional[dict[str, dict[str, Optional[str]]]]:
+    """Host discovery via ``nmap -sn`` (robust: ICMP + TCP/UDP probes).  Returns a
+    mapping of live IP → ``{"mac": …, "hostname": …}`` — ``mac`` is ``None`` when
+    nmap reports no MAC (e.g. a routed/tunnel host) and ``hostname`` is the
+    reverse-DNS name nmap resolved (``None`` when it had none) — or ``None``
+    when ``nmap`` is absent or the run fails.
 
     Runs ``nmap -sn -oG -`` (grepable output to stdout) and parses the
     ``Host: <ip> (…) Status: up`` lines — the stable machine-readable format, which
-    is far more reliable than scraping nmap's human-readable banner.
+    is far more reliable than scraping nmap's human-readable banner.  ``nmap -sn``
+    performs reverse DNS by default, so the parenthesised part of that line
+    carries the host's name (``Host: 192.168.1.5 (frick)``); when no name exists
+    nmap simply echoes the IP back, which we treat as "no hostname".
 
     ``kind`` is the :func:`classify_subnet` result for ``cidr``; when omitted it is
     re-derived.  Routed/tunnel subnets (``kind`` in tunnel/routed) sweep a single
@@ -1125,16 +1195,47 @@ def _l3_alive_nmap(
             "stderr=" + (proc.stderr or "").strip()[:800],
         )
         return None
-    alive = set()
+    alive: dict[str, dict[str, Optional[str]]] = {}
+    pending_ip: Optional[str] = None
     for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) < 2 or parts[0] != "Host:" or "Status:" not in parts:
+        s = line.strip()
+        if s.startswith("Host:"):
+            parts = s.split()
+            ip = parts[1].split("(", 1)[0].strip() if len(parts) > 1 else ""
+            up = False
+            if "Status:" in parts:
+                i = parts.index("Status:")
+                up = i + 1 < len(parts) and parts[i + 1].lower() == "up"
+            if up and re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip):
+                # Reverse-DNS name from the ``Host: <ip> (<name>)`` line.  When
+                # nmap has no name it echoes the IP itself — keep that as None.
+                # The name (e.g. ``My PC``) may contain spaces, hence the regex
+                # over the raw line rather than the split columns.
+                hostname = None
+                name_m = re.search(r"\(([^()]+)\)", s)
+                if name_m:
+                    cand = name_m.group(1).strip()
+                    if cand and cand != ip:
+                        hostname = cand
+                alive[ip] = {"mac": None, "hostname": hostname}
+                pending_ip = ip
+                continue
+            pending_ip = None
             continue
-        i = parts.index("Status:")
-        if i + 1 >= len(parts) or parts[i + 1].lower() != "up":
-            continue
-        if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", parts[1]):
-            alive.add(parts[1])
+        # The ``MAC Address:`` line follows its ``Host:`` line for a locally
+        # attached (ARP-visible) host; attach it to that IP so the diagnostic
+        # can do MAC-keyed hostname lookup.  Routed/tunnel hosts have none.
+        if (
+            s.startswith("MAC Address:")
+            and pending_ip is not None
+            and alive.get(pending_ip, {}).get("mac") is None
+        ):
+            mparts = s.split()
+            if len(mparts) >= 3 and re.fullmatch(
+                r"([0-9a-f]{2}[:-]){5}[0-9a-f]{2}", mparts[2].lower()
+            ):
+                alive[pending_ip]["mac"] = normalize_mac(mparts[2])
+        pending_ip = None
     return alive
 
 
@@ -1162,11 +1263,16 @@ def _l3_alive_ping(hosts: list[str], egress: Optional[str], concurrency: int = 3
     return alive
 
 
-def _host_line(ip: str, mac: str, routed: bool, egress: Optional[str], via: str) -> str:
+def _host_line(ip: str, mac: str, routed: bool, egress: Optional[str], via: str, hostname: Optional[str] = None) -> str:
     """Format one discovered host as a parseable scanner line:
-    ``<ip>  <mac-or---->  (<tag>)``.  ``--`` means "no locally‑resolvable MAC"."""
+    ``<ip>  <mac-or---->  (<tag>)`` — optionally suffixed `` hostname:<name>``
+    when the sweep itself learned a name for the host (``nmap -sn`` reverse
+    DNS).  ``--`` means "no locally‑resolvable MAC"."""
     tag = f"routed via {egress or 'L3'}" if routed else f"on {egress or 'local'}"
-    return f"{ip}  {mac or '--'}  ({tag}, {via})"
+    line = f"{ip}  {mac or '--'}  ({tag}, {via})"
+    if hostname:
+        line += f"  hostname:{hostname}"
+    return line
 
 
 def run_l3_probe(
@@ -1205,8 +1311,16 @@ def run_l3_probe(
 
     # L3 hosts have no locally‑visible source MAC — the real one sits on the far
     # side of the tunnel/gateway.  Emit "--" rather than the misleading gateway MAC.
+    # Only the nmap probe learns hostnames (reverse DNS); scapy/ping sweeps do not.
     lines = [
-        _host_line(ip, "--", True, egress, via)
+        _host_line(
+            ip,
+            "--",
+            True,
+            egress,
+            via,
+            hostname=(alive.get(ip) or {}).get("hostname") if type(alive) is dict else None,
+        )
         for ip in sorted(alive)
     ]
     output = "\n".join(lines)
@@ -1223,7 +1337,9 @@ def run_nmap_scan(
 
     ``nmap -sn`` uses ARP for locally‑attached networks and ICMP/ping probes for
     routed/tunnel ones, so it shows real hosts on *both* without the tunnel
-    returning only the gateway.  Returns ``(found_ip, output, error)``.
+    returning only the gateway.  Locally-attached hosts carry their source MAC
+    (so the UI's MAC-keyed hostname lookup works); routed/tunnel hosts have no
+    visible MAC and emit ``--``.  Returns ``(found_ip, output, error)``.
 
     A probe failure on *one* subnet no longer aborts the whole scan: the failed
     CIDR is noted and the remaining subnets are still swept.  ``error`` is set
@@ -1267,7 +1383,17 @@ def run_nmap_scan(
             continue
         routed = cls["kind"] in ("tunnel", "routed")
         for ip in sorted(alive):
-            lines.append(_host_line(ip, "--", routed, cls["egress"], "nmap -sn"))
+            entry = alive.get(ip) or {}
+            lines.append(
+                _host_line(
+                    ip,
+                    entry.get("mac"),
+                    routed,
+                    cls["egress"],
+                    "nmap -sn",
+                    hostname=entry.get("hostname"),
+                )
+            )
     output = "\n".join(line for line in lines if line)
     found_ip = _match_mac_in_output(target_mac, output, subnets=subnets) if target_mac else None
     if failures and not lines:
@@ -1485,6 +1611,44 @@ def parse_nmap_services_xml(raw: str) -> list[dict]:
     return ports
 
 
+def parse_nmap_services_by_host(raw: str) -> dict[str, list[dict]]:
+    """Group ``nmap -oX`` ports by their host IPv4 address.
+
+    Returns ``{ip: [{"port", "protocol", "state", "service"}]}`` for every host
+    that reported an IPv4 address and at least one port.  Mirrors
+    :func:`parse_nmap_services_xml` but keeps the per-host grouping the diagnostic
+    multi-host port scan needs (that helper is for single-host probes).  Only
+    hosts with ports are included — with ``--open`` nmap reports open ports only,
+    so these are exactly the open ports.  Unparseable/empty input yields ``{}``.
+    """
+    if not raw or "<nmaprun" not in raw:
+        return {}
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return {}
+    out: dict[str, list[dict]] = {}
+    for host in root.iter("host"):
+        addr_el = host.find("address[@addrtype='ipv4']")
+        addr = addr_el.get("addr") if addr_el is not None else None
+        if not addr:
+            continue
+        ports: list[dict] = []
+        for port in host.iter("port"):
+            state_el = port.find("state")
+            svc_el = port.find("service")
+            portid = port.get("portid") or ""
+            ports.append({
+                "port": int(portid) if portid.isdigit() else None,
+                "protocol": port.get("protocol"),
+                "state": state_el.get("state") if state_el is not None else None,
+                "service": svc_el.get("name") if svc_el is not None and svc_el.get("name") else None,
+            })
+        if ports:
+            out[addr] = ports
+    return out
+
+
 def run_service_scan(
     ip: str,
     tcp_ports: Optional[list[int]] = None,
@@ -1530,6 +1694,51 @@ def run_service_scan(
         return [], f"nmap produced no results (rc={proc.returncode})" + (f": {detail[:300]}" if detail else "")
     diag_log.emit("run_service_scan", f"target={ip}", f"rc={proc.returncode}", f"ports={len(services)}")
     return services, None
+
+
+def run_port_scan(
+    hosts: list[str], timeout: Optional[float] = None,
+) -> tuple[dict[str, list[dict]], Optional[str]]:
+    """Connect-scan ALL TCP ports of the given live hosts → ``{ip: [open ports]}``.
+
+    Diagnostic aid (the /diagnostic "scan open ports" option), NOT a recovery
+    path.  Runs ``nmap -Pn -sT --open -p- …`` over the already-discovered hosts —
+    no version detection, so a full 65535-port connect scan stays quick enough to
+    fan out over many hosts at once — and parses the XML grouped by host.  A
+    failure (missing binary, timeout, unusable output) degrades to an empty map
+    plus an error string; it never raises and never runs past its bounded timeout.
+    """
+    hosts = [h for h in (hosts or []) if h]
+    if not hosts:
+        return {}, None
+    try:
+        subprocess.run(["nmap", "-V"], capture_output=True, text=True, timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}, "nmap is not installed; open ports could not be scanned."
+    if timeout is None:
+        # Bound the wall clock: a fixed floor plus headroom per host, capped so a
+        # crowded subnet can't hang the request for minutes on end.
+        timeout = min(600, 60 + 20 * len(hosts))
+    cmd = [
+        "nmap", "-Pn", "-sT", "--open", "-p-",
+        "-T4", "--max-retries", "1", "--host-timeout", "45s",
+        "-oX", "-", *hosts,
+    ]
+    diag_log.emit("port-scan", f"hosts={len(hosts)}", f"timeout={int(timeout)}s")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return {}, "nmap binary not found"
+    except subprocess.TimeoutExpired:
+        return {}, f"port scan timed out after {int(timeout)}s"
+    except OSError as exc:
+        return {}, f"port scan failed: {exc}"
+    diag_log.proc("port-scan", cmd, proc)
+    by_host = parse_nmap_services_by_host(proc.stdout or "")
+    diag_log.emit(
+        "port-scan", f"rc={proc.returncode}", f"hosts_with_open_ports={len(by_host)}"
+    )
+    return by_host, None
 
 
 async def probe_services(
