@@ -359,6 +359,43 @@ def test_validate_rejects_out_of_range_port(temp_db_file):
     assert resp.status_code == 422
 
 
+# ─────────────────────── Validate (add-host screen, not saved yet) ───────────────────────
+
+
+def test_new_host_validate_route_registered():
+    paths = {route.path for route in app.routes}
+    assert "/hosts/validate" in paths
+
+
+def test_new_host_validate_returns_result(temp_db_file):
+    with patch(
+        "app.main.validate_host_record", new=AsyncMock(return_value=_VALIDATION_RESULT)
+    ) as mock_val:
+        resp = TestClient(app).post(
+            "/hosts/validate",
+            json={"name": "vault", "mac": "aa:bb:cc:dd:ee:ff", "port": 80},
+        )
+    assert resp.status_code == 200
+    assert resp.json() == _VALIDATION_RESULT
+    kw = mock_val.call_args.kwargs
+    assert kw["name"] == "vault"
+    assert kw["mac"] == "aa:bb:cc:dd:ee:ff"
+    assert kw["port"] == 80
+    # Logged (no notify) but attached to no saved host.
+    assert _count_events(temp_db_file) == 1
+
+
+def test_new_host_validate_rejects_no_targets(temp_db_file):
+    resp = TestClient(app).post("/hosts/validate", json={"mac": "", "ip": ""})
+    assert resp.status_code == 400
+    assert "Nothing to validate" in resp.json()["detail"]
+
+
+def test_new_host_validate_rejects_out_of_range_port(temp_db_file):
+    resp = TestClient(app).post("/hosts/validate", json={"ip": "1.2.3.4", "port": 99999})
+    assert resp.status_code == 422
+
+
 def test_validate_scopes_sweep_to_pinned_subnet(temp_db_file):
     import aiosqlite
     import asyncio
@@ -390,10 +427,13 @@ def test_edit_page_shows_validate_button(temp_db_file, npm_client):
     assert "Validate" in resp.text
 
 
-def test_add_page_has_no_validate_button(temp_db_file, npm_client):
+def test_add_page_has_validate_button(temp_db_file, npm_client):
     resp = TestClient(app).get("/hosts/add")
     assert resp.status_code == 200
-    assert 'id="validate-btn"' not in resp.text
+    assert 'id="validate-btn"' in resp.text
+    # On the add form nothing is saved yet, so the button carries no host id —
+    # it posts to the no-host-id endpoint.
+    assert 'data-host-id=""' in resp.text
 
 
 # ───────────────────────────── MAC + port uniqueness ─────────────────────────────
@@ -494,9 +534,10 @@ def test_add_host_mac_port_conflict_is_prevented(temp_db_file):
     assert "bravo" in resp.text
     # No new host was created.
     assert _host_count(temp_db_file) == 1
-    # The repopulated add form shows no controls for a non-existent host.
-    assert 'id="validate-btn"' not in resp.text
+    # The repopulated add form has no delete control for a non-existent host,
+    # but now does expose the hostless Validate button to help populate it.
     assert "/hosts//delete" not in resp.text
+    assert 'id="validate-btn"' in resp.text
 
 
 def test_add_host_same_mac_different_port_is_allowed(temp_db_file):

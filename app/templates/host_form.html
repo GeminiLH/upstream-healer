@@ -225,8 +225,7 @@
         Save
       </button>
       {% endif %}
-      {% if host and host.id %}
-      <button type="button" id="validate-btn" data-host-id="{{ host.id }}"
+      <button type="button" id="validate-btn" data-host-id="{{ host.id if host and host.id else '' }}"
         class="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600
                text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition"
         title="Check this host against the live network (MAC ↔ IP, hostname, open ports) without changing anything">
@@ -236,7 +235,6 @@
         </svg>
         <span id="validate-btn-label">Validate</span>
       </button>
-      {% endif %}
       <a href="/" class="px-5 py-2.5 text-sm rounded-lg btn-secondary">
         Cancel
       </a>
@@ -265,7 +263,7 @@
         if (subnetAvailable) lines.push(`  Subnet       → ${subnet}`);
         if (lines.length <= 2) return;
         if (!confirm(lines.join('\n'))) return;
-        if (ip) form.elements['current_ip'].value = ip;
+        if (ip) { form.elements['current_ip'].value = ip; form.elements['current_ip'].dispatchEvent(new Event('input')); }
         if (port) form.elements['port'].value = port;
         if (domain) form.elements['domain'].value = domain;
         if (subnetAvailable) form.elements['subnet_id'].value = subnet;
@@ -280,6 +278,7 @@
       Delete this host
     </button>
   </form>
+  {% endif %}
 
   <div id="validate-modal" class="fixed inset-0 z-50 hidden" role="dialog" aria-modal="true"
     aria-labelledby="validate-modal-title">
@@ -288,7 +287,7 @@
       <div class="relative w-full max-w-2xl mx-auto mt-10 sm:mt-16 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700">
         <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
           <h2 id="validate-modal-title"
-            class="text-lg font-semibold text-slate-900 dark:text-slate-100">Validation — {{ host.name }}</h2>
+            class="text-lg font-semibold text-slate-900 dark:text-slate-100">Validation — {{ host.name if host and host.name else 'New host' }}</h2>
           <button id="validate-close" class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
             aria-label="Close">
             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -303,9 +302,7 @@
       </div>
     </div>
   </div>
-  {% endif %}
 
-  {% if host and host.id %}
   <script>
     (function () {
       const btn = document.getElementById('validate-btn');
@@ -315,6 +312,27 @@
       const body = document.getElementById('validate-body');
       const form = btn.closest('form');
       const hostId = btn.getAttribute('data-host-id');
+      // The Validate button is actionable only once a MAC or an IP is typed —
+      // that is the minimal target for a sweep. Toggling this live lets the
+      // operator know when they can validate to populate the record.
+      const macField = form.elements['mac_address'];
+      const ipField = form.elements['current_ip'];
+      function validateReady() {
+        return !!(
+          (macField && String(macField.value || '').trim()) ||
+          (ipField && String(ipField.value || '').trim())
+        );
+      }
+      function syncValidateState() {
+        const ready = validateReady();
+        btn.disabled = !ready;
+        btn.classList.toggle('opacity-50', !ready);
+        btn.classList.toggle('cursor-not-allowed', !ready);
+      }
+      [macField, ipField].forEach((el) => {
+        if (el) el.addEventListener('input', syncValidateState);
+      });
+      syncValidateState();
       const closeBtn = document.getElementById('validate-close');
       const backdrop = document.getElementById('validate-backdrop');
 
@@ -423,13 +441,15 @@
         body.innerHTML = '<p class="text-sm text-slate-500 dark:text-slate-400 animate-pulse">Sweeping the network and probing services — this can take up to a minute…</p>';
         modal.classList.remove('hidden');
         const payload = {
+          name: form.elements['name'] ? form.elements['name'].value : '',
           mac: form.elements['mac_address'].value,
           ip: form.elements['current_ip'].value,
           port: parseInt(form.elements['port'].value || '0', 10) || 0,
           subnet_cidr: form.elements['subnet_id'].value,
         };
         try {
-          const res = await fetch(`/hosts/${hostId}/validate`, {
+          const url = hostId ? `/hosts/${hostId}/validate` : '/hosts/validate';
+          const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -443,8 +463,8 @@
         } catch (err) {
           body.innerHTML = `<p class="text-sm text-rose-600 dark:text-rose-400">Request failed: ${esc(err)}</p>`;
         } finally {
-          btn.disabled = false;
           label.textContent = 'Validate';
+          syncValidateState();
         }
       });
 
@@ -455,6 +475,5 @@
       });
     })();
   </script>
-  {% endif %}
 </div>
 {% endblock %}

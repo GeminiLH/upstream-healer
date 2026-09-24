@@ -689,6 +689,80 @@ class ValidateHostRequest(BaseModel):
     subnet_cidr: str = ""
 
 
+class ValidateNewHostRequest(BaseModel):
+    """Values *currently in the add form* — the host is not saved yet, so there
+    is no stored row to fall back to and no host_id to attach the results to.
+    ``name`` is the (not-yet-unique) label the operator is typing, used only
+    for logging. At least one of ``mac``/``ip`` must be present to sweep."""
+
+    name: str = ""
+    mac: str = ""
+    ip: str = ""
+    port: int = Field(0, ge=0, le=65535)
+    subnet_cidr: str = ""
+
+
+@app.post("/hosts/validate")
+async def validate_new_host(body: ValidateNewHostRequest, db: aiosqlite.Connection = Depends(get_db)):
+    """Validate a *not-yet-saved* host's entered MAC/IP (log-only) so the
+    operator can populate the add-host record from the results: for the entered
+    MAC, the IP it answers on + hostname + open ports; for the entered IP, its
+    MAC, hostname and open ports. Returns the same UI JSON as the edit screen's
+    validate. Never mutates anything and attaches to no saved host (none exists
+    yet), so the logged event has no host_id.
+    """
+    mac = (body.mac or "").strip()
+    ip = (body.ip or "").strip()
+    if not mac and not ip:
+        raise HTTPException(status_code=400, detail="Nothing to validate: enter a MAC address or an IP first")
+    port = body.port or 80
+
+    # Sweep scope: the add form's subnet dropdown (a CIDR) → every enabled subnet.
+    import ipaddress as _ip
+
+    subnets = None
+    if body.subnet_cidr:
+        try:
+            _ip.ip_network(body.subnet_cidr, strict=False)
+            subnets = [body.subnet_cidr]
+        except ValueError:
+            subnets = None
+    if subnets is None:
+        subnets = [s["cidr"] for s in await list_subnets(db) if s.get("enabled", 1)]
+
+    name = (body.name or "").strip() or "new host"
+    with diag_log.scan_context(
+        target_mac=mac or "none", method="validate", subnets=subnets
+    ):
+        result = await validate_host_record(
+            db, name=name, mac=mac, ip=ip, port=port, subnet_cidrs=subnets or None
+        )
+
+    mac_res = result.get("mac") or {}
+    ip_res = result.get("ip") or {}
+    summary = []
+    if mac_res:
+        summary.append(
+            f"MAC {mac_res.get('target')} found at {mac_res.get('ip')}"
+            if mac_res.get("found")
+            else f"MAC {mac} not found on swept networks"
+        )
+    if ip_res:
+        summary.append(f"{ip} answers as {ip_res.get('mac') or 'no MAC (routed)'}")
+    message = f"Validation for {name} (port {port}): " + ("; ".join(summary) if summary else "no results")
+    await send_event(
+        db, "manual", message.strip() or f"Validation for {name}",
+        details=(
+            f"requested: mac={mac or 'none'}, ip={ip or 'none'}, port={port}; "
+            f"found: mac.ip={mac_res.get('ip') or 'none'}, ip.mac={ip_res.get('mac') or 'none'}; "
+            f"hostname: {ip_res.get('hostname') or mac_res.get('hostname') or 'none'}"
+        ),
+        host_id=None,
+        notify=False,
+    )
+    return result
+
+
 @app.post("/hosts/{host_id}/validate")
 async def validate_host(host_id: int, body: ValidateHostRequest, db: aiosqlite.Connection = Depends(get_db)):
     """Validate a host's entered details against the live network (log-only).
