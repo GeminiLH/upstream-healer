@@ -296,8 +296,18 @@
           </button>
         </div>
         <div id="validate-body" class="px-6 py-4 max-h-[70vh] overflow-y-auto"></div>
-        <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
-          Log-only check — nothing was changed. Use these results to correct the form above, then press Save.
+        <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
+          <p class="text-xs text-slate-500 dark:text-slate-400">Log-only — nothing is saved until you press Save.</p>
+          <div class="flex items-center gap-2 shrink-0">
+            <button type="button" id="validate-cancel"
+              class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition">
+              Cancel
+            </button>
+            <button type="button" id="validate-save" disabled
+              class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 transition disabled:opacity-50 disabled:cursor-not-allowed">
+              Save
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -335,6 +345,9 @@
       syncValidateState();
       const closeBtn = document.getElementById('validate-close');
       const backdrop = document.getElementById('validate-backdrop');
+      const saveBtn = document.getElementById('validate-save');
+      const cancelBtn = document.getElementById('validate-cancel');
+      let lastData = null;
 
       function esc(v) {
         const d = document.createElement('div');
@@ -376,6 +389,7 @@
       }
 
       function render(data, payload) {
+        lastData = data;
         const parts = [];
         const sweep = data.sweep || {};
         let sweepLine = '';
@@ -424,11 +438,76 @@
           parts.push(section(`IP address check — ${esc(p.target)}`, `<div class="space-y-2">${rows.join('')}</div>`));
         }
 
+        // ---- Apply-to-record section: add the missing IP/MAC and pick a port ----
+        const recordIp = (payload.ip || '').trim() || (data.mac && data.mac.ip) || '';
+        const probe = (data.ip && data.ip.target === recordIp)
+          ? { services: data.ip.services || [], error: data.ip.services_error }
+          : (data.mac && data.mac.ip === recordIp)
+            ? { services: data.mac.services || [], error: data.mac.services_error }
+            : { services: [], error: null };
+        const openPorts = (probe.services || []).filter((s) => (s.state || '').startsWith('open'));
+        const curPort = Number(payload.port) || 0;
+        const curPortOpen = curPort > 0 && openPorts.some((s) => Number(s.port) === curPort);
+        const missingIp = !(payload.ip || '').trim() && data.mac && data.mac.ip;
+        const missingMac = !(payload.mac || '').trim() && data.ip && data.ip.mac;
+
+        const addRows = [];
+        if (missingIp) {
+          addRows.push(`<label class="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+            <input type="checkbox" id="vadd-ip" checked class="mt-0.5 shrink-0"> Add the missing <span class="font-medium">IP address</span>: <code class="font-mono">${esc(data.mac.ip)}</code>
+          </label>`);
+        }
+        if (missingMac) {
+          addRows.push(`<label class="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+            <input type="checkbox" id="vadd-mac" checked class="mt-0.5 shrink-0"> Add the missing <span class="font-medium">MAC address</span>: <code class="font-mono">${esc(data.ip.mac)}</code>
+          </label>`);
+        }
+
+        let portOpts = `<label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200 py-1">
+          <input type="radio" name="vport" value="keep" ${curPort > 0 ? 'checked' : ''} class="shrink-0">
+          Keep selected port <span class="font-mono">${curPort > 0 ? esc(String(curPort)) : '(none set)'}</span>
+        </label>`;
+        if (openPorts.length) {
+          portOpts += openPorts.map((s) => {
+            const svc = s.service ? esc(s.service) : '<span class="text-slate-400">unknown</span>';
+            const proto = s.protocol && s.protocol !== 'tcp' ? ` <span class="text-xs text-slate-400">(${esc(s.protocol)})</span>` : '';
+            return `<label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200 py-1">
+              <input type="radio" name="vport" value="${esc(String(s.port))}" class="shrink-0">
+              <span class="font-mono">${esc(String(s.port))}</span> — ${svc}${proto}
+            </label>`;
+          }).join('');
+        } else {
+          portOpts += `<p class="text-xs text-slate-500 dark:text-slate-400 px-1 py-1">${probe.error ? 'Service probe failed: ' + esc(probe.error) : 'No open ports detected — the host may be down or firewalled.'}</p>`;
+        }
+
+        const portStatus = !curPort
+          ? '<p class="text-sm text-slate-500 dark:text-slate-400">No port is set on the record yet.</p>'
+          : (curPortOpen
+            ? chip(true, `Port ${curPort} is open on the host`)
+            : chip(false, `Port ${curPort} is NOT open on the host (closed/filtered)`));
+
+        parts.push(`<section class="rounded-lg border-2 border-slate-300 dark:border-slate-600 p-4 bg-slate-50 dark:bg-slate-800/40">
+          <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-100 mb-3">Apply to the record</h3>
+          <div class="space-y-4">
+            ${addRows.length ? `<div>
+              <p class="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1">Add the missing details</p>
+              <div class="space-y-1">${addRows.join('')}</div>
+            </div>` : ''}
+            <div>
+              <p class="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1">Monitored port</p>
+              <div class="mb-2">${portStatus}</div>
+              <p class="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500 mb-1">Did you want one of these?</p>
+              <div class="rounded-lg border border-slate-200 dark:border-slate-700 p-2">${portOpts}</div>
+            </div>
+          </div>
+        </section>`);
+
         if (!parts.length) {
           parts.push('<p class="text-sm text-slate-500">Nothing to validate.</p>');
         }
         body.innerHTML = parts.join('<hr class="my-3 border-slate-200 dark:border-slate-700">');
         modal.classList.remove('hidden');
+        if (saveBtn) saveBtn.disabled = false;
       }
 
       function close() {
@@ -438,6 +517,7 @@
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         label.textContent = 'Validating…';
+        if (saveBtn) saveBtn.disabled = true;
         body.innerHTML = '<p class="text-sm text-slate-500 dark:text-slate-400 animate-pulse">Sweeping the network and probing services — this can take up to a minute…</p>';
         modal.classList.remove('hidden');
         const payload = {
@@ -470,6 +550,28 @@
 
       closeBtn.addEventListener('click', close);
       backdrop.addEventListener('click', close);
+      if (cancelBtn) cancelBtn.addEventListener('click', close);
+      if (saveBtn) {
+        saveBtn.addEventListener('click', () => {
+          // Fill in whichever detail was missing (the found IP or MAC), if ticked.
+          if (lastData && lastData.mac && lastData.mac.ip && ipField) {
+            const c = body.querySelector('#vadd-ip');
+            if (c && c.checked) ipField.value = lastData.mac.ip;
+          }
+          if (lastData && lastData.ip && lastData.ip.mac && macField) {
+            const c = body.querySelector('#vadd-mac');
+            if (c && c.checked) macField.value = lastData.ip.mac;
+          }
+          // Apply the chosen port; "keep" leaves the current value untouched.
+          const chosen = body.querySelector('input[name="vport"]:checked');
+          const portField = form.elements['port'];
+          if (chosen && chosen.value !== 'keep' && portField) portField.value = chosen.value;
+          // Refresh anything that reacts to the fields (e.g. the Validate state).
+          if (macField) macField.dispatchEvent(new Event('input'));
+          if (ipField) ipField.dispatchEvent(new Event('input'));
+          close();
+        });
+      }
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && !modal.classList.contains('hidden')) close();
       });
