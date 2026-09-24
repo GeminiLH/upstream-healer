@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -1414,6 +1415,40 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
             f"hosts={len(hosts)}",
         )
     return result
+
+
+@app.get("/api/diagnostic/scan-log")
+async def diagnostic_scan_log(limit: int = 10):
+    """Serve the per-scan debug logs (dev-only).
+
+    Every diagnostic scan appends a detailed log — exact tool commands, their
+    full raw output, the hostname maps, the reverse-DNS summary, the final
+    result — when ``UPSTREAM_HEALER_DEBUG_LOG_DIR`` is set (the dev stack
+    only; see ``app/services/diag_log.py``).  This endpoint returns the newest
+    log's full text plus a list of recent ones, so "why is this host unnamed
+    or MAC-less" is answerable from the scan page itself without box access.
+
+    Mirrors ``/api/diagnostic/debug``: with the variable unset (test and
+    production) it 404s, so nothing sensitive is exposed there.
+    """
+    directory = diag_log.log_dir()
+    if directory is None:
+        raise HTTPException(
+            status_code=404,
+            detail="scan debug logging is disabled on this instance "
+            "(UPSTREAM_HEALER_DEBUG_LOG_DIR is set on the dev stack only)",
+        )
+    files = diag_log.recent_scans(min(max(limit, 1), 50))
+    if not files:
+        return {"files": [], "latest": None}
+    latest = dict(files[0])
+    try:
+        latest["content"] = (Path(directory) / latest["name"]).read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except Exception:  # noqa: BLE001 - unreadable file: still serve the file list
+        latest["content"] = "(could not read log file)"
+    return {"files": files, "latest": latest}
 
 
 @app.get("/api/diagnostic/debug")

@@ -20,6 +20,57 @@ def test_routes_registered():
     assert "/api/health" in paths
     assert "/api/diagnostic" in paths
     assert "/api/diagnostic/scan" in paths
+    assert "/api/diagnostic/scan-log" in paths
+
+
+def test_scan_log_disabled_404(monkeypatch):
+    # No UPSTREAM_HEALER_DEBUG_LOG_DIR (test/prod stacks): the endpoint must
+    # not exist rather than leak something.
+    monkeypatch.delenv("UPSTREAM_HEALER_DEBUG_LOG_DIR", raising=False)
+    monkeypatch.delenv("UPSTREAM_HEALER_ENV", raising=False)
+    client = TestClient(app)
+    resp = client.get("/api/diagnostic/scan-log")
+    assert resp.status_code == 404
+    assert "disabled" in resp.json()["detail"]
+
+
+def test_scan_log_production_tripwire(tmp_path, monkeypatch):
+    # Even with the directory set, a production env tag suppresses logging —
+    # the endpoint follows suit.
+    monkeypatch.setenv("UPSTREAM_HEALER_DEBUG_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("UPSTREAM_HEALER_ENV", "production")
+    resp = TestClient(app).get("/api/diagnostic/scan-log")
+    assert resp.status_code == 404
+
+
+def test_scan_log_empty_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("UPSTREAM_HEALER_DEBUG_LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("UPSTREAM_HEALER_ENV", raising=False)
+    resp = TestClient(app).get("/api/diagnostic/scan-log")
+    assert resp.status_code == 200
+    assert resp.json() == {"files": [], "latest": None}
+
+
+def test_scan_log_serves_newest(tmp_path, monkeypatch):
+    import os
+    import time
+
+    (tmp_path / "diag_old.log").write_text("old\n")
+    newest = tmp_path / "diag_new.log"
+    newest.write_text("new line\n")
+    future = time.time() + 60
+    os.utime(newest, (future, future))
+    monkeypatch.setenv("UPSTREAM_HEALER_DEBUG_LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("UPSTREAM_HEALER_ENV", raising=False)
+    resp = TestClient(app).get("/api/diagnostic/scan-log")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["latest"]["name"] == "diag_new.log"
+    assert "new line" in data["latest"]["content"]
+    names = {f["name"] for f in data["files"]}
+    assert names == {"diag_old.log", "diag_new.log"}
+    for f in data["files"]:
+        assert "path" not in f  # never leak absolute paths
 
 
 def test_scan_endpoint_rejects_bad_method(temp_db_file):

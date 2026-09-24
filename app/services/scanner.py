@@ -178,11 +178,20 @@ async def resolve_hostnames(hosts: list[dict], limit: int = 256) -> list[dict]:
     """
     import socket
 
+    attempted = 0
+    resolved = 0
+
     async def _one(host: dict) -> None:
+        nonlocal attempted, resolved
         if host.get("hostname"):
             return  # already named — reverse DNS is only the fallback
+        attempted += 1
         try:
-            host["hostname"] = (await asyncio.to_thread(socket.gethostbyaddr, host["ip"])).hostname
+            # gethostbyaddr returns a (hostname, aliases, addrlist) *tuple* —
+            # the first element is the name (NOT an object with .hostname).
+            name = (await asyncio.to_thread(socket.gethostbyaddr, host["ip"]))[0]
+            host["hostname"] = name
+            resolved += 1
         except Exception:  # noqa: BLE001 - best-effort; display falls back to IP
             host["hostname"] = None
 
@@ -190,6 +199,7 @@ async def resolve_hostnames(hosts: list[dict], limit: int = 256) -> list[dict]:
         await asyncio.gather(*(_one(h) for h in hosts[:limit]))
     for h in hosts:
         h.setdefault("hostname", None)
+    diag_log.emit("reverse-dns", f"attempted={attempted}", f"resolved={resolved}")
     return hosts
 
 
@@ -1815,7 +1825,8 @@ async def resolve_hostname(
         name = mdns_ip_map.get(ip)
     if name is None and ip:
         try:
-            name = (await asyncio.to_thread(socket.gethostbyaddr, ip)).hostname
+            # gethostbyaddr returns a (hostname, aliases, addrlist) tuple.
+            name = (await asyncio.to_thread(socket.gethostbyaddr, ip))[0]
         except OSError:
             name = None
     return name or None

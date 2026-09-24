@@ -93,6 +93,41 @@ def enabled() -> bool:
     return log_dir() is not None
 
 
+def recent_scans(limit: int = 10) -> list[dict]:
+    """The newest ``diag_*.log`` files (newest first) as metadata dicts.
+
+    Each entry carries ``name``, ``size`` (bytes) and ``mtime`` (local
+    ``YYYY-MM-DD HH:MM:SS``) — never the absolute path, so an API consumer
+    cannot be handed the box's filesystem layout.  Best-effort: returns
+    ``[]`` when logging is disabled or the directory is unreadable.
+    """
+    directory = log_dir()
+    if directory is None:
+        return []
+    try:
+        files = sorted(
+            Path(directory).glob("diag_*.log"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[: max(1, int(limit))]
+    except Exception:  # noqa: BLE001 - unreadable dir: nothing to list
+        return []
+    out: list[dict] = []
+    for p in files:
+        try:
+            st = p.stat()
+            out.append(
+                {
+                    "name": p.name,
+                    "size": st.st_size,
+                    "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
+                }
+            )
+        except Exception:  # noqa: BLE001 - a vanishing file must not break the list
+            continue
+    return out
+
+
 def _max_bytes() -> int:
     try:
         return max(

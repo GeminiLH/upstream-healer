@@ -640,13 +640,12 @@ class TestParseScanOutput:
 
 class TestResolveHostnames:
     async def test_fills_hostname_from_reverse_lookup(self):
-        import types
-
         calls = []
 
         def fake(addr):
             calls.append(addr)
-            return types.SimpleNamespace(hostname="box.lan", aliases=[], ipaddr_list=[addr])
+            # Real gethostbyaddr shape: (hostname, aliases, addrlist) tuple.
+            return ("box.lan", [], [addr])
 
         with patch("socket.gethostbyaddr", side_effect=fake):
             got = await resolve_hostnames([{"ip": "10.0.0.5", "mac": "aa"}])
@@ -668,9 +667,8 @@ class TestResolveHostnames:
 
         def fake(addr):
             calls.append(addr)
-            import types
-
-            return types.SimpleNamespace(hostname="wrong.lan", aliases=[], ipaddr_list=[addr])
+            # Real gethostbyaddr shape: (hostname, aliases, addrlist) tuple.
+            return ("wrong.lan", [], [addr])
 
         with patch("socket.gethostbyaddr", side_effect=fake):
             got = await resolve_hostnames(
@@ -683,11 +681,10 @@ class TestResolveHostnames:
         assert calls == ["10.0.0.9"]  # only the unnamed host was reversed
 
     async def test_falsy_existing_hostname_is_resolved(self):
-        import types
-
         with patch(
             "socket.gethostbyaddr",
-            side_effect=lambda a: types.SimpleNamespace(hostname="a.lan", aliases=[], ipaddr_list=[a]),
+            # Real gethostbyaddr shape: (hostname, aliases, addrlist) tuple.
+            side_effect=lambda a: ("a.lan", [], [a]),
         ):
             got = await resolve_hostnames([{"ip": "10.0.0.5", "mac": None, "hostname": ""}])
         assert got[0]["hostname"] == "a.lan"
@@ -1609,7 +1606,7 @@ class TestResolveHostname:
         with patch(
             "app.services.scanner.discover_hostnames",
             new=AsyncMock(return_value=({}, {})),
-        ), patch("socket.gethostbyaddr", return_value=SimpleNamespace(hostname="vault.example.com")):
+        ), patch("socket.gethostbyaddr", return_value=("vault.example.com", [], ["192.168.86.9"])):
             assert await resolve_hostname(ip="192.168.86.9") == "vault.example.com"
 
     async def test_no_inputs_no_name(self):

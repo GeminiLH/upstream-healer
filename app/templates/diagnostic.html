@@ -157,6 +157,14 @@
 
       <div id="scan-result" class="hidden mt-5">
         <div id="scan-status" class="mb-2 text-sm"></div>
+        <div class="flex justify-end mb-2">
+          <button id="scan-log-btn" type="button"
+            class="text-xs text-slate-500 dark:text-slate-400 underline hover:text-brand-500 transition">
+            Scan debug log
+          </button>
+        </div>
+        <pre id="scan-log"
+          class="hidden mb-3 bg-slate-900 text-slate-300 text-[11px] font-mono p-4 rounded-lg overflow-auto max-h-96 whitespace-pre-wrap"></pre>
         <div id="scan-hosts-wrap" class="hidden mb-3">
           <span class="text-xs uppercase tracking-wider text-slate-400 dark:text-slate-500">
             Hosts seen on the swept network(s): <span id="scan-hosts-count"></span>
@@ -244,6 +252,8 @@
     const hostsCount = document.getElementById('scan-hosts-count');
     const methodDescEl = document.getElementById('scan-method-desc');
     const portsEl = document.getElementById('scan-ports');
+    const logBtn = document.getElementById('scan-log-btn');
+    const logEl = document.getElementById('scan-log');
 
     function esc(v) {
       const d = document.createElement('div');
@@ -262,6 +272,38 @@
       const text = METHOD_DESCS[methodEl.value] || '';
       methodDescEl.textContent = text;
       methodDescEl.style.display = text ? '' : 'none';
+    }
+
+    // "Scan debug log": the backend keeps one detailed file per diagnostic
+    // scan (exact tool commands, full raw output, hostname maps).  Fetch the
+    // newest one on demand; toggles the panel off on the second click.
+    if (logBtn && logEl) {
+      logBtn.addEventListener('click', async () => {
+        if (!logEl.classList.contains('hidden')) {
+          logEl.classList.add('hidden');
+          return;
+        }
+        logEl.textContent = 'Loading…';
+        logEl.classList.remove('hidden');
+        try {
+          const resp = await fetch('/api/diagnostic/scan-log');
+          if (!resp.ok) {
+            let msg = `Scan logging unavailable (HTTP ${resp.status})`;
+            try { msg += ` — ${resp.json().detail}`; } catch (e) { /* keep default */ }
+            logEl.textContent = msg + '. Run a scan on the dev stack to generate a log.';
+            return;
+          }
+          const data = await resp.json();
+          if (!data.latest || !data.latest.content) {
+            logEl.textContent = 'No scan log yet — run a scan first, then open the debug log again.';
+            return;
+          }
+          logEl.textContent = `== ${data.latest.name} (${data.latest.mtime}, ${data.latest.size} bytes) ==\n` +
+            data.latest.content;
+        } catch (err) {
+          logEl.textContent = `Failed to load scan log: ${err}`;
+        }
+      });
     }
 
     // Canonicalise a MAC the same way the backend does (lowercase, colon
