@@ -1,7 +1,7 @@
 # Progress — Upstream Healer
 
 > Snapshot: 2026-09-27 — **All CI green, deploy_dev live, MCP tools verified.**
-> Pipeline 224 (commit `b53db5f`) — lint ✅, unit_tests ✅, build_image ✅,
+> Pipeline 225 (commit `91b462c`) — lint ✅, unit_tests ✅, build_image ✅,
 > deploy_dev ✅ — dev stack running on batcave (6 hosts, UI at :8787).
 > GitLab MCP tools confirmed working: `gitlab-read` (GET pipelines/jobs/traces),
 > `gitlab-pipelines` (POST /play deploy_dev), `log-servers` (SSH diag-log access).
