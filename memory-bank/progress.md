@@ -1,7 +1,7 @@
 # Progress — Upstream Healer
 
 > Snapshot: 2026-09-27 — **All CI green, deploy_dev live, MCP tools verified.**
-> Pipeline 227 (commit `4ef9c92`) — lint ✅, unit_tests ✅, build_image ✅,
+> Pipeline 228 (commit `f3e010b`) — lint ✅, unit_tests ✅, build_image ✅,
 > deploy_dev ✅ — dev stack running on batcave (10 hosts including vault, jellyfin,
 > failtest, plex, homeassistant, portainer, flash, batcave). UI at :8787.
 > GitLab MCP tools confirmed working: `gitlab-read` (GET pipelines/jobs/traces),
@@ -9,6 +9,17 @@
 > 377 tests passing (+ 1 skipped on CI), ruff clean.
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q`.
+
+## Latest (2026-09-27) — MCP tool workflow hardwired into .clinerules
+
+- **Updated `.clinerules` with "Standard Ship Workflow"** — 7-step process:
+  pre-flight tests → commit → push → verify pipeline → deploy → verify deploy → update memory bank
+- **Added MCP tool fallback path** — when MCP tools aren't available, use
+  `bash scripts/ship.sh -m "<message>" --no-deploy` as fallback
+- **Verified full pipeline + deploy workflow** using MCP tools:
+  - `gitlab-read`: GET pipelines, jobs, traces
+  - `gitlab-pipelines`: POST /play deploy_dev
+  - `log-servers`: SSH diag-log access
 
 ## Latest (2026-09-27) — CI flaky-test fixes + deploy_dev live
 
