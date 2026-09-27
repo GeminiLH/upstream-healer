@@ -90,9 +90,9 @@ must never be copied into code, tests, or the memory bank.
 
 GitLab instance: SSH `192.168.86.38:32768`; Web/API **`http://192.168.86.38:32769`**
 (port map 32768→git-ssh, 32769→web-80, 32770→web-443 — 443 not reachable from
-here, use 32769). Project id 4. Pipeline tokens live in the git-ignored
-`.env.local` at repo root (see decisions.md — do not name it `.env`, the app
-loads that file via pydantic-settings).
+here, use 32769). Project id 4. Use the **`gitlab-read`** and **`gitlab-pipelines`**
+MCP tools for all GitLab API interactions — they are pre-configured with the
+necessary tokens. Do not source `.env.local` or hand-roll curl calls to GitLab.
 Dev NPM UI login: `dev@hylla.local` / `devhealer123` (sandbox defaults).
 
 ## Dev stack on the batcave box (192.168.86.38)
@@ -113,42 +113,19 @@ recipe). The one SSH exception: the read-only **`cline-logs`** account for
 ## Accessing the batcave scan logs (read-only `cline-logs`)
 
 The per-scan `diag_*.log` files live in the app's mounted `/logs` dir
-(`= /mnt/data/upstream-healer/logs` on batcave). Read them by SSHing as
-**`cline-logs@batcave`** — a read-only account (the old `claire.liu` account is
-gone/renamed). The password is in the gitignored `.env.local` as
-`CLINE_LOGS_SSH_PASS` — **never commit it**. The account is wrapped with a
+(`= /mnt/data/upstream-healer/logs` on batcave). Use the **`log-servers`** MCP
+tool — it is pre-configured with the `cline-logs` account credentials and lets
+you run shell commands remotely on batcave. The account is wrapped with a
 `ForceCommand` allowlist: **only `ls cat tail grep head wc file stat`** are
 permitted (anything else prints `Command not allowed: …`), and it **auto-cd's
 into the log directory**, so a bare `ls -lat` / `cat <file>` / `grep <pat>
 <file>` works with no path.
 
-This workstation has **no `sshpass`/`expect`/`paramiko`**, so use the
-`SSH_ASKPASS` + `setsid` trick (no controlling tty → OpenSSH 10.4 invokes the
-askpass helper for the password). `-o BatchMode=no` is required — `yes` disables
-password auth. One-liner (or just run `scripts/batcave_logs.sh`):
+Filenames contain `:` (MAC addresses) — pass them **unquoted** in the remote
+command: `cat diag_20260921_070637_nmap_dc:a6:32:02:59:63_7.log`.
 
-```bash
-cd /mnt/Aquaman/upstream-healer
-set -a && source ./.env.local && set +a   # → CLINE_LOGS_SSH_{HOST,USER,PASS}
-printf '#!/bin/sh\necho "%s"\n' "$CLINE_LOGS_SSH_PASS" > /tmp/ua_askpass && chmod +x /tmp/ua_askpass
-SSH_ASKPASS=/tmp/ua_askpass SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
-  setsid -w ssh -o BatchMode=no -o StrictHostKeyChecking=accept-new \
-  "${CLINE_LOGS_SSH_USER}@${CLINE_LOGS_SSH_HOST}" 'ls -lat'
-```
-
-Gotchas (learned the hard way):
-- **Don't double-quote the filename** in the remote command — the wrapper keeps
-  inner `"` literal and `cat` then fails with "No such file". Filenames contain
-  `:` but colons are fine *unquoted*: `cat diag_20260921_070637_nmap_dc:a6:32:02:59:63_7.log`.
-- Convenience wrapper: `scripts/batcave_logs.sh '<cmd>'` reads the password from
-  `.env.local` and runs the askpass+setsid ssh for you. **Prefer this** — it's the
-  only path that works.
-- **Never hand-roll `ssh -o BatchMode=yes user@host`** for this account — the box
-  has no deploy key and `BatchMode=yes` *disables* password auth, so you get
-  `Permission denied (publickey,password)` and no password prompt. This bit me
-  twice (2026-09-21). The askpass+setsid trick (or the wrapper) is mandatory:
-  `SSH_ASKPASS_REQUIRE=force` + `setsid` + `BatchMode=no` is what lets OpenSSH 10.4
-  read the password with no controlling tty.
+Legacy: `scripts/batcave_logs.sh '<cmd>'` is still available but requires
+sourcing credentials manually. Prefer the `log-servers` MCP tool.
 
 ## Triggering a scan to test a scanner change (no `docker exec` needed)
 

@@ -203,38 +203,15 @@
 
 ## CI / pipeline verification (VERIFIED WORKING — 2026-07-09, re-verified 2026-09-15 + 2026-09-19)
 
-Access is in the repo-root **`.env.local`** file (git-ignored; loaded with
-`set -a; . ./.env.local; set +a`). **Never commit it**, never print its values
-in logs or the memory bank.
+Use the **`gitlab-read`** and **`gitlab-pipelines`** MCP tools for all
+GitLab API interactions. They are pre-configured with the necessary tokens
+and scopes. **Never hand-roll curl calls to GitLab.**
 
-**Token semantics (verified 2026-09-18 — do not guess/swap):** `.env.local`
-defines two tokens with *opposite* abilities. `GITLAB_READ_TOKEN` is the
-`Cline_API` PAT, scope `read_api` — every project-scoped GET we poll works
-(`/projects/:id`, pipeline lists, job status, trace) but **POST play → 403
-`insufficient_scope`**. `GITLAB_PIPELINE_TOKEN` is a job token (no user behind
-it) — **the only one that can play manual jobs** (every `deploy_dev` play so
-far has used it — jobs 811/819/835) but project GETs → 403. So: all *reads*
-use the read token, the *play* POST uses the pipeline token — that is how
-`ship.sh` is wired. Traps that cost 10+ min of debugging: (1) an **empty**
-token surfaces as `404 Project Not Found`, *not* 401/403 — so fail-fast
-preflight `GET /api/v4/projects/:id == 200` before any poll loop, and never
-treat a 404 as "nothing there"; (2) `${!VAR}` indirect expansion with an unset
-VAR is a fatal bash error that left the token empty for the whole script —
-read token variables directly. Also: on this Pi GitLab instance, *pipeline
-creation* can lag the push by 1–6 min (observed 1 min and 5.5 min for the same
-flow); `ship.sh` tolerates it with a 10-min appear window and is **resumable**
-— re-running with nothing to commit skips commit+push and resumes pipeline
-watch + deploy for the current HEAD.
-⚠️ Do NOT rename it back to `.env`: `Settings` (app/config.py) declares
-`model_config = {"env_file": ".env"}` with pydantic's `extra="forbid"`, so any
-foreign key in `.env` (like these tokens) breaks the app AND all test
-collection with `ValidationError: extra_forbidden`.
+- `gitlab-read` — read pipelines, jobs, traces, artifacts, etc.
+- `gitlab-pipelines` — create pipelines, trigger/play manual jobs, deploy, etc.
+- Legacy: `ship.sh` still uses direct curl + env vars from `.env.local` —
+  this script is for CI/local use. Prefer MCP tools for agent-driven work.
 
-- `GITLAB_READ_TOKEN` — fine-grained PAT (user `Cline_API`); verified for
-  project, pipeline, and job reads.
-- `GITLAB_PIPELINE_TOKEN` — fine-grained PAT; verified for pipeline/job reads
-  (it lacks *user*-level scope, so `/api/v4/user` fails by design — use
-  project-scoped endpoints). Intended for triggering/running jobs.
 - **GitLab base URL (verified)**: `http://192.168.86.38:32769` (port map:
   32768→git-ssh, 32769→web-80, 32770→web-443; HTTPS 32770 not reachable from
   this dev host, use 32769).
@@ -242,10 +219,6 @@ collection with `ValidationError: extra_forbidden`.
     they are NPM ports and have nothing to do with this instance. Always use
     `:32769` for the GitLab Web/API. A session that "recalled" `8929` got
     connection-refused and wrongly concluded the API was unreachable.
-  - The tokens (`GITLAB_READ_TOKEN`, `GITLAB_PIPELINE_TOKEN`) are in the
-    git-ignored `.env.local` at repo root — load with `set -a; . ./.env.local`.
-    `GITLAB_PIPELINE_TOKEN` is sufficient for all project-scoped pipeline/job
-    reads; `GITLAB_READ_TOKEN` is a separate PAT.
 - **Project id: 4** (`monster/upstream_healer`, default branch `main`).
 - Verified endpoints (project id 4):
   - `GET  /api/v4/projects/4/pipelines?per_page=3` — latest pipelines
@@ -281,12 +254,11 @@ collection with `ValidationError: extra_forbidden`.
     ~20 min in one session, 2026-09-17).
   - `deploy_test` / `deploy_production` remain **manual + explicit user
     confirmation only** — the ship script never touches them.
-  - Token: `GITLAB_PIPELINE_TOKEN` from the git-ignored `.env.local` —
-    sufficient for pipeline/job reads and `POST /api/v4/projects/4/jobs/:id/play`
-    (verified for `deploy_dev`, job 811 → success in 34s).
-- **Manual jobs can be triggered with the pipeline token** (verified
-  2026-09-15, `dev_debug` job 638 → success):
-  `POST /api/v4/projects/4/jobs/:id/play` with `GITLAB_PIPELINE_TOKEN`.
+  - Token: Use the **`gitlab-pipelines`** MCP tool to trigger manual jobs
+    (`deploy_dev`, `dev_debug`, etc.). The MCP tool is pre-configured with
+    the correct token scope for playing jobs.
+- **Manual jobs can be triggered via the `gitlab-pipelines` MCP tool** (verified
+  2026-09-15, `dev_debug` job 638 → success).
   Use `dev_debug` any time the dev stack misbehaves — it prints container
   states, restart/OOM/exit details, and 80-line log tails of `nginx-db-1`,
   `nginx-app-1`, `upstream-healer`.

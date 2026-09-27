@@ -26,5 +26,3 @@ test-results.xml
 
 # Sensitive local notes (contains tokens/credentials)
 upstream healer notes.txt
-# Local pipeline/API tokens (see memory-bank/decisions.md)
-.env.local
