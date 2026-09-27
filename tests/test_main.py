@@ -1051,10 +1051,10 @@ def test_force_scan_no_npm_update_when_forward_matches(temp_db_file):
     mock_npm.return_value.update_forward_host.assert_not_called()
 
 
-def test_scan_endpoint_returns_valid_scan_id(temp_db_file):
+async def test_scan_endpoint_returns_valid_scan_id(temp_db_file):
     """Test that the scan endpoint returns a valid scan_id immediately,
     and the full result is available via the progress endpoint."""
-    import time as _time
+    import anyio
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
@@ -1078,9 +1078,9 @@ def test_scan_endpoint_returns_valid_scan_id(temp_db_file):
         assert "scan_id" in data
         assert isinstance(data["scan_id"], str)
         assert len(data["scan_id"]) > 0
-        # Wait for background task to finish
-        for _ in range(20):
-            _time.sleep(0.1)
+        # Wait for background task to finish (yield to event loop via anyio.sleep)
+        for _ in range(50):
+            await anyio.sleep(0.1)
             prog = client.get(f"/api/diagnostic/scan-progress/{data['scan_id']}")
             prog_data = prog.json()
             if prog_data.get("status") == "complete":
@@ -1092,9 +1092,9 @@ def test_scan_endpoint_returns_valid_scan_id(temp_db_file):
         assert result.get("found_via") == "arp-scan"
 
 
-def test_scan_progress_endpoint_works_with_valid_scan_id(temp_db_file):
+async def test_scan_progress_endpoint_works_with_valid_scan_id(temp_db_file):
     """Test that scan progress endpoint works correctly with valid scan IDs."""
-    import time as _time
+    import anyio
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
@@ -1117,8 +1117,8 @@ def test_scan_progress_endpoint_works_with_valid_scan_id(temp_db_file):
         scan_id = resp.json()["scan_id"]
 
         # Wait for background task to finish so progress data is populated
-        for _ in range(20):
-            _time.sleep(0.1)
+        for _ in range(50):
+            await anyio.sleep(0.1)
             prog = client.get(f"/api/diagnostic/scan-progress/{scan_id}")
             prog_data = prog.json()
             if prog_data.get("status") in ("discovered", "complete"):
@@ -1151,9 +1151,9 @@ def test_scan_progress_endpoint_handles_invalid_scan_id(temp_db_file):
     assert data["error"] == "Scan not found"
 
 
-def test_scan_progress_endpoint_interval_cleanup(temp_db_file):
+async def test_scan_progress_endpoint_interval_cleanup(temp_db_file):
     """Test that scan progress tracking cleans up after scan completion."""
-    import time as _time
+    import anyio
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
@@ -1175,9 +1175,9 @@ def test_scan_progress_endpoint_interval_cleanup(temp_db_file):
         assert resp.status_code == 200
         scan_id = resp.json()["scan_id"]
 
-        # Wait for scan to complete
-        for _ in range(20):
-            _time.sleep(0.1)
+        # Wait for scan to complete (yield to event loop via anyio.sleep)
+        for _ in range(50):
+            await anyio.sleep(0.1)
             prog = client.get(f"/api/diagnostic/scan-progress/{scan_id}")
             prog_data = prog.json()
             if prog_data.get("status") == "complete":
