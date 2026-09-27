@@ -104,7 +104,7 @@ def test_scan_endpoint_passes_scan_ports(temp_db_file):
             "app.main.run_scan",
             new=AsyncMock(return_value={"method": "nmap", "found_ip": None, "found_via": None, "output": "", "error": None, "hosts": []}),
          ) as mock_scan, \
-         patch("app.main.run_port_scan_incremental", new=AsyncMock(return_value=({}, None))) as mock_port:
+         patch("app.main.run_port_scan_incremental", new=AsyncMock(return_value=({}, None))) as _mock_port:
         resp = client.post(
             "/api/diagnostic/scan",
             json={"target_mac": "", "method": "nmap", "scan_ports": True},
