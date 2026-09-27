@@ -1753,7 +1753,7 @@ class TestRunPortScan:
         def fake_run(cmd, **_kw):
             if cmd[:2] == ["nmap", "-V"]:
                 return _FakeProc("", code=0)
-            assert "-p-" in cmd and "-oX" in cmd and "-sT" in cmd
+            assert "-p-" in cmd and "-oX" in cmd and "-sT" in cmd and "-sV" in cmd
             return _FakeProc(doc, code=0)
 
         with patch("app.services.scanner.subprocess.run", side_effect=fake_run):

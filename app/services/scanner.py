@@ -1728,10 +1728,10 @@ def run_port_scan(
     if timeout is None:
         # Bound the wall clock: a fixed floor plus headroom per host, capped so a
         # crowded subnet can't hang the request for minutes on end.
-        timeout = min(600, 60 + 20 * len(hosts))
+        timeout = min(1800, 120 * len(hosts) + 30)
     cmd = [
-        "nmap", "-Pn", "-sT", "--open", "-p-",
-        "-T4", "--max-retries", "1", "--host-timeout", "45s",
+        "nmap", "-Pn", "-sT", "-sV", "--open", "-p-",
+        "-T4", "--max-retries", "1", "--host-timeout", "120s",
         "-oX", "-", *hosts,
     ]
     diag_log.emit("port-scan", f"hosts={len(hosts)}", f"timeout={int(timeout)}s")
