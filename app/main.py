@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, Form, Depends, HTTPException
@@ -35,6 +36,9 @@ from app.services.scanner import (
     save_suppressed_subnets,
     validate_host_record,
 )
+
+# Global dictionary to track scan progress by request ID
+scan_progress = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1414,7 +1418,43 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
             f"error={result.get('error')}",
             f"hosts={len(hosts)}",
         )
-    return result
+        
+        # Generate a unique scan ID
+        import uuid
+        scan_id = str(uuid.uuid4())
+        
+        # Store initial progress tracking
+        scan_progress[scan_id] = {
+            "start_time": time.time(),
+            "estimated_duration": None  # Will be set when we know the estimate
+        }
+        
+        # Add scan_id to the response
+        result["scan_id"] = scan_id
+        
+        return result
+
+
+@app.get("/api/diagnostic/scan-progress/{scan_id}")
+async def get_scan_progress(scan_id: str):
+    """Get progress information for a running scan."""
+    if scan_id not in scan_progress:
+        return {"error": "Scan not found"}
+    
+    progress = scan_progress[scan_id]
+    current_time = time.time()
+    elapsed_time = current_time - progress["start_time"]
+    
+    # Calculate estimated completion time if we have an estimate
+    estimated_completion = None
+    if progress.get("estimated_duration"):
+        estimated_completion = progress["start_time"] + progress["estimated_duration"]
+    
+    return {
+        "elapsed_time": round(elapsed_time, 2),
+        "estimated_completion": estimated_completion,
+        "estimated_remaining": progress.get("estimated_duration", 0) - elapsed_time if progress.get("estimated_duration") else None
+    }
 
 
 @app.get("/api/diagnostic/scan-log")

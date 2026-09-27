@@ -94,6 +94,29 @@
     {% endif %}
   </div>
 
+  <!-- Scan Progress Section -->
+  <div class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+    <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Scan Progress</h2>
+    </div>
+    <div class="px-6 py-4">
+      <div id="scan-progress" class="hidden">
+        <div class="mb-3">
+          <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Elapsed time:</span>
+          <span id="elapsed-time" class="ml-2 text-sm text-slate-900 dark:text-slate-100">0s</span>
+        </div>
+        <div class="mb-3">
+          <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Estimated remaining:</span>
+          <span id="remaining-time" class="ml-2 text-sm text-slate-900 dark:text-slate-100">0s</span>
+        </div>
+        <div class="mb-3">
+          <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Estimated completion:</span>
+          <span id="completion-time" class="ml-2 text-sm text-slate-900 dark:text-slate-100">-</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Run a Scan Section -->
   <div class="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
     <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -340,7 +363,15 @@
       return v === "" ? 0 : Number(v);
     }
 
-    runBtn.addEventListener('click', async () => {
+    // Update the scan function to track scan ID and monitor progress
+    const originalRunScan = runBtn.onclick;
+    runBtn.onclick = async function(e) {
+      e.preventDefault();
+      
+      // Clear previous scan progress
+      clearInterval(scanProgressInterval);
+      scanProgressDiv.classList.add('hidden');
+      
       const mac = macEl.value.trim();
       const method = methodEl.value;
       const subnetId = _selectedSubnetId();
@@ -368,6 +399,13 @@
           outputEl.textContent = '';
           return;
         }
+        
+        // Start monitoring scan progress
+        const scanId = data.scan_id;  // This would be the ID from the API response
+        if (scanId) {
+          scanProgressInterval = setInterval(() => updateScanProgress(scanId), 1000);
+        }
+        
         const foundCount = (data.hosts || []).length;
         let statusMsg;
         let statusCls = 'mb-2 text-sm';
@@ -418,7 +456,122 @@
         runBtn.disabled = false;
         runLabel.textContent = 'Run scan';
       }
-    });
+    };
+
+    // Add timing functionality
+    let scanProgressInterval = null;
+    const scanProgressDiv = document.getElementById('scan-progress');
+    const elapsedTimeSpan = document.getElementById('elapsed-time');
+    const remainingTimeSpan = document.getElementById('remaining-time');
+    const completionTimeSpan = document.getElementById('completion-time');
+
+    function updateScanProgress(scanId) {
+      if (!scanId) return;
+      
+      fetch(`/api/diagnostic/scan-progress/${scanId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            // Stop the interval if scan is complete or error
+            clearInterval(scanProgressInterval);
+            return;
+          }
+          
+          // Update timing information
+          elapsedTimeSpan.textContent = `${data.elapsed_time}s`;
+          
+          if (data.estimated_remaining !== null) {
+            remainingTimeSpan.textContent = `${Math.max(0, data.estimated_remaining).toFixed(1)}s`;
+          } else {
+            remainingTimeSpan.textContent = 'Calculating...';
+          }
+          
+          if (data.estimated_completion) {
+            const completionDate = new Date(data.estimated_completion * 1000);
+            completionTimeSpan.textContent = completionDate.toLocaleTimeString();
+          } else {
+            completionTimeSpan.textContent = '-';
+          }
+          
+          // Show progress section
+          scanProgressDiv.classList.remove('hidden');
+        })
+        .catch(err => {
+          console.error('Error fetching scan progress:', err);
+        });
+         .catch(err => {
+           console.error('Error fetching scan progress:', err);
+         });
+     }
+     
+     // Enhanced error handling for scan ID validation
+     function startScanWithProgress(targetMac, method, subnetId, scanPorts) {
+       // Validate inputs
+       if (!targetMac && !subnetId) {
+         statusEl.textContent = 'Please enter a MAC address or select a subnet.';
+         statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+         return;
+       }
+       
+       // Reset UI
+       runBtn.disabled = true;
+       runLabel.textContent = 'Scanning...';
+       outputEl.textContent = '';
+       statusEl.textContent = '';
+       hostsWrap.classList.add('hidden');
+       scanProgressDiv.classList.add('hidden');
+       
+       fetch('/api/diagnostic/scan', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({
+           target_mac: targetMac,
+           method,
+           subnet_id: subnetId || null,
+           scan_ports: scanPorts
+         })
+       })
+       .then(res => res.json())
+       .then(data => {
+         if (!res.ok) {
+           throw new Error(data.detail || 'Scan failed');
+         }
+         
+         // Check for scan_id in the response
+         if (!data.scan_id) {
+           throw new Error('No scan ID returned from server');
+         }
+         
+         const scanId = data.scan_id;
+         
+         // Update UI with scan information
+         statusEl.textContent = `Scan started with ID: ${scanId}`;
+         statusEl.className = 'mb-2 text-sm text-slate-600 dark:text-slate-300';
+         
+         // Start polling for progress
+         let scanProgressInterval = setInterval(() => {
+           updateScanProgress(scanId);
+         }, 1000); // Poll every second
+       })
+       .catch(err => {
+         statusEl.textContent = `Request failed: ${err.message}`;
+         statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+         outputEl.textContent = '';
+         console.error('Scan error:', err);
+       })
+       .finally(() => {
+         runBtn.disabled = false;
+         runLabel.textContent = 'Run scan';
+       });
+     }
+     
+     document.querySelectorAll('.kh-btn').forEach((btn) => {
+       btn.addEventListener('click', () => {
+         macEl.value = btn.getAttribute('data-mac');
+         syncKnownHosts();
+       });
+     });
+    }
 
     document.querySelectorAll('.kh-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
