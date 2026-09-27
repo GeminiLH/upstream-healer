@@ -1432,6 +1432,8 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
             # Incremental port scan if requested
             if body.scan_ports and host_ips:
                 scan_progress[scan_id]["status"] = "scanning_ports"
+                # Rough estimate: ~10s per host for port scanning, capped at 300s
+                scan_progress[scan_id]["estimated_duration"] = min(len(host_ips) * 10, 300)
 
                 async def _on_host_done(partial_result: dict):
                     idx = partial_result.pop("_index", 0)

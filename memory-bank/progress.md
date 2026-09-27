@@ -1,9 +1,8 @@
 # Progress — Upstream Healer
 
 > Snapshot: 2026-09-27 — **All CI green, deploy_dev live, MCP tools verified.**
-> Pipeline 228 (commit `f3e010b`) — lint ✅, unit_tests ✅, build_image ✅,
-> deploy_dev ✅ — dev stack running on batcave (10 hosts including vault, jellyfin,
-> failtest, plex, homeassistant, portainer, flash, batcave). UI at :8787.
+> Pipeline 229 (commit `9f3d5a9`) — lint ✅, unit_tests ✅, build_image ✅,
+> deploy_dev ✅ — dev stack running on batcave (10 hosts). UI at :8787 (HTTP 200).
 > GitLab MCP tools confirmed working: `gitlab-read` (GET pipelines/jobs/traces),
 > `gitlab-pipelines` (POST /play deploy_dev), `log-servers` (SSH diag-log access).
 > 377 tests passing (+ 1 skipped on CI), ruff clean.

@@ -101,17 +101,40 @@
     </div>
     <div class="px-6 py-4">
       <div id="scan-progress" class="hidden">
-        <div class="mb-3">
-          <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Elapsed time:</span>
-          <span id="elapsed-time" class="ml-2 text-sm text-slate-900 dark:text-slate-100">0s</span>
+        <!-- Status indicator row -->
+        <div class="mb-4 flex items-center gap-3">
+          <div id="scan-spinner" class="hidden">
+            <svg class="animate-spin h-5 w-5 text-brand-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+          </div>
+          <span id="scan-status-text" class="text-sm font-medium text-slate-700 dark:text-slate-300"></span>
         </div>
-        <div class="mb-3">
-          <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Estimated remaining:</span>
-          <span id="remaining-time" class="ml-2 text-sm text-slate-900 dark:text-slate-100">0s</span>
+        <!-- Progress bar for port scanning -->
+        <div id="scan-progress-bar-wrap" class="hidden mb-4">
+          <div class="flex justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span id="scan-progress-label">Scanning ports</span>
+            <span id="scan-progress-count"></span>
+          </div>
+          <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2.5">
+            <div id="scan-progress-bar" class="bg-brand-500 h-2.5 rounded-full transition-all duration-500" style="width:0%"></div>
+          </div>
         </div>
-        <div class="mb-3">
-          <span class="text-sm font-medium text-slate-700 dark:text-slate-300">Estimated completion:</span>
-          <span id="completion-time" class="ml-2 text-sm text-slate-900 dark:text-slate-100">-</span>
+        <!-- Timing details -->
+        <div class="grid grid-cols-3 gap-4 text-sm">
+          <div>
+            <span class="text-slate-500 dark:text-slate-400">Elapsed</span>
+            <div id="elapsed-time" class="font-medium text-slate-900 dark:text-slate-100">0s</div>
+          </div>
+          <div>
+            <span class="text-slate-500 dark:text-slate-400">Remaining</span>
+            <div id="remaining-time" class="font-medium text-slate-900 dark:text-slate-100">-</div>
+          </div>
+          <div>
+            <span class="text-slate-500 dark:text-slate-400">ETA</span>
+            <div id="completion-time" class="font-medium text-slate-900 dark:text-slate-100">-</div>
+          </div>
         </div>
       </div>
     </div>
@@ -461,6 +484,12 @@
 
     // Update the scan function to track scan ID and monitor progress
     const originalRunScan = runBtn.onclick;
+    const spinnerEl = document.getElementById('scan-spinner');
+    const statusTextEl = document.getElementById('scan-status-text');
+    const progressBarWrap = document.getElementById('scan-progress-bar-wrap');
+    const progressBar = document.getElementById('scan-progress-bar');
+    const progressCount = document.getElementById('scan-progress-count');
+
     runBtn.onclick = async function(e) {
       e.preventDefault();
       clearInterval(scanProgressInterval);
@@ -493,6 +522,12 @@
         }
         const scanId = data.scan_id;
         if (scanId) {
+          // Show progress section immediately with "Starting..." status
+          scanProgressDiv.classList.remove('hidden');
+          spinnerEl.classList.remove('hidden');
+          statusTextEl.textContent = 'Starting scan…';
+          statusTextEl.className = 'text-sm font-medium text-brand-600 dark:text-brand-400';
+          progressBarWrap.classList.add('hidden');
           scanProgressInterval = setInterval(() => pollScanProgress(scanId, mac, method), 1500);
         }
       } catch (err) {
@@ -509,10 +544,51 @@
         .then(data => {
           if (data.error) {
             clearInterval(scanProgressInterval);
+            spinnerEl.classList.add('hidden');
+            progressBarWrap.classList.add('hidden');
+            statusTextEl.textContent = data.error;
+            statusTextEl.className = 'text-sm font-medium text-rose-600 dark:text-rose-400';
             finishScan(mac, method, null, data);
             return;
           }
           updateScanTiming(data);
+          // Update status text based on scan phase
+          const statusLabels = {
+            starting: 'Starting scan…',
+            discovered: 'Hosts discovered — scanning ports…',
+            scanning_ports: 'Scanning ports…',
+            complete: 'Scan complete',
+            error: 'Scan failed',
+          };
+          const statusColors = {
+            starting: 'text-brand-600 dark:text-brand-400',
+            discovered: 'text-blue-600 dark:text-blue-400',
+            scanning_ports: 'text-amber-600 dark:text-amber-400',
+            complete: 'text-emerald-600 dark:text-emerald-400',
+            error: 'text-rose-600 dark:text-rose-400',
+          };
+          const status = data.status || 'starting';
+          if (statusTextEl) {
+            statusTextEl.textContent = statusLabels[status] || status;
+            statusTextEl.className = `text-sm font-medium ${statusColors[status] || 'text-slate-700 dark:text-slate-300'}`;
+          }
+          // Update spinner visibility (hide when complete or errored)
+          if (status === 'complete' || status === 'error') {
+            spinnerEl.classList.add('hidden');
+          } else {
+            spinnerEl.classList.remove('hidden');
+          }
+          // Update progress bar during port scanning
+          if (data.status === 'scanning_ports' && data.total_hosts > 0) {
+            progressBarWrap.classList.remove('hidden');
+            const pct = Math.round((data.hosts_scanned / data.total_hosts) * 100);
+            progressBar.style.width = `${pct}%`;
+            progressCount.textContent = `${data.hosts_scanned} / ${data.total_hosts}`;
+          } else if (data.status === 'complete') {
+            progressBarWrap.classList.remove('hidden');
+            progressBar.style.width = '100%';
+            progressCount.textContent = `${data.total_hosts} / ${data.total_hosts}`;
+          }
           if (data.hosts && data.hosts.length > 0) {
             renderHosts(data.hosts, data.found_ip, mac, method, data.output, data.ports_error);
           }

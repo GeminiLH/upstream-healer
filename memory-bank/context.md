@@ -169,6 +169,65 @@ sentinel file on exit, and **poll that file** in a short separate command; the
 work keeps running in its own session even after the launching shell is reaped
 (this is how the Fix C `deploy_dev` and the live nmap sweep were driven here).
 
+## Testing & Troubleshooting Checklist (2026-09-27 verified)
+
+### Quick scan test (verify scanner changes without `docker exec`)
+
+The dev API at `http://192.168.86.38:8787` is **unauthenticated**. From this
+workstation you can trigger scans and read back results:
+
+**1. Trigger a scan (detached — avoids 30 s shell timeout):**
+
+```bash
+# Quick MAC-targeted ARP sweep (~3 s):
+setsid bash -c 'curl -s -m 105 -X POST http://192.168.86.38:8787/api/diagnostic/scan \
+  -H "Content-Type: application/json" \
+  -d "{\"target_mac\":\"dc:a6:32:02:59:63\",\"method\":\"arp-scan\",\"subnet_cidr\":\"192.168.86.0/24\"}" \
+  > /tmp/scan_result.json; echo done' &
+
+# Full L3 sweep (nmap, no ports; ~60-120 s):
+setsid bash -c 'curl -s -m 240 -X POST http://192.168.86.38:8787/api/diagnostic/scan \
+  -H "Content-Type: application/json" \
+  -d "{\"method\":\"nmap\",\"scan_ports\":false}" \
+  > /tmp/scan_result.json; echo done' &
+```
+
+**2. Read back the latest scan log:**
+
+```bash
+# List recent scan log files:
+curl -s http://192.168.86.38:8787/api/diagnostic/scan-log \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f) for f in d['files']]"
+
+# Read full latest log content:
+curl -s http://192.168.86.38:8787/api/diagnostic/scan-log \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['latest'].get('content',''))"
+```
+
+**3. Alternative: read logs via SSH (log-servers MCP tool or `batcave_logs.sh`):**
+
+```bash
+# Via the read-only cline-logs SSH account:
+curl -s http://192.168.86.38:8787/api/diagnostic/scan-log \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['files'][0]['name'])"
+# → diag_20260927_125033_arp-scan_dc:a6:32:02:59:63_1.log
+# Then pass filename to log-servers MCP or batcave_logs.sh 'cat <filename>'
+```
+
+**Expected results (verified 2026-09-27):**
+- ARP sweep: `rc=0`, `found_ip=192.168.86.37` (flash), `error=None`, 15 hosts
+- Reverse DNS: ~87% resolution (13/15 hosts named)
+- mDNS: live names for flash, Apple TV, HP printer, WDMyCloud
+
+### Common roadblocks & workarounds
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| Scan curl returns before scan finishes | API is async; curl returns immediately | Check `/api/diagnostic/scan-log` for completed result |
+| Shell kills background `curl` at 30 s | `run_commands` timeout | Use `setsid bash -c '...' &` to detach |
+| `scan-log` endpoint returns 404 | Dev-only; `UPSTREAM_HEALER_DEBUG_LOG_DIR` unset | Only works on dev compose; not on prod/test |
+| `docker exec` fails | No SSH with docker privs to batcave | Use unauthenticated dev API at `:8787` instead |
+
 ## Key commands
 
 ```bash
