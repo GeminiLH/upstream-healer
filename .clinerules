@@ -1,0 +1,14 @@
+## Git
+- Push to the `gitlab` remote, never to `origin` or any GitHub remote.
+- After pushing, check pipeline status using the `gitlab-pipelines` MCP tools.
+
+## Pipelines
+- Pipelines are triggered automatically on push. Do NOT manually trigger them.
+- If a pipeline fails, fetch the job log and correct the error
+- When all tests pass, trigger the manual job deploy_dev to start the application
+- Application logs can be reviewed with the log-server. All credendials are stored
+
+## Memory Banks
+- At the start of each task, read files in `memory-bank/` for context.
+- After each commit where the pipeline passes, update relevant memory bank files with new decisions.
+- Prune: remove entries that are no longer accurate or have been superseded. 
