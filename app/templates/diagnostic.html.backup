@@ -500,6 +500,7 @@
           console.error('Error fetching scan progress:', err);
         });
          .catch(err => {
+         });
      }
      
      // Enhanced error handling for scan ID validation
