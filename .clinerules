@@ -1,12 +1,31 @@
+## Standard Ship Workflow
+
+When asked to "commit, push, and verify the pipeline", follow these steps in order:
+
+1. **Pre-flight**: Run `python3 -m pytest tests/ -q` and `python3 -m ruff check app/ scripts/ tests/` to catch failures before pushing.
+2. **Commit**: `git add -A && git commit -m '<message>'` (use conventional commit prefix: `fix:`, `feat:`, `docs:`, `refactor:`, etc.).
+3. **Push**: `git push gitlab main` — never use bare `git push` (upstream may point at legacy `origin`).
+4. **Verify pipeline**: Wait ~15 s, then poll pipeline status via the `gitlab-read` MCP tool:
+   - `GET /api/v4/projects/4/pipelines?per_page=1` → get the new pipeline ID.
+   - Poll `GET /api/v4/projects/4/pipelines/{id}` every 10 s until `status` is `success`, `failed`, or `canceled`.
+   - If `failed`, fetch the failing job trace via `GET /api/v4/projects/4/jobs/{job_id}/trace` and diagnose.
+5. **Deploy**: Once auto jobs (lint, unit_tests, build_image) pass, trigger `deploy_dev` via the `gitlab-pipelines` MCP tool (`POST /projects/4/jobs/{id}/play`). Wait for `success` status.
+6. **Verify deploy**: Check the dev UI responds: `curl -s -o /dev/null -w '%{http_code}' http://192.168.86.38:8787/` → expect 200 or 302.
+7. **Update memory bank**: After successful pipeline + deploy, update relevant `memory-bank/` files.
+
+**Alternative (one-command)**: If `.env.local` exists, run `bash scripts/ship.sh -m "<message>"` which automates all 7 steps above (~6 min end-to-end). Use `--no-deploy` to stop after auto jobs.
+
 ## Git
 - Push to the `gitlab` remote, never to `origin` or any GitHub remote.
-- After pushing, check pipeline status using the `gitlab-pipelines` MCP tools.
+- After pushing, check pipeline status using the `gitlab-read` MCP tool.
 
 ## Pipelines
 - Pipelines are triggered automatically on push. Do NOT manually trigger them.
-- If a pipeline fails, fetch the job log and correct the error
-- When all tests pass, trigger the manual job deploy_dev to start the application
-- Application logs can be reviewed with the log-server. All credendials are stored
+- If a pipeline fails, fetch the job trace via `gitlab-read` and correct the error.
+- When all auto jobs pass, trigger the manual `deploy_dev` job via the `gitlab-pipelines` MCP tool.
+- Application logs can be reviewed with the `log-servers` MCP tool.
+- **Never hand-roll curl calls to GitLab** — the MCP tools are pre-configured with tokens/scopes.
+- If the `gitlab-read` or `gitlab-pipelines` MCP tools aren't available, try `bash scripts/ship.sh -m "<message>" --no-deploy` instead.
 
 ## Memory Banks
 - At the start of each task, read files in `memory-bank/` for context.
