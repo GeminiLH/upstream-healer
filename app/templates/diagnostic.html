@@ -458,6 +458,144 @@
       }
     };
 
+
+    // Update the scan function to track scan ID and monitor progress
+    const originalRunScan = runBtn.onclick;
+    runBtn.onclick = async function(e) {
+      e.preventDefault();
+      clearInterval(scanProgressInterval);
+      scanProgressDiv.classList.add('hidden');
+      const mac = macEl.value.trim();
+      const method = methodEl.value;
+      const subnetId = _selectedSubnetId();
+      const subnetCidr = subnetEl ? ((subnetEl.selectedOptions[0] || {}).dataset?.cidr || "") : "";
+      const scope = subnetId ? subnetId : subnetCidr;
+      const scanPorts = portsEl ? portsEl.checked : false;
+      runBtn.disabled = true;
+      runLabel.textContent = 'Running…';
+      statusEl.textContent = `Running ${method}${mac ? ' for ' + mac : ''}${scope ? ' on ' + scope : ''}${scanPorts ? ' (scanning open ports…)' : ''}`;
+      statusEl.className = 'mb-2 text-sm text-slate-500 dark:text-slate-400';
+      resultEl.classList.remove('hidden');
+      outputEl.textContent = '…';
+      clearHosts();
+      try {
+        const res = await fetch('/api/diagnostic/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target_mac: mac, method: method, subnet_id: subnetId, subnet_cidr: subnetCidr, scan_ports: scanPorts }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          statusEl.textContent = `Error: ${data.detail || res.status}`;
+          statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+          outputEl.textContent = '';
+          return;
+        }
+        const scanId = data.scan_id;
+        if (scanId) {
+          scanProgressInterval = setInterval(() => pollScanProgress(scanId, mac, method), 1500);
+        }
+      } catch (err) {
+        statusEl.textContent = `Request failed: ${err}`;
+        statusEl.className = 'mb-2 text-sm text-rose-600 dark:text-rose-400';
+        outputEl.textContent = '';
+      }
+    };
+
+    // Poll progress and update UI incrementally
+    function pollScanProgress(scanId, mac, method) {
+      fetch(`/api/diagnostic/scan-progress/${scanId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.error) {
+            clearInterval(scanProgressInterval);
+            finishScan(mac, method, null, data);
+            return;
+          }
+          updateScanTiming(data);
+          if (data.hosts && data.hosts.length > 0) {
+            renderHosts(data.hosts, data.found_ip, mac, method, data.output, data.ports_error);
+          }
+          if (data.status === 'complete') {
+            clearInterval(scanProgressInterval);
+            const result = data.result || {};
+            finishScan(mac, method, result, data);
+          }
+        })
+        .catch(err => { console.error('Error polling scan progress:', err); });
+    }
+
+    // Render host table
+    function renderHosts(hosts, found_ip, mac, method, output, ports_error) {
+      const fmtPorts = (h) => {
+        const list = (h.ports || []).map((p) => `${p.port}/${p.protocol || 'tcp'}${p.service ? ' ' + p.service : ''}`);
+        return list.length ? list.join(', ') : '';
+      };
+      hostsBody.innerHTML = hosts.map((h) => {
+        const ports = fmtPorts(h);
+        return `<tr class="text-slate-700 dark:text-slate-200">
+          <td class="px-3 py-1.5 font-mono">${h.hostname ? esc(h.hostname) : '<span class="text-slate-400 dark:text-slate-600">—</span>'}</td>
+          <td class="px-3 py-1.5 font-mono">${esc(h.ip)}</td>
+          <td class="px-3 py-1.5 font-mono">${h.mac ? esc(h.mac) : '<span class="text-slate-400 dark:text-slate-600">--</span>'}</td>
+          <td class="px-3 py-1.5 text-xs text-slate-500 dark:text-slate-400">${esc(h.detail)}</td>
+          <td class="px-3 py-1.5 text-xs font-mono text-slate-600 dark:text-slate-300">${ports ? esc(ports) : '<span class="text-slate-400 dark:text-slate-600">—</span>'}</td>
+        </tr>`;
+      }).join('');
+      hostsCount.textContent = `(${hosts.length})`;
+      hostsWrap.classList.toggle('hidden', !hosts.length);
+      if (output) outputEl.textContent = output;
+    }
+
+    // Finalize scan display
+    function finishScan(mac, method, result, data) {
+      const foundCount = (data.hosts || (result && result.hosts) || []).length;
+      let statusMsg, statusCls = 'mb-2 text-sm';
+      if (data.error) {
+        statusMsg = `${method}: ${data.error}`;
+        statusCls += ' text-rose-600 dark:text-rose-400';
+      } else if (data.found_ip || (result && result.found_ip)) {
+        const foundIp = data.found_ip || (result && result.found_ip);
+        const hosts = data.hosts || (result && result.hosts) || [];
+        const fh = hosts.find((h) => h.ip === foundIp);
+        statusMsg = `Found ${mac} at ${foundIp}` +
+          (fh && fh.hostname ? ` (${fh.hostname})` : '') +
+          ` (via ${data.found_via || (result && result.found_via)})`;
+        statusCls += ' text-emerald-600 dark:text-emerald-400';
+      } else if (mac) {
+        statusMsg = `No match for ${mac} (${method} finished)`;
+        statusCls += ' text-amber-600 dark:text-amber-400';
+      } else {
+        statusMsg = `Sweep complete: ${foundCount} host${foundCount === 1 ? '' : 's'} found (${method})`;
+        statusCls += ' text-emerald-600 dark:text-emerald-400';
+      }
+      if (data.ports_error) statusMsg += ` · ${data.ports_error}`;
+      statusEl.textContent = statusMsg;
+      statusEl.className = statusCls;
+      if (data.output) outputEl.textContent = data.output;
+      runBtn.disabled = false;
+      runLabel.textContent = 'Run scan';
+      scanProgressDiv.classList.add('hidden');
+    }
+
+    // Update timing display
+    function updateScanTiming(data) {
+      if (data.elapsed_time !== undefined) {
+        const els = document.getElementById('elapsed-time');
+        if (els) els.textContent = `${data.elapsed_time}s`;
+      }
+      if (data.hosts_scanned !== undefined && data.total_hosts > 0) {
+        const rem = document.getElementById('remaining-time');
+        if (rem) rem.textContent = `${data.hosts_scanned}/${data.total_hosts} hosts scanned`;
+      } else if (data.estimated_remaining !== null) {
+        const rem = document.getElementById('remaining-time');
+        if (rem) rem.textContent = `${Math.max(0, data.estimated_remaining).toFixed(1)}s`;
+      }
+      if (data.estimated_completion) {
+        const comp = document.getElementById('completion-time');
+        if (comp) comp.textContent = new Date(data.estimated_completion * 1000).toLocaleTimeString();
+      }
+      scanProgressDiv.classList.remove('hidden');
+    }
     // Add timing functionality
     let scanProgressInterval = null;
     const scanProgressDiv = document.getElementById('scan-progress');

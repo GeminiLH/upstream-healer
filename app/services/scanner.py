@@ -1751,6 +1751,66 @@ def run_port_scan(
     return by_host, None
 
 
+async def run_port_scan_incremental(
+    hosts: list[str],
+    callback: Optional[callable] = None,
+    timeout: Optional[float] = None,
+) -> tuple[dict[str, list[dict]], Optional[str]]:
+    """Scan hosts one at a time, invoking ``callback(host_result)`` after each.
+
+    Unlike :func:`run_port_scan` which batches all targets into a single nmap
+    invocation, this variant scans hosts sequentially so the caller can surface
+    partial results to the UI as soon as each host is done.
+
+    ``callback`` receives a ``dict`` keyed by the host IP (same shape as the
+    return value of :func:`run_port_scan`, but for one host only).
+
+    Returns the full aggregated ``{ip: [ports]}`` mapping and any error string.
+    """
+    # Quick sanity: verify nmap is available before we start
+    try:
+        subprocess.run(["nmap", "-V"], capture_output=True, text=True, timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}, "nmap is not installed; open ports could not be scanned."
+
+    by_host: dict[str, list[dict]] = {}
+
+    for i, ip in enumerate(hosts):
+        cmd = [
+            "nmap", "-Pn", "-sT", "-sV", "--open", "-p-",
+            "-T4", "--max-retries", "1", "--host-timeout", "120s",
+            "-oX", "-", ip,
+        ]
+        host_timeout = timeout or 120
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=host_timeout)
+        except FileNotFoundError:
+            return by_host, "nmap binary not found"
+        except subprocess.TimeoutExpired:
+            return by_host, f"port scan timed out after {int(host_timeout)}s on {ip}"
+        except OSError as exc:
+            return by_host, f"port scan failed: {exc}"
+
+        diag_log.proc("port-scan", cmd, proc)
+        partial = parse_nmap_services_by_host(proc.stdout or "")
+        by_host.update(partial)
+
+        if callback:
+            try:
+                await callback({**partial, "_index": i, "_total": len(hosts)})
+            except Exception:  # noqa: BLE001
+                pass  # callback failure must not abort the scan
+
+        diag_log.emit(
+            "port-scan",
+            f"host={ip}",
+            f"open_ports={sum(len(v) for v in partial.values())}",
+            f"progress={i+1}/{len(hosts)}",
+        )
+
+    return by_host, None
+
+
 async def probe_services(
     ip: str,
     tcp_ports: Optional[list[int]] = None,

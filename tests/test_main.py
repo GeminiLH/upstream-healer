@@ -96,18 +96,22 @@ def test_scan_endpoint_allows_empty_mac_sweep(temp_db_file):
 
 
 def test_scan_endpoint_passes_scan_ports(temp_db_file):
+    """Port scanning is now incremental: discovery runs first (scan_ports=False),
+    then run_port_scan_incremental is called for each host."""
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
             "app.main.run_scan",
             new=AsyncMock(return_value={"method": "nmap", "found_ip": None, "found_via": None, "output": "", "error": None, "hosts": []}),
-         ) as mock_scan:
+         ) as mock_scan, \
+         patch("app.main.run_port_scan_incremental", new=AsyncMock(return_value=({}, None))) as mock_port:
         resp = client.post(
             "/api/diagnostic/scan",
             json={"target_mac": "", "method": "nmap", "scan_ports": True},
         )
     assert resp.status_code == 200
-    assert mock_scan.call_args.kwargs.get("scan_ports") is True
+    # Discovery always runs with scan_ports=False (port scan is incremental)
+    assert mock_scan.call_args.kwargs.get("scan_ports") is False
 
 
 def test_scan_endpoint_scopes_to_subnet_cidr(temp_db_file):
@@ -1048,7 +1052,9 @@ def test_force_scan_no_npm_update_when_forward_matches(temp_db_file):
 
 
 def test_scan_endpoint_returns_valid_scan_id(temp_db_file):
-    """Test that the scan endpoint returns a valid scan_id field."""
+    """Test that the scan endpoint returns a valid scan_id immediately,
+    and the full result is available via the progress endpoint."""
+    import time as _time
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
@@ -1068,19 +1074,27 @@ def test_scan_endpoint_returns_valid_scan_id(temp_db_file):
         )
         assert resp.status_code == 200
         data = resp.json()
-        # Verify scan_id is present and valid
+        # Immediate response has scan_id
         assert "scan_id" in data
         assert isinstance(data["scan_id"], str)
         assert len(data["scan_id"]) > 0
-        # Verify other fields are still correct
-        assert data["found_ip"] == "192.168.1.100"
-        assert data["found_via"] == "arp-scan"
-        assert data["error"] == ""
-        assert len(data["hosts"]) == 1
+        # Wait for background task to finish
+        for _ in range(20):
+            _time.sleep(0.1)
+            prog = client.get(f"/api/diagnostic/scan-progress/{data['scan_id']}")
+            prog_data = prog.json()
+            if prog_data.get("status") == "complete":
+                break
+        assert prog_data["status"] == "complete"
+        # Full result available via progress endpoint
+        result = prog_data.get("result", prog_data)
+        assert result.get("found_ip") == "192.168.1.100"
+        assert result.get("found_via") == "arp-scan"
 
 
 def test_scan_progress_endpoint_works_with_valid_scan_id(temp_db_file):
     """Test that scan progress endpoint works correctly with valid scan IDs."""
+    import time as _time
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
@@ -1101,18 +1115,28 @@ def test_scan_progress_endpoint_works_with_valid_scan_id(temp_db_file):
         )
         assert resp.status_code == 200
         scan_id = resp.json()["scan_id"]
-        
+
+        # Wait for background task to finish so progress data is populated
+        for _ in range(20):
+            _time.sleep(0.1)
+            prog = client.get(f"/api/diagnostic/scan-progress/{scan_id}")
+            prog_data = prog.json()
+            if prog_data.get("status") in ("discovered", "complete"):
+                break
+
         # Then test the progress endpoint with that scan_id
         progress_resp = client.get(f"/api/diagnostic/scan-progress/{scan_id}")
         assert progress_resp.status_code == 200
         progress_data = progress_resp.json()
-        
+
         # Verify progress data structure
         assert "elapsed_time" in progress_data
         assert isinstance(progress_data["elapsed_time"], (int, float))
         assert progress_data["elapsed_time"] >= 0
         assert "estimated_completion" in progress_data
         assert "estimated_remaining" in progress_data
+        assert "status" in progress_data
+        assert "hosts" in progress_data
 
 
 def test_scan_progress_endpoint_handles_invalid_scan_id(temp_db_file):
@@ -1129,6 +1153,7 @@ def test_scan_progress_endpoint_handles_invalid_scan_id(temp_db_file):
 
 def test_scan_progress_endpoint_interval_cleanup(temp_db_file):
     """Test that scan progress tracking cleans up after scan completion."""
+    import time as _time
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
@@ -1149,11 +1174,19 @@ def test_scan_progress_endpoint_interval_cleanup(temp_db_file):
         )
         assert resp.status_code == 200
         scan_id = resp.json()["scan_id"]
-        
+
+        # Wait for scan to complete
+        for _ in range(20):
+            _time.sleep(0.1)
+            prog = client.get(f"/api/diagnostic/scan-progress/{scan_id}")
+            prog_data = prog.json()
+            if prog_data.get("status") == "complete":
+                break
+
         # Verify the scan ID exists in progress tracking
         from app.main import scan_progress
         assert scan_id in scan_progress
-        
+
         # Test that we can get progress info
         progress_resp = client.get(f"/api/diagnostic/scan-progress/{scan_id}")
         assert progress_resp.status_code == 200

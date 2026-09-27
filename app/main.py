@@ -32,6 +32,7 @@ from app.services.scanner import (
     load_suppressed_subnets,
     normalize_mac,
     remember_mdns_names,
+    run_port_scan_incremental,
     run_scan,
     save_suppressed_subnets,
     validate_host_record,
@@ -1329,13 +1330,10 @@ async def diagnostic_api(db: aiosqlite.Connection = Depends(get_db)):
 async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(get_db)):
     """Run an ARP, scapy or nmap scan on demand and return the raw output.
 
-    The scanner work is executed in a thread pool (see ``run_scan``) so a slow
-    ``arp-scan`` never blocks the event loop. Returns the found IP (if any), the
-    scanner that produced it, the full raw output, and any error string.
-
-    ``body.subnet_id`` optionally scopes the sweep to a single subnet (e.g. a
-    host is pinned to a specific network).  When 0, the scan covers every
-    effective subnet (manual rows + auto-discovered local networks).
+    Returns immediately with a ``scan_id``.  The scan runs in the background and
+    publishes incremental results into ``scan_progress`` — the frontend polls
+    ``/api/diagnostic/scan-progress/{scan_id}`` to track progress and retrieve
+    partial hosts as the port scan completes host by host.
     """
     method = body.method.strip().lower()
     if method not in ("arp-scan", "scapy", "nmap"):
@@ -1347,7 +1345,6 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
             if row:
                 subnet_ids = [row["cidr"]]
     if not subnet_ids and body.subnet_cidr.strip():
-        # Auto-detected subnets have no DB id — the UI targets them by CIDR.
         try:
             import ipaddress as _ip
 
@@ -1357,104 +1354,159 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
     if not subnet_ids:
         subnet_ids = [s["cidr"] for s in await list_subnets(db)]
 
-    with diag_log.scan_context(
-        target_mac=body.target_mac, method=method, subnets=subnet_ids
-    ):
-        # Kick off mDNS hostname discovery concurrently with the (blocking) ARP
-        # sweep so the multicast window overlaps the scan instead of adding to it.
-        mdns_task = asyncio.create_task(discover_hostnames())
-        result = await run_scan(
-            body.target_mac, method, subnets=subnet_ids or None, scan_ports=body.scan_ports
-        )
-        result["subnets"] = subnet_ids
-        logger.info(
-            f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac) or '(sweep)'} "
-            f"subnets={subnet_ids} scan_ports={body.scan_ports} "
-            f"found_ip={result['found_ip']} error={result['error']}"
-        )
-        # Layer real hostnames onto the swept hosts (curated DB name, then mDNS,
-        # then the usually-empty reverse-DNS result).  Best-effort: a discovery
-        # hiccup must never fail the scan itself.
-        try:
-            mdns_names = await mdns_task
-        except Exception:  # noqa: BLE001 - discovery failure is non-fatal
-            mdns_names = ({}, {})
-        # Cache any freshly-seen mDNS names by MAC so a device stays named on later
-        # scans even when it does not re-announce that instant (mDNS is racy).
-        try:
-            await remember_mdns_names(db, mdns_names[1] or {})
-        except Exception:  # noqa: BLE001 - caching must never fail the scan
-            pass
-        try:
-            known_names = await load_known_hostnames(db)
-        except Exception:  # noqa: BLE001
-            known_names = {}
-        try:
-            known_by_ip = await load_known_hostnames_by_ip(db)
-        except Exception:  # noqa: BLE001
-            known_by_ip = {}
-        try:
-            cached_names = await load_mdns_names(db)
-        except Exception:  # noqa: BLE001
-            cached_names = {}
-        hosts = result.get("hosts") or []
-        result["hosts"] = apply_hostnames(
-            hosts, mdns=mdns_names, known=known_names, cached=cached_names,
-            known_by_ip=known_by_ip,
-        )
-        diag_log.emit(
-            "hostnames",
-            f"known_names={known_names}",
-            f"known_by_ip={known_by_ip}",
-            f"mdns_live={mdns_names[0]}",
-            f"mdns_cached_source={mdns_names[1]}",
-            f"cached_names={cached_names}",
-            f"hosts={[(h.get('ip'), h.get('mac'), h.get('hostname')) for h in hosts]}",
-        )
-        diag_log.emit(
-            "result",
-            f"found_ip={result.get('found_ip')}",
-            f"found_via={result.get('found_via')}",
-            f"error={result.get('error')}",
-            f"hosts={len(hosts)}",
-        )
-        
-        # Generate a unique scan ID
-        import uuid
-        scan_id = str(uuid.uuid4())
-        
-        # Store initial progress tracking
-        scan_progress[scan_id] = {
-            "start_time": time.time(),
-            "estimated_duration": None  # Will be set when we know the estimate
-        }
-        
-        # Add scan_id to the response
-        result["scan_id"] = scan_id
-        
-        return result
+    # Generate scan ID before we start — the client uses this to poll.
+    import uuid
+
+    scan_id = str(uuid.uuid4())
+
+    # ── Inline background task ─────────────────────────────────────────
+    async def _do_scan():
+        with diag_log.scan_context(
+            target_mac=body.target_mac, method=method, subnets=subnet_ids
+        ):
+            mdns_task = asyncio.create_task(discover_hostnames())
+            result = await run_scan(
+                body.target_mac, method, subnets=subnet_ids or None, scan_ports=False
+            )
+            result["subnets"] = subnet_ids
+            logger.info(
+                f"diagnostic_scan: method={method} target={normalize_mac(body.target_mac) or '(sweep)'} "
+                f"subnets={subnet_ids} scan_ports={body.scan_ports} "
+                f"found_ip={result['found_ip']} error={result['error']}"
+            )
+            try:
+                mdns_names = await mdns_task
+            except Exception:  # noqa: BLE001
+                mdns_names = ({}, {})
+            try:
+                await remember_mdns_names(db, mdns_names[1] or {})
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                known_names = await load_known_hostnames(db)
+            except Exception:  # noqa: BLE001
+                known_names = {}
+            try:
+                known_by_ip = await load_known_hostnames_by_ip(db)
+            except Exception:  # noqa: BLE001
+                known_by_ip = {}
+            try:
+                cached_names = await load_mdns_names(db)
+            except Exception:  # noqa: BLE001
+                cached_names = {}
+            hosts = result.get("hosts") or []
+            hosts = apply_hostnames(
+                hosts, mdns=mdns_names, known=known_names, cached=cached_names,
+                known_by_ip=known_by_ip,
+            )
+            diag_log.emit(
+                "hostnames",
+                f"known_names={known_names}",
+                f"known_by_ip={known_by_ip}",
+                f"mdns_live={mdns_names[0]}",
+                f"mdns_cached_source={mdns_names[1]}",
+                f"cached_names={cached_names}",
+                f"hosts={[(h.get('ip'), h.get('mac'), h.get('hostname')) for h in hosts]}",
+            )
+            diag_log.emit(
+                "result",
+                f"found_ip={result.get('found_ip')}",
+                f"found_via={result.get('found_via')}",
+                f"error={result.get('error')}",
+                f"hosts={len(hosts)}",
+            )
+            # Publish discovery results immediately
+            host_ips = [h["ip"] for h in hosts]
+            scan_progress[scan_id] = {
+                "start_time": time.time(),
+                "status": "discovered",
+                "hosts": hosts,
+                "output": result.get("output", ""),
+                "error": result.get("error"),
+                "found_ip": result.get("found_ip"),
+                "found_via": result.get("found_via"),
+                "total_hosts": len(hosts),
+                "hosts_scanned": 0,
+                "scan_ports": body.scan_ports,
+            }
+            # Incremental port scan if requested
+            if body.scan_ports and host_ips:
+                scan_progress[scan_id]["status"] = "scanning_ports"
+
+                async def _on_host_done(partial_result: dict):
+                    idx = partial_result.pop("_index", 0)
+                    progress = scan_progress.get(scan_id, {})
+                    current_hosts = list(progress.get("hosts", []))
+                    for h in current_hosts:
+                        for ip, ports in partial_result.items():
+                            if h["ip"] == ip:
+                                h["ports"] = ports
+                    progress["hosts"] = current_hosts
+                    progress["hosts_scanned"] = idx + 1
+
+                port_map, ports_error = await run_port_scan_incremental(
+                    host_ips, callback=_on_host_done
+                )
+                current_hosts = scan_progress.get(scan_id, {}).get("hosts", [])
+                for h in current_hosts:
+                    h["ports"] = port_map.get(h["ip"], [])
+                scan_progress[scan_id]["hosts"] = current_hosts
+                scan_progress[scan_id]["ports_error"] = ports_error
+            # Finalise
+            progress = scan_progress[scan_id]
+            hosts = progress.get("hosts", [])
+            result["hosts"] = hosts
+            result["scan_id"] = scan_id
+            if progress.get("ports_error"):
+                result["ports_error"] = progress["ports_error"]
+            progress["status"] = "complete"
+            progress["result"] = result
+
+    asyncio.create_task(_do_scan())
+    scan_progress[scan_id] = {"start_time": time.time(), "status": "starting"}
+    return {"scan_id": scan_id, "status": "starting"}
 
 
 @app.get("/api/diagnostic/scan-progress/{scan_id}")
 async def get_scan_progress(scan_id: str):
-    """Get progress information for a running scan."""
+    """Get progress information for a running scan.
+
+    Returns timing info plus partial hosts (with ports) as soon as they are
+    discovered during port scanning.  When the scan is complete, ``result`` is
+    populated with the full result dict.
+    """
     if scan_id not in scan_progress:
         return {"error": "Scan not found"}
-    
+
     progress = scan_progress[scan_id]
     current_time = time.time()
     elapsed_time = current_time - progress["start_time"]
-    
-    # Calculate estimated completion time if we have an estimate
+
     estimated_completion = None
     if progress.get("estimated_duration"):
         estimated_completion = progress["start_time"] + progress["estimated_duration"]
-    
-    return {
+
+    resp = {
         "elapsed_time": round(elapsed_time, 2),
         "estimated_completion": estimated_completion,
-        "estimated_remaining": progress.get("estimated_duration", 0) - elapsed_time if progress.get("estimated_duration") else None
+        "estimated_remaining": (
+            progress.get("estimated_duration", 0) - elapsed_time
+            if progress.get("estimated_duration")
+            else None
+        ),
+        "status": progress.get("status", "starting"),
+        "hosts": progress.get("hosts", []),
+        "hosts_scanned": progress.get("hosts_scanned", 0),
+        "total_hosts": progress.get("total_hosts", 0),
+        "output": progress.get("output", ""),
+        "error": progress.get("error"),
+        "ports_error": progress.get("ports_error"),
     }
+    # When complete, include the full result for the frontend to consume
+    if progress.get("status") == "complete" and "result" in progress:
+        resp["result"] = progress["result"]
+
+    return resp
 
 
 @app.get("/api/diagnostic/scan-log")

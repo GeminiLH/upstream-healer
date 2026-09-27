@@ -44,6 +44,7 @@ from app.services.scanner import (
     run_l3_probe,
     run_nmap_scan,
     run_port_scan,
+    run_port_scan_incremental,
     run_scan,
     run_scapy_scan,
     run_service_scan,
@@ -1806,4 +1807,56 @@ class TestRunScanPorts:
         assert result["error"] is None
         assert len(result["hosts"]) == 1
         assert "ports" not in result["hosts"][0]  # no port scan requested
+
+
+class TestRunPortScanIncremental:
+    """Tests for the incremental (host-by-host) port scanner."""
+
+    async def test_calls_callback_per_host(self):
+        """Each host's result is passed to the callback as it finishes."""
+        calls = []
+        host_idx = [0]  # mutable counter for per-host output
+
+        async def cb(data):
+            calls.append(data.copy())
+
+        def fake_subprocess(cmd, **kw):
+            if cmd[0] == "nmap" and "-V" in cmd:
+                return MagicMock(returncode=0, stdout="nmap 7.94")
+            # Per-host XML output — note the addrtype='ipv4' required by parser
+            ips = ["10.0.0.1", "10.0.0.2"]
+            ports = [22, 80]
+            idx = min(host_idx[0], len(ips) - 1)
+            host_idx[0] += 1
+            return MagicMock(returncode=0, stdout=f"""<?xml version="1.0"?>
+<nmaprun>
+  <host><address addr="{ips[idx]}" addrtype="ipv4"/><status state="up"/>
+    <ports><port protocol="tcp" portid="{ports[idx]}"><state state="open"/></port></ports>
+  </host>
+</nmaprun>""")
+
+        with patch("subprocess.run", side_effect=fake_subprocess):
+            result, err = await run_port_scan_incremental(
+                ["10.0.0.1", "10.0.0.2"], callback=cb
+            )
+
+        assert len(calls) == 2
+        assert calls[0]["_index"] == 0
+        assert calls[0]["_total"] == 2
+        assert calls[1]["_index"] == 1
+        assert calls[1]["_total"] == 2
+        assert result["10.0.0.1"][0]["port"] == 22
+        assert result["10.0.0.2"][0]["port"] == 80
+
+    async def test_empty_host_list_returns_empty(self):
+        """No hosts means no nmap invocation."""
+        def fake_subprocess(cmd, **kw):
+            if cmd[0] == "nmap" and "-V" in cmd:
+                return MagicMock(returncode=0, stdout="nmap 7.94")
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("subprocess.run", side_effect=fake_subprocess):
+            result, err = await run_port_scan_incremental([])
+        assert result == {}
+        assert err is None
 
