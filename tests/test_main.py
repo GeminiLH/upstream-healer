@@ -1055,7 +1055,6 @@ async def test_scan_endpoint_returns_valid_scan_id(temp_db_file):
     """Test that the scan endpoint returns a valid scan_id immediately,
     and the full result is available via the progress endpoint."""
     import asyncio
-    from app.main import scan_progress
     client = TestClient(app)
     with patch("app.main.list_subnets", new=AsyncMock(return_value=[])), \
          patch(
