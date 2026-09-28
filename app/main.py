@@ -1326,6 +1326,38 @@ async def diagnostic_api(db: aiosqlite.Connection = Depends(get_db)):
     }
 
 
+def _publish_discovery_progress(
+    scan_id: str,
+    hosts: list[dict],
+    result: dict,
+    scan_ports: bool,
+) -> dict:
+    """Publish discovery results into ``scan_progress`` for ``scan_id``.
+
+    The existing progress entry is updated **in place** — never replaced —
+    because replacing it would reset ``start_time`` and make the elapsed-time
+    display jump back to ~0 the moment discovery finishes (the UI reads this as
+    the scan being "stuck/frozen").  Returns the updated progress entry.
+    """
+    progress = scan_progress.setdefault(
+        scan_id, {"start_time": time.time(), "status": "starting"}
+    )
+    progress.update(
+        {
+            "status": "discovered",
+            "hosts": hosts,
+            "output": result.get("output", ""),
+            "error": result.get("error"),
+            "found_ip": result.get("found_ip"),
+            "found_via": result.get("found_via"),
+            "total_hosts": len(hosts),
+            "hosts_scanned": 0,
+            "scan_ports": scan_ports,
+        }
+    )
+    return progress
+
+
 @app.post("/api/diagnostic/scan")
 async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(get_db)):
     """Run an ARP, scapy or nmap scan on demand and return the raw output.
@@ -1415,36 +1447,32 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
                 f"error={result.get('error')}",
                 f"hosts={len(hosts)}",
             )
-            # Publish discovery results immediately
+            # Publish discovery results immediately.  The helper updates the
+            # existing entry in place so ``start_time`` is preserved — replacing
+            # the dict would reset the elapsed-time display to ~0 the moment
+            # discovery finishes (reads as "stuck/frozen").
             host_ips = [h["ip"] for h in hosts]
-            scan_progress[scan_id] = {
-                "start_time": time.time(),
-                "status": "discovered",
-                "hosts": hosts,
-                "output": result.get("output", ""),
-                "error": result.get("error"),
-                "found_ip": result.get("found_ip"),
-                "found_via": result.get("found_via"),
-                "total_hosts": len(hosts),
-                "hosts_scanned": 0,
-                "scan_ports": body.scan_ports,
-            }
+            progress = _publish_discovery_progress(
+                scan_id, hosts, result, scan_ports=body.scan_ports
+            )
             # Incremental port scan if requested
             if body.scan_ports and host_ips:
-                scan_progress[scan_id]["status"] = "scanning_ports"
-                # Rough estimate: ~10s per host for port scanning, capped at 300s
-                scan_progress[scan_id]["estimated_duration"] = min(len(host_ips) * 10, 300)
+                progress["status"] = "scanning_ports"
+                # Rough estimate: a full ``nmap -p-`` service scan of one host
+                # takes ~20-60 s on this network; 30 s/host with a 600 s cap
+                # keeps the ETA believable for a dozen or so hosts.
+                progress["estimated_duration"] = min(len(host_ips) * 30, 600)
 
                 async def _on_host_done(partial_result: dict):
                     idx = partial_result.pop("_index", 0)
-                    progress = scan_progress.get(scan_id, {})
-                    current_hosts = list(progress.get("hosts", []))
+                    prog = scan_progress.get(scan_id, {})
+                    current_hosts = list(prog.get("hosts", []))
                     for h in current_hosts:
                         for ip, ports in partial_result.items():
                             if h["ip"] == ip:
                                 h["ports"] = ports
-                    progress["hosts"] = current_hosts
-                    progress["hosts_scanned"] = idx + 1
+                    prog["hosts"] = current_hosts
+                    prog["hosts_scanned"] = idx + 1
 
                 port_map, ports_error = await run_port_scan_incremental(
                     host_ips, callback=_on_host_done
@@ -1452,10 +1480,9 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
                 current_hosts = scan_progress.get(scan_id, {}).get("hosts", [])
                 for h in current_hosts:
                     h["ports"] = port_map.get(h["ip"], [])
-                scan_progress[scan_id]["hosts"] = current_hosts
-                scan_progress[scan_id]["ports_error"] = ports_error
+                progress["hosts"] = current_hosts
+                progress["ports_error"] = ports_error
             # Finalise
-            progress = scan_progress[scan_id]
             hosts = progress.get("hosts", [])
             result["hosts"] = hosts
             result["scan_id"] = scan_id

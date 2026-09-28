@@ -1775,7 +1775,8 @@ async def run_port_scan_incremental(
 
     by_host: dict[str, list[dict]] = {}
 
-    for i, ip in enumerate(hosts):
+    def _scan_one_host(ip: str) -> tuple[dict[str, list[dict]], Optional[str]]:
+        """Blocking scan of a single host (runs in a worker thread)."""
         cmd = [
             "nmap", "-Pn", "-sT", "-sV", "--open", "-p-",
             "-T4", "--max-retries", "1", "--host-timeout", "120s",
@@ -1785,14 +1786,24 @@ async def run_port_scan_incremental(
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=host_timeout)
         except FileNotFoundError:
-            return by_host, "nmap binary not found"
+            return {}, "nmap binary not found"
         except subprocess.TimeoutExpired:
-            return by_host, f"port scan timed out after {int(host_timeout)}s on {ip}"
+            return {}, f"port scan timed out after {int(host_timeout)}s on {ip}"
         except OSError as exc:
-            return by_host, f"port scan failed: {exc}"
+            return {}, f"port scan failed: {exc}"
 
         diag_log.proc("port-scan", cmd, proc)
-        partial = parse_nmap_services_by_host(proc.stdout or "")
+        return parse_nmap_services_by_host(proc.stdout or ""), None
+
+    for i, ip in enumerate(hosts):
+        # Run the per-host nmap in a worker thread so the event loop is never
+        # blocked: the /api/diagnostic/scan-progress endpoint must stay
+        # responsive while a (multi-minute) port scan runs, and the per-host
+        # callback must fire promptly for the UI progress bar.  A bare
+        # subprocess.run on the loop thread would freeze the whole app.
+        partial, err = await asyncio.to_thread(_scan_one_host, ip)
+        if err:
+            return by_host, err
         by_host.update(partial)
 
         if callback:

@@ -1,9 +1,9 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-28 — **Pipeline 231 (HEAD `e8dcef1`) fully green incl. `deploy_dev`; scan-progress UI (`d2b62f0`) now live on dev.**
-> Pipeline 231 (commit `e8dcef1`, docs-only) — lint ✅, unit_tests ✅,
-> build_image ✅, `deploy_dev` ✅ (job 1370, 18.5 s). Dev stack now runs the
-> 231 image on batcave; UI at :8787 (HTTP 200).
+> Snapshot: 2026-09-28 — **Pipeline 232 (HEAD `277ac8a`) fully green incl. `deploy_dev`; Run Scan button fix now live on dev.**
+> Pipeline 232 (commit `277ac8a`, removed duplicate `originalRunScan`) —
+> lint ✅, unit_tests ✅, build_image ✅, `deploy_dev` ✅ (job 1378, 17.9 s).
+> Dev stack now runs the 232 image on batcave; UI at :8787 (HTTP 200).
 > MCP tools re-verified live from Cline 2026-09-27: `gitlab-read` (GET
 > pipelines/jobs/traces), `gitlab-pipelines` (POST /play deploy_dev),
 > `log-servers` (SSH diag-log access — full `ls -lat` / `head -n` / `grep -i` /
@@ -11,6 +11,23 @@
 > 378 tests (377 passed + 1 skipped), ruff clean.
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q`.
+
+## Latest (2026-09-28) — Pipeline 232 shipped + deployed; Run Scan button fixed
+
+- **Shipped `277ac8a`** (fix: removed the duplicate top-level
+  `const originalRunScan` in `app/templates/diagnostic.html` — an obsolete
+  synchronous handler, lines 389–484 — that threw a `SyntaxError` and broke the
+  "Run Scan" button). Pure deletion (−96 lines); the surviving handler is the
+  correct async implementation (POST → `scan_id` → poll → render). Pre-flight:
+  377 passed + 1 skipped, ruff clean. Committed alongside in-flight process docs
+  (`.clinerules` MCP-poll caveats, `context.md` 60 s MCP timeout gotcha).
+- **Pipeline 232 fully green:** lint ✅ (16.8 s), unit_tests ✅ (146.6 s),
+  build_image ✅ (36.7 s), then manual **`deploy_dev` job 1378 ✅** (17.9 s).
+  Dev stack on batcave now runs the 232 image.
+- **Served-page verification (live):** `curl :8787/` → HTTP 200; the served
+  `/diagnostic` page contains **exactly 1** `const originalRunScan` (was 2) and
+  the async `runBtn.onclick = async function` handler. Ready for end-to-end
+  button click test in the browser.
 
 ## Latest (2026-09-28) — Pipeline 231 shipped + deployed; scan-progress UI live
 

@@ -1193,3 +1193,74 @@ async def test_scan_progress_endpoint_interval_cleanup(temp_db_file):
         progress_resp = client.get(f"/api/diagnostic/scan-progress/{scan_id}")
         assert progress_resp.status_code == 200
 
+
+def test_scan_elapsed_time_never_resets():
+    """Regression: publishing discovery results must update the existing
+    progress entry in place, not replace it.  Replacing it reset
+    ``start_time`` and made ``elapsed_time`` jump back to ~0 the moment
+    discovery finished — the UI then read as "stuck/frozen" for the rest of
+    the scan.
+
+    We exercise the publish helper directly (deterministically) rather than
+    the fire-and-forget background task, which is timing-sensitive under
+    ``TestClient``.
+    """
+    import time as _time
+
+    from app.main import _publish_discovery_progress, scan_progress
+
+    scan_id = "unit-no-reset"
+    # Simulate the endpoint seeding the entry, then some time elapsing before
+    # discovery finishes.
+    scan_progress[scan_id] = {"start_time": _time.time() - 5.0, "status": "starting"}
+    original_start = scan_progress[scan_id]["start_time"]
+
+    _publish_discovery_progress(
+        scan_id,
+        hosts=[{"ip": "192.168.1.100", "mac": "aa:bb:cc:dd:ee:ff"}],
+        result={"found_ip": "192.168.1.100", "found_via": "arp-scan", "error": ""},
+        scan_ports=False,
+    )
+
+    entry = scan_progress[scan_id]
+    # The start_time must be the ORIGINAL one — never re-seeded at discovery.
+    assert entry["start_time"] == original_start
+    assert entry["status"] == "discovered"
+    # The elapsed window is preserved: 5 s have genuinely elapsed, not ~0.
+    assert _time.time() - entry["start_time"] >= 5.0
+    scan_progress.pop(scan_id, None)
+
+
+def test_scan_elapsed_time_grows_monotonically():
+    """Regression: as a scan progresses the reported ``elapsed_time`` must keep
+    growing (never drop back to ~0).  We drive the publish helper directly and
+    assert the elapsed window derived from ``start_time`` is monotonic across
+    discovery and port-scan phases."""
+    import time as _time
+
+    from app.main import _publish_discovery_progress, scan_progress
+
+    scan_id = "unit-monotonic"
+    start = _time.time() - 2.0
+    scan_progress[scan_id] = {"start_time": start, "status": "starting"}
+
+    _publish_discovery_progress(
+        scan_id,
+        hosts=[{"ip": "192.168.1.100", "mac": "aa:bb:cc:dd:ee:ff"}],
+        result={"found_ip": None, "found_via": None, "error": None},
+        scan_ports=True,
+    )
+    # Emulate the port-scan phase advancing progress without touching start_time.
+    scan_progress[scan_id]["status"] = "scanning_ports"
+    scan_progress[scan_id]["hosts_scanned"] = 1
+
+    e1 = _time.time() - scan_progress[scan_id]["start_time"]
+    _time.sleep(0.05)
+    e2 = _time.time() - scan_progress[scan_id]["start_time"]
+
+    assert e1 >= 2.0, "elapsed window must reflect the real start_time, not ~0"
+    assert e2 >= e1, f"elapsed_time went backwards: {e1} -> {e2}"
+    assert scan_progress[scan_id]["status"] == "scanning_ports"
+    scan_progress.pop(scan_id, None)
+
+

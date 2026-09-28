@@ -387,7 +387,6 @@
     }
 
     // Update the scan function to track scan ID and monitor progress
-    const originalRunScan = runBtn.onclick;
     const spinnerEl = document.getElementById('scan-spinner');
     const statusTextEl = document.getElementById('scan-status-text');
     const progressBarWrap = document.getElementById('scan-progress-bar-wrap');
@@ -554,7 +553,30 @@
       if (data.output) outputEl.textContent = data.output;
       runBtn.disabled = false;
       runLabel.textContent = 'Run scan';
-      scanProgressDiv.classList.add('hidden');
+      // Keep the progress card visible on success so the user sees the final
+      // total time and a clear "completed" state (previously it was hidden
+      // immediately, so the total time was never shown).  On an error, collapse
+      // it — the failure is already surfaced in the status line above.
+      if (!data.error) {
+        scanProgressDiv.classList.remove('hidden');
+        const et = document.getElementById('elapsed-time');
+        if (et) et.textContent = `${data.elapsed_time}s`;
+        const rem = document.getElementById('remaining-time');
+        if (rem) rem.textContent = '0s';
+        const comp = document.getElementById('completion-time');
+        if (comp) comp.textContent = '—';
+        if (statusTextEl) {
+          statusTextEl.textContent = `Scan complete — total ${data.elapsed_time}s`;
+          statusTextEl.className = 'text-sm font-medium text-emerald-600 dark:text-emerald-400';
+        }
+        if (progressBarWrap) {
+          progressBarWrap.classList.remove('hidden');
+          progressBar.style.width = '100%';
+          progressCount.textContent = `${data.total_hosts || (data.hosts || []).length} hosts`;
+        }
+      } else {
+        scanProgressDiv.classList.add('hidden');
+      }
     }
 
     // Update timing display
@@ -563,14 +585,20 @@
         const els = document.getElementById('elapsed-time');
         if (els) els.textContent = `${data.elapsed_time}s`;
       }
-      if (data.hosts_scanned !== undefined && data.total_hosts > 0) {
+      if (data.status === 'complete') {
+        // Final state: nothing left, total time is the elapsed value above.
+        const rem = document.getElementById('remaining-time');
+        if (rem) rem.textContent = '0s';
+        const comp = document.getElementById('completion-time');
+        if (comp) comp.textContent = '—';
+      } else if (data.hosts_scanned !== undefined && data.total_hosts > 0) {
         const rem = document.getElementById('remaining-time');
         if (rem) rem.textContent = `${data.hosts_scanned}/${data.total_hosts} hosts scanned`;
       } else if (data.estimated_remaining !== null) {
         const rem = document.getElementById('remaining-time');
         if (rem) rem.textContent = `${Math.max(0, data.estimated_remaining).toFixed(1)}s`;
       }
-      if (data.estimated_completion) {
+      if (data.status !== 'complete' && data.estimated_completion) {
         const comp = document.getElementById('completion-time');
         if (comp) comp.textContent = new Date(data.estimated_completion * 1000).toLocaleTimeString();
       }
@@ -579,45 +607,6 @@
     // Add timing functionality
     let scanProgressInterval = null;
     const scanProgressDiv = document.getElementById('scan-progress');
-    const elapsedTimeSpan = document.getElementById('elapsed-time');
-    const remainingTimeSpan = document.getElementById('remaining-time');
-    const completionTimeSpan = document.getElementById('completion-time');
-
-    function updateScanProgress(scanId) {
-      if (!scanId) return;
-      
-      fetch(`/api/diagnostic/scan-progress/${scanId}`)
-        .then(res => res.json())
-        .then(data => {
-          if (data.error) {
-            // Stop the interval if scan is complete or error
-            clearInterval(scanProgressInterval);
-            return;
-          }
-          
-          // Update timing information
-          elapsedTimeSpan.textContent = `${data.elapsed_time}s`;
-          
-          if (data.estimated_remaining !== null) {
-            remainingTimeSpan.textContent = `${Math.max(0, data.estimated_remaining).toFixed(1)}s`;
-          } else {
-            remainingTimeSpan.textContent = 'Calculating...';
-          }
-          
-          if (data.estimated_completion) {
-            const completionDate = new Date(data.estimated_completion * 1000);
-            completionTimeSpan.textContent = completionDate.toLocaleTimeString();
-          } else {
-            completionTimeSpan.textContent = '-';
-          }
-          
-          // Show progress section
-          scanProgressDiv.classList.remove('hidden');
-        })
-        .catch(err => {
-          console.error('Error fetching scan progress:', err);
-        });
-    }
 
     document.querySelectorAll('.kh-btn').forEach((btn) => {
       btn.addEventListener('click', () => {

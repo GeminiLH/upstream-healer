@@ -1,6 +1,7 @@
 """Tests for app.services.scanner — MAC normalization and reachability."""
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -1859,4 +1860,44 @@ class TestRunPortScanIncremental:
             result, err = await run_port_scan_incremental([])
         assert result == {}
         assert err is None
+
+    async def test_port_scan_does_not_block_event_loop(self):
+        """The per-host nmap must run off the event-loop thread: while a
+        (slow) host scan is in flight, the loop must stay responsive so the
+        /api/diagnostic/scan-progress endpoint keeps answering.  A bare
+        subprocess.run on the loop thread would freeze the whole app."""
+        import time as _time
+
+        calls = []
+
+        async def cb(data):
+            calls.append(data.copy())
+
+        def fake_subprocess(cmd, **kw):
+            if cmd[0] == "nmap" and "-V" in cmd:
+                return MagicMock(returncode=0, stdout="nmap 7.94")
+            _time.sleep(0.3)  # simulate a slow per-host service scan
+            return MagicMock(returncode=0, stdout="")
+
+        async def _heartbeat():
+            # Yield control on the loop; if the port scan blocked the loop,
+            # this would not run until the scan finished.
+            await asyncio.sleep(0)
+            return _time.monotonic()
+
+        with patch("subprocess.run", side_effect=fake_subprocess):
+            scan_task = asyncio.create_task(
+                run_port_scan_incremental(["10.0.0.1"], callback=cb)
+            )
+            # Give the scan a head start (it should be mid-first-host-scan).
+            await asyncio.sleep(0.1)
+            hb_start = await _heartbeat()
+            # The heartbeat must have returned quickly (the loop is free).
+            assert _time.monotonic() - hb_start < 0.2
+            result, err = await scan_task
+
+        assert err is None
+        assert result == {}
+        assert len(calls) == 1
+        assert calls[0]["_index"] == 0
 
