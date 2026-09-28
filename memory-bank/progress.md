@@ -1,9 +1,9 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-27 — **Pipeline 230 (HEAD `d2b62f0`) auto jobs green; awaiting manual `deploy_dev`.**
-> Pipeline 230 (commit `d2b62f0`, scan-progress UI) — lint ✅, unit_tests ✅,
-> build_image ✅, `deploy_dev` pending (manual, job 1362). Dev stack still runs
-> the 229 image on batcave (10 hosts). UI at :8787 (HTTP 200).
+> Snapshot: 2026-09-28 — **Pipeline 231 (HEAD `e8dcef1`) fully green incl. `deploy_dev`; scan-progress UI (`d2b62f0`) now live on dev.**
+> Pipeline 231 (commit `e8dcef1`, docs-only) — lint ✅, unit_tests ✅,
+> build_image ✅, `deploy_dev` ✅ (job 1370, 18.5 s). Dev stack now runs the
+> 231 image on batcave; UI at :8787 (HTTP 200).
 > MCP tools re-verified live from Cline 2026-09-27: `gitlab-read` (GET
 > pipelines/jobs/traces), `gitlab-pipelines` (POST /play deploy_dev),
 > `log-servers` (SSH diag-log access — full `ls -lat` / `head -n` / `grep -i` /
@@ -11,6 +11,19 @@
 > 378 tests (377 passed + 1 skipped), ruff clean.
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q`.
+
+## Latest (2026-09-28) — Pipeline 231 shipped + deployed; scan-progress UI live
+
+- **Shipped `e8dcef1`** (docs-only: seeder host count 6 → 8, `fash` → `flash`
+  rename leftovers in README/seed_dev.py/test comment/decisions.md, log-server
+  whitelist docs in context.md). Pre-flight: 377 passed + 1 skipped, ruff clean.
+- **Pipeline 231 fully green:** lint ✅ (17 s), unit_tests ✅ (150 s),
+  build_image ✅ (37 s), then manual **`deploy_dev` job 1370 ✅** (18.5 s).
+  Dev stack on batcave now runs the 231 image (which carries the `d2b62f0`
+  scan-progress UI). Dev UI `:8787` → HTTP 200; `log-server` `ls -lat` on the
+  diag dir clean (20 files, no deploy errors).
+- Note: pipeline 230's `deploy_dev` (job 1362) was superseded — the docs
+  commit shipped first, so 231's deploy is the one that landed.
 
 ## Latest (2026-09-27) — MCP tools re-verified + log-server whitelist fixed
 
@@ -390,6 +403,14 @@ placeholder, and the `POST /api/diagnostic/scan` request contract all live in
   was just slow to register the push — **re-run the same command**; the script
   resumes (skips commit/push when there is nothing to commit) and picks up the
   pipeline for the current HEAD.
+- **Manual ship loop via MCP (verified 2026-09-28, pipeline 231):** pre-flight
+  (ruff foreground; pytest detached + sentinel — ~26 s, at the 30 s foreground
+  cap) → commit → `git push gitlab main` → `sleep 15` → `list_pipelines(4,
+  per_page=1)` (check `sha` matches) → poll `list_pipeline_jobs` with `sleep 25`
+  between calls (never `wait_for_pipeline` — 60 s MCP timeout; never the
+  pipeline `status` — it sticks at `manual` until the manual jobs run) →
+  `play_pipeline_job(deploy_dev)` → poll `get_pipeline_job` → `curl :8787`
+  (expect 200/302) + `log-server ls -lat` → update memory bank.
 - CLI: argparse subcommands; success → JSON to stdout; failure → message +
   non-zero exit.
 - Timestamps: use `parse_timestamp`/`format_timestamp` from `app/config.py`.

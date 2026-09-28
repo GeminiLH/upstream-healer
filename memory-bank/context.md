@@ -192,6 +192,15 @@ sentinel file on exit, and **poll that file** in a short separate command; the
 work keeps running in its own session even after the launching shell is reaped
 (this is how the Fix C `deploy_dev` and the live nmap sweep were driven here).
 
+**MCP timeout gotcha (verified 2026-09-28):** `gitlab-pipelines` MCP calls have
+a hard **60 s timeout** — `wait_for_pipeline` / `wait_for_job` (which block
+until terminal status) always exceed it and return
+`MCP error -32001 … timed out after 60s`. Don't use them; poll instead:
+`sleep 25` via `run_commands` (a bare `sleep 30` command itself hits the ~30 s
+foreground cap and fails), then `list_pipeline_jobs` / `get_pipeline_job`.
+Typical durations: auto stage ~3–4 min (lint ~17 s, unit_tests ~150 s,
+build_image ~37 s); `deploy_dev` ~20 s.
+
 ## Testing & Troubleshooting Checklist (2026-09-27 verified)
 
 ### Quick scan test (verify scanner changes without `docker exec`)
