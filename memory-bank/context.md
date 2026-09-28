@@ -1,9 +1,9 @@
 # Context — Upstream Healer
 
-> Last updated: 2026-09-24 (no-MAC nmap sweep now labels hosts via the fixed
-> reverse-DNS fallback; dev-only `GET /api/diagnostic/scan-log` + "Scan debug
-> log" button expose the newest `diag_*.log`). Re-verify with `git status` and
-> `progress.md` before relying on this.
+> Last updated: 2026-09-27 (scan-progress UI `d2b62f0` — diagnostic page polls
+> `GET /api/diagnostic/scan-progress/{scan_id}` for status/progress/ETA; seeder
+> now 8 hosts / 6 NPM-linked; `fash` → `flash` rename leftovers fixed).
+> Re-verify with `git status` and `progress.md` before relying on this.
 
 ## Repository (read this first)
 
@@ -78,6 +78,21 @@ must never be copied into code, tests, or the memory bank.
   jobs; deploy jobs use `needs:optional` for `unit_tests`.
 - `upstream healer notes.txt` contains live secrets and is in `.gitignore` —
   **never commit it** (hard rule, see decisions.md).
+- **MCP servers: `command` must be the node binary, not the package bin shim.**
+  The IDE is **VSCodium Insiders running as a Flatpak** and its extension host
+  PATH does **not** include the nvm node dir (`~/.nvm/versions/node/v20.20.2/bin`
+  comes from `.bashrc` nvm init, which GUI-launched apps never source). The npm
+  bin shims (`mcp-gitlab`, `ssh-mcp-server`) are `#!/usr/bin/env node` scripts,
+  so `env node` fails in that PATH → server dies at spawn →
+  **`MCP error -32000: Connection closed`** (all 3 servers). Fix (2026-09-27):
+  in `cline_mcp_settings.json` use `"command": "/home/lhoward/.nvm/versions/node/v20.20.2/bin/node"`
+  with the package `build/index.js` as the first `args` entry. Keep **both**
+  copies in sync: `~/.cline/data/settings/cline_mcp_settings.json` (primary,
+  post-4.x migration) and the legacy
+  `~/.var/app/com.vscodium.codium-insiders/config/VSCodium - Insiders/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`.
+  Config changes hot-reload (Cline watches the file); restart the IDE if not.
+  Diagnostic: `tr '\0' '\n' < /proc/<extHostPID>/environ | grep ^PATH` and spawn
+  the server with `env -i PATH=<that PATH>` to reproduce.
 
 ## Ports (host networking on the batcave box — no published ports in `docker ps`)
 
@@ -115,11 +130,19 @@ recipe). The one SSH exception: the read-only **`cline-logs`** account for
 The per-scan `diag_*.log` files live in the app's mounted `/logs` dir
 (`= /mnt/data/upstream-healer/logs` on batcave). Use the **`log-servers`** MCP
 tool — it is pre-configured with the `cline-logs` account credentials and lets
-you run shell commands remotely on batcave. The account is wrapped with a
-`ForceCommand` allowlist: **only `ls cat tail grep head wc file stat`** are
-permitted (anything else prints `Command not allowed: …`), and it **auto-cd's
-into the log directory**, so a bare `ls -lat` / `cat <file>` / `grep <pat>
-<file>` works with no path.
+you run shell commands remotely on batcave. The `log-server` MCP enforces a
+command whitelist regex **locally** (before SSH):
+`^ls.*|^cat.*|^tail.*|^grep.*|^head.*|^wc.*|^file.*|^stat.*` — the *whole*
+command must match one of these anchored patterns, so flags and arguments are
+fine (`ls -lat`, `tail -n 50 <file>`, `grep -i pat <file>`) but any other
+command is rejected with `Command not in whitelist`. Shell control syntax
+(`;` `&` `|` backtick `<` `>` `$(`) is explicitly forbidden too. The account
+**auto-cd's into the log directory**, so no path is needed. Verified 2026-09-27:
+the old pattern (`^ls|^cat|…`, no `.*`) only matched bare command names and
+silently broke `cat <file>` — if log reads start failing with a whitelist
+error, check the `--whitelist` arg in
+`~/.cline/data/settings/cline_mcp_settings.json` (Cline restarts the MCP
+server on config change; no manual reload needed).
 
 Filenames contain `:` (MAC addresses) — pass them **unquoted** in the remote
 command: `cat diag_20260921_070637_nmap_dc:a6:32:02:59:63_7.log`.
@@ -249,10 +272,14 @@ scripts/seed_dev.py
 
 ## Seeded dev hosts
 
-`scripts/seed_dev.py` seeds **6 hosts** (tests expect 6 / 5 linked — see recent
-commit `cb09b16`), including `plex`, `homeassistant`, `portainer`. `failtest`
-is a deliberately dead device to exercise the full recovery flow
-(unreachable → scan → NPM update → nginx reload).
+`scripts/seed_dev.py` seeds **8 hosts** (6 NPM-linked: vault, jellyfin,
+failtest, plex, homeassistant, portainer; plus `batcave` + `flash`, both
+disabled and domain-less — `fash` was renamed `flash` in `4299a52`), so the
+`hosts` table has 8 rows and 6 `host_state` rows (tests: `len(hosts) == 8`,
+`len(states) == 6`). `failtest` is a deliberately dead device to exercise the
+full recovery flow (unreachable → scan → NPM update → nginx reload). The live
+dev DB may hold a few extra manually-added rows on top (10 as of 2026-09-27);
+the seeder itself is idempotent and only ever adds the 8 canonical hosts.
 
 Seeder history is complete: the "Cursor closed" bug (`72dd82b`) and the
 NOT-NULL 1364 introspection fix are both live. The current live state is

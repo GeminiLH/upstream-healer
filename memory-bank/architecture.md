@@ -1,7 +1,8 @@
 # Architecture — Upstream Healer
 
-> Last updated: 2026-09-24 (diag_log service + dev-only scan-log endpoint;
-> no-MAC sweeps now labeled via curated-IP / mDNS / reverse-DNS fallback).
+> Last updated: 2026-09-27 (scan-progress endpoint `d2b62f0` documented;
+> diag_log service + dev-only scan-log endpoint; no-MAC sweeps now labeled via
+> curated-IP / mDNS / reverse-DNS fallback).
 
 ## Repository
 
@@ -97,6 +98,14 @@ Tables: `hosts` (identity = MAC + port, unique), `settings`, `notification_chann
   Dev-only `GET /api/diagnostic/scan-log` (404 in prod / when
   `UPSTREAM_HEALER_DEBUG_LOG_DIR` unset) serves the newest `diag_*.log` for
   post-mortem detail; the diagnostic page has a "Scan debug log" button.
+- **Scan progress (`d2b62f0`)**: `POST /api/diagnostic/scan` returns a
+  `scan_id` immediately and runs the scan as a background task that publishes
+  into the module-level `scan_progress` dict (states: `starting` →
+  `discovered` → `scanning_ports` → `complete`/`error`). The diagnostic page
+  polls `GET /api/diagnostic/scan-progress/{scan_id}`, which returns the state,
+  partial `hosts` (incrementally as the port scan finishes each host),
+  `elapsed_time`, and an ETA (`estimated_duration` ≈ 10 s/host, capped 300 s,
+  → `estimated_completion` / `estimated_remaining`).
 - **Host add/edit form (`host_form.html`) — "populate from NPM":** field order is
   Name → Local device name → **NPM Proxy Host ID** → Domain → MAC → Current IP →
   Port → Subnet → Grace → Notes → **Quiet time** → Enabled → buttons. The NPM

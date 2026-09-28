@@ -1,13 +1,49 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-27 — **All CI green, deploy_dev live, MCP tools verified.**
-> Pipeline 229 (commit `9f3d5a9`) — lint ✅, unit_tests ✅, build_image ✅,
-> deploy_dev ✅ — dev stack running on batcave (10 hosts). UI at :8787 (HTTP 200).
-> GitLab MCP tools confirmed working: `gitlab-read` (GET pipelines/jobs/traces),
-> `gitlab-pipelines` (POST /play deploy_dev), `log-servers` (SSH diag-log access).
-> 377 tests passing (+ 1 skipped on CI), ruff clean.
+> Snapshot: 2026-09-27 — **Pipeline 230 (HEAD `d2b62f0`) auto jobs green; awaiting manual `deploy_dev`.**
+> Pipeline 230 (commit `d2b62f0`, scan-progress UI) — lint ✅, unit_tests ✅,
+> build_image ✅, `deploy_dev` pending (manual, job 1362). Dev stack still runs
+> the 229 image on batcave (10 hosts). UI at :8787 (HTTP 200).
+> MCP tools re-verified live from Cline 2026-09-27: `gitlab-read` (GET
+> pipelines/jobs/traces), `gitlab-pipelines` (POST /play deploy_dev),
+> `log-servers` (SSH diag-log access — full `ls -lat` / `head -n` / `grep -i` /
+> `tail -n` / `wc -l` / `stat` / `cat` battery passed; see whitelist fix below).
+> 378 tests (377 passed + 1 skipped), ruff clean.
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q`.
+
+## Latest (2026-09-27) — MCP tools re-verified + log-server whitelist fixed
+
+- **Re-verified all three MCP servers live from Cline:** `gitlab-read` /
+  `gitlab-pipelines` (pipeline 230 + job details) and `log-servers` (SSH to
+  batcave, 20 `diag_*.log` files listed, newest
+  `diag_20260927_125033_arp-scan_dc:a6:32:02:59:63_1.log`).
+- **Fixed the `log-server` whitelist regex** in
+  `~/.cline/data/settings/cline_mcp_settings.json`: the old pattern
+  `^ls|^cat|^tail|^grep|^head|^wc|^file|^stat` only matched *bare* command
+  names (any flag or argument → `Command not in whitelist`); now
+  `^ls.*|^cat.*|^tail.*|^grep.*|^head.*|^wc.*|^file.*|^stat.*` allows flags +
+  arguments. The new regex took effect on the next tool call without a manual
+  restart. Full battery passed: `ls -lat`, `head -n 20`, `grep -i error`,
+  `wc -l`, `stat`, `cat`, `tail -n 5` — including unquoted colon filenames.
+  Corrected the (wrong) ForceCommand description in context.md accordingly.
+
+## Latest (2026-09-27) — scan progress UI (`d2b62f0`)
+
+- **Diagnostic page now shows live scan progress** (`d2b62f0`): status indicator
+  (starting → discovered → scanning_ports → complete/error), per-host progress
+  bar, and ETA. Backend: `scan_progress` entries gained
+  `estimated_duration` (~10 s/host, capped 300 s) set when port scanning starts;
+  `GET /api/diagnostic/scan-progress/{scan_id}` returns
+  `elapsed_time` / `estimated_completion` / `estimated_remaining` alongside the
+  partial `hosts` list. Frontend polls it while the scan runs (built on the
+  `0ca9963` incremental port-scan work).
+- **Pipeline for `d2b62f0` verified 2026-09-27:** pipeline 230 auto jobs green
+  (lint, unit_tests, build_image); `deploy_dev` (job 1362) pending manual.
+  Also corrected stale
+  docs in this pass: seeder host count 6 → 8 (context.md), `fash` → `flash`
+  rename leftovers (seed_dev.py docstring, test comment, decisions.md,
+  README), scan-progress endpoint documented in architecture.md.
 
 ## Latest (2026-09-27) — MCP tool workflow hardwired into .clinerules
 

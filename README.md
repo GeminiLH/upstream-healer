@@ -15,7 +15,7 @@ Designed for a Raspberry Pi running Debian 12 + Nginx Proxy Manager.
   4. Performs a **graceful** `nginx -s reload` (other sites stay up)
 - Notifications: **Telegram** (multiple people) + **Email** (Dynu / Gmail / any SMTP)
 - Per-event toggles so you can silence noisy levels
-- Clean modern web UI
+- Clean modern web UI (diagnostic scans show live progress + ETA)
 - Easy to extend later
 
 ## Requirements
@@ -70,13 +70,13 @@ Notes:
   host ports they bind directly. The NPM UI login is `dev@hylla.local` /
   `devhealer123` (sandbox defaults; override with the `NPM_DEV_*` /
   `DEV_WEB_*_PORT` environment variables).
-- The seeder (`scripts/seed_dev.py`) adds the `vault`, `jellyfin` and
-  `failtest` hosts, creates matching NPM `proxy_host` rows and links them.
-  `failtest` is a dead device on purpose — it exercises the full recovery
-  flow (unreachable → scan → NPM update → nginx reload). It also seeds the
-  real lab devices `batcave` (the sandbox box itself) and `fash`, both
-  **disabled** on purpose: they exist as positive-test targets on the
-  diagnostic page (their names appear in scan results) without being
+- The seeder (`scripts/seed_dev.py`) adds 8 hosts — `vault`, `jellyfin`,
+  `failtest`, `plex`, `homeassistant`, `portainer` (each with a matching NPM
+  `proxy_host` row, linked) plus `batcave` and `flash`. `failtest` is a dead
+  device on purpose — it exercises the full recovery flow (unreachable → scan →
+  NPM update → nginx reload). `batcave` (the sandbox box itself) and `flash`
+  are seeded **disabled** on purpose: they exist as positive-test targets on
+  the diagnostic page (their names appear in scan results) without being
   monitored — flip them on in the UI only if you actually want to watch them.
 - **Scan debug logs (dev only).** The dev compose sets
   `UPSTREAM_HEALER_DEBUG_LOG_DIR=/logs` and bind-mounts

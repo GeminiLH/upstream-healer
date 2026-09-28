@@ -60,7 +60,7 @@
   `loop.run_in_executor(None, fn)` does **not** copy the `ContextVar` into the
   worker thread, so every `diag_log.emit/proc/exc` inside the sweep thread
   silently no-oped and the per-scan file came back with only the event-loop-side
-  lines (an "empty" sweep — this was the batcave/fash debug-log bug). `run_scan`
+  lines (an "empty" sweep — this was the batcave/flash debug-log bug). `run_scan`
   now dispatches scapy/nmap/arp-scan via `asyncio.to_thread` (which copies the
   running context), so worker-side lines land. 3.13+ happens to *also* propagate
   into the executor, which is why it regressed invisibly whenever dev ran 3.13 —
@@ -75,7 +75,7 @@
   failed, or names the failed one(s) on a partial sweep. Also logs nmap stderr on
   a non-zero rc. On batcave this is what the phantom `192.168.70.0/24` (routed,
   flash side) was doing: its `nmap -sn` failed and the old code returned 0 hosts,
-  discarding the ~16 on `192.168.86.0/24`. Now the self/fash nmap scan returns
+  discarding the ~16 on `192.168.86.0/24`. Now the self/flash nmap scan returns
   the 86.0/24 hosts (incl. flash) with `error` naming `192.168.70.0/24`.
 
 - **Routed/tunnel `nmap -sn` sweeps fast-bail** (2026-09-21, "Fix C"): the
@@ -104,9 +104,10 @@
   is untouched so test/prod stay silent. Emits live in the scanner at:
   plans, `_run_sweeps`, `run_scapy_scan`, `run_l3_probe`, `_l3_alive_*`,
   `run_nmap_scan`, `run_scan`.
-- **batcave + fash are seeded disabled** (2026-09-20): real lab devices for
+- **batcave + flash are seeded disabled** (2026-09-20; seed renamed `fash` →
+  `flash` in `4299a52`): real lab devices for
   positive diagnostic tests (batcave = the sandbox box, MAC b4:2e:99:e9:80:fc;
-  fash = dc:a6:32:02:59:63). Seeded `enabled=0` with no domain: their names
+  flash = dc:a6:32:02:59:63). Seeded `enabled=0` with no domain: their names
   appear in scan results (curated-name priority), but the monitor/recovery
   flow never touches them (no `host_state` row, no NPM proxy). `seed_hosts`
   now honours an `enabled` key (default 1).

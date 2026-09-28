@@ -10,7 +10,7 @@ What it does (every step is idempotent — safe to re-run on each deploy):
 1. Seeds a fixed set of monitored hosts mirroring the real lab
    (vault, jellyfin, and the deliberately-dead failtest that exercises
    the full recovery flow) plus the two *real* lab devices batcave and
-   fash.  Both of those are seeded **disabled** on purpose: they exist so
+   flash.  Both of those are seeded **disabled** on purpose: they exist so
    the diagnostic page has positive-test targets with curated names, but
    they are not monitored (monitoring the sandbox box itself would fight
    the recovery flow — flip them on in the UI only if you actually want

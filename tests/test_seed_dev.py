@@ -403,7 +403,7 @@ class TestCursorLifecycle:
         monkeypatch.setattr(seed, "_mysql_connect", lambda: conn)
 
         links = seed.ensure_proxy_hosts()
-        # Domain-less hosts (batcave/fash) get no NPM proxy row.
+        # Domain-less hosts (batcave/flash) get no NPM proxy row.
         assert set(links) == {
             d for d in (spec.get("domain") for spec in seed.SEED_HOSTS) if d
         }
