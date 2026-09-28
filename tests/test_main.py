@@ -1264,3 +1264,67 @@ def test_scan_elapsed_time_grows_monotonically():
     scan_progress.pop(scan_id, None)
 
 
+def test_scan_elapsed_time_freezes_on_completion():
+    """Regression: once a scan reaches ``complete``, ``elapsed_time`` must be
+    frozen at the final value — every subsequent poll reports the exact same
+    number instead of a clock that keeps ticking up from ``start_time``.
+
+    The frontend keeps the progress card visible after completion and renders
+    ``data.elapsed_time`` as the scan's total time, so a still-growing value
+    reads as a scan that never finished.
+    """
+    import time as _time
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app, scan_progress
+
+    scan_id = "unit-freeze"
+    # Simulate a scan that started 3 s ago and has just been finalised the
+    # way _do_scan does: freeze the elapsed value, then mark complete.
+    scan_progress[scan_id] = {"start_time": _time.time() - 3.0, "status": "starting"}
+    scan_progress[scan_id]["final_elapsed_time"] = 3.42
+    scan_progress[scan_id]["status"] = "complete"
+    scan_progress[scan_id]["result"] = {"found_ip": None, "hosts": []}
+
+    client = TestClient(app)
+    first = client.get(f"/api/diagnostic/scan-progress/{scan_id}").json()
+    assert first["elapsed_time"] == 3.42
+
+    _time.sleep(0.1)
+    second = client.get(f"/api/diagnostic/scan-progress/{scan_id}").json()
+    # Exact equality: the frozen value must not drift on later polls.
+    assert second["elapsed_time"] == first["elapsed_time"]
+    assert second["status"] == "complete"
+    assert second["result"] is not None
+    scan_progress.pop(scan_id, None)
+
+
+def test_scan_elapsed_time_still_grows_while_running():
+    """Companion to the freeze test: while the scan is NOT complete,
+    ``elapsed_time`` must keep growing on each poll (dynamic clock) — the
+    freeze only kicks in at finalisation."""
+    import time as _time
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app, scan_progress
+
+    scan_id = "unit-running"
+    scan_progress[scan_id] = {
+        "start_time": _time.time() - 2.0,
+        "status": "scanning_ports",
+    }
+
+    client = TestClient(app)
+    first = client.get(f"/api/diagnostic/scan-progress/{scan_id}").json()
+    _time.sleep(0.15)
+    second = client.get(f"/api/diagnostic/scan-progress/{scan_id}").json()
+
+    assert first["elapsed_time"] >= 2.0
+    assert second["elapsed_time"] > first["elapsed_time"], (
+        "elapsed_time must keep growing while the scan is running"
+    )
+    scan_progress.pop(scan_id, None)
+
+

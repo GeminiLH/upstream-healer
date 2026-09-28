@@ -1488,6 +1488,14 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
             result["scan_id"] = scan_id
             if progress.get("ports_error"):
                 result["ports_error"] = progress["ports_error"]
+            # Freeze the elapsed time at completion: every poll from now on
+            # must report this same final value instead of a clock that keeps
+            # ticking from ``start_time`` (the UI shows it as the scan's total
+            # time, and a still-growing number reads as a scan that never
+            # finished).
+            progress["final_elapsed_time"] = round(
+                time.time() - progress["start_time"], 2
+            )
             progress["status"] = "complete"
             progress["result"] = result
 
@@ -1502,14 +1510,20 @@ async def get_scan_progress(scan_id: str):
 
     Returns timing info plus partial hosts (with ports) as soon as they are
     discovered during port scanning.  When the scan is complete, ``result`` is
-    populated with the full result dict.
+    populated with the full result dict and ``elapsed_time`` is frozen at the
+    final value (it no longer grows on subsequent polls).
     """
     if scan_id not in scan_progress:
         return {"error": "Scan not found"}
 
     progress = scan_progress[scan_id]
-    current_time = time.time()
-    elapsed_time = current_time - progress["start_time"]
+    # Once the scan has finished, report the frozen final value — recomputing
+    # from ``start_time`` here would keep the elapsed time ticking up on every
+    # poll after completion.
+    if "final_elapsed_time" in progress:
+        elapsed_time = progress["final_elapsed_time"]
+    else:
+        elapsed_time = time.time() - progress["start_time"]
 
     estimated_completion = None
     if progress.get("estimated_duration"):
