@@ -72,6 +72,9 @@ unit_tests:
         coverage_format: cobertura
         path: coverage.xml
     expire_in: 1 week
+  needs:
+    - job: lint
+      artifacts: false
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
