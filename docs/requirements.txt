@@ -1,0 +1,8 @@
+# Documentation and testing requirements
+fastapi>=0.100.0
+pytest>=7.0.0
+httpx>=0.23.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+sqlalchemy>=2.0.0
+aiosqlite>=0.19.0
