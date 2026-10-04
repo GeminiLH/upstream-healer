@@ -42,13 +42,13 @@ def test_post_endpoints():
     """Test POST endpoints that should exist"""
     # Test basic existence of important POST endpoints - don't assert specific status codes 
     # since database initialization is problematic in test environment
-    response = client.post("/notifications/channel/telegram")
+    client.post("/notifications/channel/telegram")
     # Just check the endpoint exists (don't assert status codes)
     
-    response = client.post("/notifications/channel/email") 
+    client.post("/notifications/channel/email") 
     # Just check the endpoint exists (don't assert status codes)
     
-    response = client.post("/settings/subnets")
+    client.post("/settings/subnets")
     # Just check the endpoint exists (don't assert status codes)
 
 def test_web_endpoints():
