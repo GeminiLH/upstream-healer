@@ -240,3 +240,26 @@ docker compose up -d --build
 ---
 
 Built for the Hylla home lab.
+
+
+## Database Migration Framework
+
+This project uses Alembic for database schema versioning and migrations.
+
+### Setup
+
+The database migration framework is already initialized in the  directory. The configuration file is located at .
+
+### Migration Workflow
+
+1. **Create a new migration**: Run 
+2. **Apply migrations**: Run 
+3. **Rollback migrations**: Run 
+
+### Current Status
+
+The database schema is currently managed using Alembic with the following tables:
+- hosts
+- subnets
+
+The initial migration () has been created to set up the basic database structure.
