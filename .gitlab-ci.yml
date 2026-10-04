@@ -462,7 +462,7 @@ e2e_host_management:
       
       echo "✅ Host management E2E tests PASSED"
     needs:
-    - job: deploy_dev_auto
+    - job: deploy_dev
       optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
