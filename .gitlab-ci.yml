@@ -432,8 +432,6 @@ e2e_host_management:
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
     - pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
-    - docker-compose -f docker-compose.dev.yml up -d --build
-    - sleep 15  # Wait for services to start
   script:
     - |
       echo "=== Running Host Management E2E Tests ==="
@@ -463,8 +461,9 @@ e2e_host_management:
       fi
       
       echo "✅ Host management E2E tests PASSED"
-  after_script:
-    - docker-compose -f docker-compose.dev.yml down
+  needs:
+    - job: deploy_dev_auto
+      optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -479,8 +478,6 @@ e2e_all_tests:
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
     - pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
-    - docker-compose -f docker-compose.dev.yml up -d --build
-    - sleep 15
   script:
     - |
       echo "=== Running Complete E2E Test Suite ==="
@@ -510,8 +507,9 @@ e2e_all_tests:
         echo "❌ Final verification failed"
         exit 1
       fi
-  after_script:
-    - docker-compose -f docker-compose.dev.yml down
+  needs:
+    - job: deploy_dev_auto
+      optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
