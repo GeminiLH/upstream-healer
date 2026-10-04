@@ -508,7 +508,7 @@ e2e_all_tests:
         exit 1
       fi
   needs:
-    - job: deploy_dev_auto
+    - job: deploy_dev
       optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
