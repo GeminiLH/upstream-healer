@@ -461,7 +461,7 @@ e2e_host_management:
       fi
       
       echo "✅ Host management E2E tests PASSED"
-    needs:
+  needs:
     - job: deploy_dev
       optional: true
   rules:
