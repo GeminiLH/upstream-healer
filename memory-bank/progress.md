@@ -1,16 +1,63 @@
 # Progress — Upstream Healer
 
-> Snapshot: 2026-09-28 — **Pipeline 232 (HEAD `277ac8a`) fully green incl. `deploy_dev`; Run Scan button fix now live on dev.**
-> Pipeline 232 (commit `277ac8a`, removed duplicate `originalRunScan`) —
-> lint ✅, unit_tests ✅, build_image ✅, `deploy_dev` ✅ (job 1378, 17.9 s).
-> Dev stack now runs the 232 image on batcave; UI at :8787 (HTTP 200).
+> Snapshot: 2026-09-28 — **Pipeline 234 (HEAD `ec75221`) fully green incl. `deploy_dev`; scan elapsed-time freeze now live on dev.**
+> Pipeline 234 (commit `ec75221`, freeze `final_elapsed_time` on completion) —
+> lint ✅, unit_tests ✅, build_image ✅, `deploy_dev` ✅ (job 1394, 17.9 s).
+> Dev stack now runs the 234 image on batcave; UI at :8787 (HTTP 200).
 > MCP tools re-verified live from Cline 2026-09-27: `gitlab-read` (GET
 > pipelines/jobs/traces), `gitlab-pipelines` (POST /play deploy_dev),
 > `log-servers` (SSH diag-log access — full `ls -lat` / `head -n` / `grep -i` /
 > `tail -n` / `wc -l` / `stat` / `cat` battery passed; see whitelist fix below).
-> 378 tests (377 passed + 1 skipped), ruff clean.
+> 383 tests (382 passed + 1 skipped), ruff clean.
 > Verify before acting: `git status`, `git log -5`,
 > `python3 -m pytest tests/ -q`.
+
+## Latest (2026-09-28) — Pipeline 234 shipped + deployed; scan elapsed time frozen at completion
+
+- **Shipped `ec75221`** (fix: freeze diagnostic scan `elapsed_time` at
+  completion). Root cause: `GET /api/diagnostic/scan-progress/{scan_id}`
+  recomputed `elapsed_time = time.time() - start_time` on **every poll**, so the
+  number kept ticking up indefinitely after the scan finished — and since
+  `a0d2f04` the progress card stays visible on completion, the still-growing
+  timer read as a scan that never finished. Fix in `app/main.py`: `_do_scan`
+  now writes `progress["final_elapsed_time"] = round(time.time() -
+  progress["start_time"], 2)` at finalisation (just before `status =
+  "complete"`), and the endpoint returns that frozen value when present
+  (`if "final_elapsed_time" in progress`), falling back to the live clock while
+  the scan is still running. 20 lines in `main.py` + 2 deterministic regression
+  tests in `tests/test_main.py` (`test_scan_elapsed_time_freezes_on_completion`
+  — two polls 0.1 s apart must report the **exact same** value; and
+  `test_scan_elapsed_time_still_grows_while_running` — the companion proving the
+  freeze only kicks in at finalisation). Pre-flight: 383 tests (382 passed + 1 skipped),
+  ruff clean.
+- **Pipeline 234 fully green:** lint ✅ (19.8 s), unit_tests ✅ (150.3 s),
+  build_image ✅ (36.6 s), then manual **`deploy_dev` job 1394 ✅** (17.9 s).
+  Dev stack on batcave now runs the 234 image.
+- **Dev UI verified live:** `curl :8787/` → HTTP 200. Optional end-to-end:
+  trigger a scan from `/diagnostic` and watch the timer stop moving once the
+  card flips to complete.
+
+## Latest (2026-09-28) — Pipeline 233 shipped + deployed; diagnostic scan UI freeze fixed
+
+- **Shipped `a0d2f04`** (fix: prevent diagnostic scan UI freeze — preserve
+  `start_time`, non-blocking port scan). Three parts: (1) extracted
+  `_publish_discovery_progress`, which updates the `scan_progress` entry
+  **in place** (never replaces the dict) so `start_time` survives the discovery
+  → port-scan transition — previously `elapsed_time` jumped to ~0 mid-scan;
+  (2) `run_port_scan_incremental` now runs each per-host nmap via
+  `asyncio.to_thread` so the event loop stays responsive during multi-minute
+  port scans (a hung loop = a frozen UI); (3) `diagnostic.html` keeps the
+  progress card visible on success, shows the final elapsed time, and drops the
+  stale duplicate `updateScanProgress` path. +2 regression tests (start_time
+  preservation / monotonic elapsed) + an event-loop responsiveness test for the
+  port scan. Touched `app/main.py`, `app/services/scanner.py`,
+  `app/templates/diagnostic.html`, `tests/test_main.py`, and this file.
+- **Pipeline 233 fully green:** lint ✅ (16.8 s), unit_tests ✅ (146.9 s),
+  build_image ✅ (36.4 s), then manual **`deploy_dev` job 1386 ✅** (18.0 s).
+  Dev stack on batcave now runs the 233 image.
+- Follow-up `ec75221` (Pipeline 234, above) froze the timer at completion —
+  the two fixes are a pair: `a0d2f04` = "clock doesn't jump / UI doesn't hang",
+  `ec75221` = "clock stops when the scan stops".
 
 ## Latest (2026-09-28) — Pipeline 232 shipped + deployed; Run Scan button fixed
 

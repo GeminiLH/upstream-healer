@@ -374,6 +374,38 @@ and scopes. **Never hand-roll curl calls to GitLab.**
   only because a *different*, environment-specific exception is caught
   (permissions, missing binary) as not hermetic — verify it under the CI
   image's conditions, not just the dev box.
+- **Diagnostic scan progress: `start_time` must be preserved in-place — never
+  replace the `scan_progress` dict (pipeline 233, `a0d2f04`, 2026-09-28).**
+  `_publish_discovery_progress` (`app/main.py`) updates the existing
+  `scan_progress[scan_id]` entry **in place** (direct key assignment on the
+  existing dict). The pre-fix code replaced the dict with a new one the moment
+  discovery finished, resetting `start_time` to `time.time()` — `elapsed_time`
+  then jumped back to ~0 mid-scan and the UI read as "stuck/frozen" for the
+  rest of the port-scan phase. Three-part fix: (1) in-place update in
+  `_publish_discovery_progress`; (2) `run_port_scan_incremental` now runs each
+  per-host nmap via `asyncio.to_thread` so the event loop stays responsive
+  during multi-minute port scans (a blocked loop freezes the UI regardless of
+  the timer); (3) `diagnostic.html` keeps the progress card visible on
+  completion and shows the final elapsed time (previously the card disappeared,
+  hiding the symptom). Regression:
+  `tests/test_main.py::test_scan_elapsed_time_never_resets` +
+  `::test_scan_elapsed_time_grows_monotonically`.
+- **Diagnostic scan progress: freeze `elapsed_time` at completion via
+  `final_elapsed_time` (pipeline 234, `ec75221`, 2026-09-28).**
+  `GET /api/diagnostic/scan-progress/{scan_id}` (`app/main.py`) previously
+  recomputed `elapsed_time = time.time() - start_time` on **every poll**, so
+  the number kept ticking up indefinitely after the scan finished. Since
+  pipeline 233 the progress card stays visible on completion, the still-growing
+  timer read as a scan that never ended. Fix: `_do_scan` writes
+  `progress["final_elapsed_time"] = round(time.time() - progress["start_time"],
+  2)` at finalisation (just before `status = "complete"`); the endpoint returns
+  that frozen value when the key is present, falling back to the live clock
+  only while the scan is still running. Regression:
+  `tests/test_main.py::test_scan_elapsed_time_freezes_on_completion` (two polls
+  0.1 s apart must report the **exact same** value) +
+  `::test_scan_elapsed_time_still_grows_while_running` (companion: while
+  running, elapsed must keep growing — the freeze only kicks in at
+  finalisation).
 
 ## Scanner / multi-subnet gotchas
 
