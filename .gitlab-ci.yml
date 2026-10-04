@@ -33,6 +33,7 @@
 stages:
   - test
   - build
+  - e2e test
   - deploy
 
 variables:
@@ -210,7 +211,7 @@ deploy_dev:
   # (hosts + proxy_host rows + optional telegram channel). Host-networked
   # containers publish no ports (empty PORTS column in docker ps) — they
   # bind host ports directly: 8787 UI, 8181/8182 NPM, 3306 dev MariaDB.
-  stage: deploy
+  stage: build
   image: docker:latest
   environment:
     name: dev
@@ -353,7 +354,7 @@ dev_down:
   # Tears the dev stack back down. Named volumes are KEPT so the next
   # deploy_dev finds the previous hosts/notifications/NPM config; to wipe
   # them instead: docker volume rm upstream-healer_healer-data etc.
-  stage: deploy
+  stage: build
   image: docker:latest
   environment:
     name: dev
@@ -423,7 +424,7 @@ dev_debug:
 # ───────────────────────────── E2E Tests ─────────────────────────────
 
 e2e_host_management:
-  stage: test
+  stage: e2e test
   image: python:3.12-slim
   services:
     - docker:dind
@@ -469,7 +470,7 @@ e2e_host_management:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 e2e_all_tests:
-  stage: test
+  stage: e2e test
   image: python:3.12-slim
   services:
     - docker:dind
