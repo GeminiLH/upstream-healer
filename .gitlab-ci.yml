@@ -449,6 +449,7 @@ e2e_host_management:
     DOCKER_DRIVER: overlay2
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
+    - apt-get update && apt-get install -y docker.io
     - pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
   script:
     - |
@@ -495,6 +496,7 @@ e2e_all_tests:
     DOCKER_DRIVER: overlay2
     DOCKER_TLS_CERTDIR: "/certs"
   before_script:
+    - apt-get update && apt-get install -y docker.io
     - pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
   script:
     - |
