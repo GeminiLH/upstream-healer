@@ -3,7 +3,6 @@
 Validator script to ensure all documented API endpoints exist in the codebase
 """
 import re
-import os
 
 def find_api_endpoints_in_code():
     """Find all @app.(get|post|put|delete) endpoints in main.py"""
