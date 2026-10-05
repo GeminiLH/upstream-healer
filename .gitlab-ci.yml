@@ -434,9 +434,6 @@ dev_debug:
         echo "===== logs: $c (tail 80) ====="
         docker logs --tail 80 "$c" 2>&1 | tail -80 || true
       done
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: always
 
 # ───────────────────────────── E2E Tests ─────────────────────────────
 
@@ -463,7 +460,7 @@ e2e_host_management:
         --ip "192.168.1.250" \
         --port 80 \
         --npm-proxy-host-id 123 \
-        --npm-sync true
+        
       
       if [ $? -ne 0 ]; then
         echo "❌ Failed to add host with NPM sync"
@@ -510,7 +507,7 @@ e2e_all_tests:
         --ip "192.168.1.200" \
         --port 80 \
         --npm-proxy-host-id 123 \
-        --npm-sync true
+        
         
       if [ $? -ne 0 ]; then
         echo "❌ Final E2E test failed"
