@@ -206,6 +206,9 @@ deploy_test:
   extends: .deploy_base
   environment:
     name: test
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
 
 deploy_dev:
   # Live dev/staging stack on the gitlab/runner box, left running between
@@ -391,6 +394,9 @@ deploy_production:
   extends: .deploy_base
   environment:
     name: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
 dev_debug:
   # Manual diagnostic for the dev stack: container states (restart counts,
   # OOM flags, exit codes) plus a tail of each container log. Use when the
@@ -402,6 +408,9 @@ dev_debug:
   needs:
     - job: unit_tests
       optional: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
   before_script:
