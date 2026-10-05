@@ -148,7 +148,7 @@ async def add_host(args: argparse.Namespace, db: aiosqlite.Connection) -> None:
             updates.append("grace_minutes = ?")
             values.append(args.grace_minutes)
             
-        if args.notes is not None:
+        if hasattr(args, 'notes') and args.notes is not None:
             updates.append("notes = ?")
             values.append(args.notes)
             
@@ -562,7 +562,7 @@ async def edit_host(host_id: int, args: argparse.Namespace, db: aiosqlite.Connec
     if args.disable:
         updates.append("enabled = 0")
 
-    if args.notes is not None:
+    if hasattr(args, 'notes') and args.notes is not None:
         updates.append("notes = ?")
         values.append(args.notes)
 
