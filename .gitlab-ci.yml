@@ -218,15 +218,15 @@ deploy_dev:
   # talks to (nginx-app-1 / nginx-db-1) and a one-shot dev data seeder
   # (hosts + proxy_host rows + optional telegram channel). Host-networked
   # containers publish no ports (empty PORTS column in docker ps) — they
-  # bind host ports directly: 8787 UI, 8181/8182 NPM, 3306 dev MariaDB.
+  # bind host ports directly: 8781 UI, 8181/8182 NPM, 3306 dev MariaDB.
   stage: build
   image: docker:latest
   environment:
     name: dev
   needs:
-    - job: unit_tests
+    - job: build_image
+    - job: dev_down
       optional: true
-    - build_image
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
     # Sandbox credentials for the dev NPM pair (compose reads these for
