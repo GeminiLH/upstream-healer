@@ -131,9 +131,9 @@ build_image:
       fi
   needs:
     - job: unit_tests
-      artifacts: false
+      artifacts: true
     - job: lint
-      artifacts: false
+      artifacts: true
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -379,7 +379,7 @@ dev_down:
     name: dev
   needs:
     - job: unit_tests
-      optional: true
+
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
   before_script:

@@ -108,81 +108,19 @@ async def add_host(args: argparse.Namespace, db: aiosqlite.Connection) -> None:
     if not 1 <= args.port <= 65535:
         raise ValueError("--port must be between 1 and 65535")
     
-    # Check if host with same MAC and port already exists
+    # Check if host with same name already exists
     async with db.execute(
-        "SELECT id FROM hosts WHERE mac_address = ? AND port = ?",
-        (normalize_mac(args.mac), args.port)
+        "SELECT id FROM hosts WHERE name = ?",
+        (args.name,)
     ) as cursor:
         existing_host = await cursor.fetchone()
     
     if existing_host:
-        # If it exists, update instead of insert to avoid constraint violation
-        print(f"Host with MAC {args.mac} and port {args.port} already exists. Updating...")
-        host_id = existing_host[0]
-        
-        # Prepare the updates
-        updates = []
-        values = []
-        
-        if args.name is not None:
-            updates.append("name = ?")
-            values.append(args.name)
-            
-        if args.ip is not None:
-            updates.append("current_ip = ?")
-            values.append(args.ip)
-            
-        if args.domain is not None:
-            updates.append("domain = ?")
-            values.append(args.domain)
-            
-        if args.npm_proxy_host_id is not None:
-            updates.append("npm_proxy_host_id = ?")
-            values.append(args.npm_proxy_host_id)
-            
-        if args.port is not None:
-            updates.append("port = ?")
-            values.append(args.port)
-            
-        if args.grace_minutes is not None:
-            updates.append("grace_minutes = ?")
-            values.append(args.grace_minutes)
-            
-        if hasattr(args, 'notes') and args.notes is not None:
-            updates.append("notes = ?")
-            values.append(args.notes)
-            
-        if not updates:
-            print("No changes specified. Use --help for available options.")
-            return
-            
-        now = current_time().isoformat()
-        updates.append("updated_at = ?")
-        values.append(now)
-        values.append(host_id)
-        
-        await db.execute(
-            f"UPDATE hosts SET {', '.join(updates)} WHERE id = ?",
-            values,
-        )
-        await db.commit()
-        
-        # Update host_state last_ip if IP changed
-        if args.ip is not None:
-            await db.execute(
-                "UPDATE host_state SET last_ip = ? WHERE host_id = ?",
-                (args.ip, host_id),
-            )
-            await db.commit()
-            
-        print(json.dumps({
-            "id": host_id,
-            "updated": True,
-            "fields": updates[:-1],  # exclude updated_at
-        }))
-        return
+        # Raise ValueError to indicate that adding a duplicate is not allowed
+        raise ValueError(f"Host with name '{args.name}' already exists")
+    
 
-    # Original insert logic for new hosts
+    # Original insert logic for new hosts - keep this.  i dont want any updating on a new host command.  delete and add again
     now = current_time().isoformat()
     cursor = await db.execute(
         """INSERT INTO hosts
