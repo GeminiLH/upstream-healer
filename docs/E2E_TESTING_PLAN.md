@@ -49,9 +49,9 @@
 ```
 stages:
   test        → lint → unit_tests
-  build       → build_image
+  build       → build_image, dev_down, deploy_dev
   e2e test    → e2e_host_management, e2e_all_tests
-  deploy      → deploy_test, deploy_production, deploy_dev, dev_down (all MANUAL)
+  deploy      → deploy_test, deploy_production  (all MANUAL)
 ```
 
 ---
