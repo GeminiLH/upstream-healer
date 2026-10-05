@@ -119,6 +119,8 @@ docker exec upstream-healer python -m app.cli add-host \
 
 Host identity is unique by the combination of MAC address and port. The same MAC can therefore be monitored on multiple ports, but adding the same MAC/port pair twice is rejected.
 
+**Important note about duplicates:** The healer now prevents adding duplicate hosts with the same MAC address and port combination. If you attempt to add a host that already exists with the same MAC and port, you'll get an error message. Use the `--overwrite` flag to replace existing records.
+
 List monitored hosts and their IDs, ports, current IPs, and statuses:
 
 ```bash

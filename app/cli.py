@@ -148,7 +148,7 @@ async def add_host(args: argparse.Namespace, db: aiosqlite.Connection) -> None:
             updates.append("grace_minutes = ?")
             values.append(args.grace_minutes)
             
-        if args.subnet_id is not None:
+        if args.notes is not None:
             updates.append("subnet_id = ?")
             values.append(args.subnet_id)
             

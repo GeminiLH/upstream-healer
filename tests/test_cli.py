@@ -117,7 +117,7 @@ class TestHostCommands:
     async def test_add_host_duplicate_rejected(self, cli_db):
         base = ["add-host", "--name", "x", "--mac", "aa:bb:cc:dd:ee:ff"]
         await add_host(build_parser().parse_args(base), cli_db)
-        with pytest.raises(aiosqlite.IntegrityError):
+        with pytest.raises(ValueError, match="already exists"):
             await add_host(build_parser().parse_args(base + ["--port", "80"]), cli_db)
 
     async def test_disable_unknown_host_raises(self, cli_db):
