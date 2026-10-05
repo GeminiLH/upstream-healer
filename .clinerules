@@ -3,5 +3,68 @@
 # The CI/CD pipeline now includes:
 # - Automatic end-to-end testing after every code change
 # - Proper sequential workflow ensuring environment is created before tests run
-# - Deployment to dev environment automatically triggered after successful tests
+# - Deployment to dev environment requires manual trigger after successful tests
 # - Manual cleanup job available when needed
+# - All deploy stage jobs (deploy_test, deploy_production, dev_debug) now require manual execution
+
+## Standard Ship Workflow
+
+When asked to "commit, push, and verify the pipeline", follow these steps in order:
+
+1. **Pre-flight**: Run `python3 -m ruff check app/ scripts/ tests/` (fast, foreground) and `python3 -m pytest tests/ -q` to catch failures before pushing. pytest takes ~26 s — right at the ~30 s `run_commands` foreground cap — so run it detached and poll a sentinel: `setsid bash -c 'python3 -m pytest tests/ -q > /tmp/pytest_out.txt 2>&1; echo "PYTEST_EXIT=$?" >> /tmp/pytest_out.txt; touch /tmp/pytest_done' &` then poll in short commands (each must finish well under 30 s): `for i in 1 2; do [ -f /tmp/pytest_done ] && break; sleep 10; done; tail -3 /tmp/pytest_out.txt` (repeat the short poll until the sentinel exists, then check the exit line).
+2. **Commit**: `git add -A && git commit -m '<message>'` (use conventional commit prefix: `fix:`, `feat:`, `docs:`, `refactor:`, etc.).
+3. **Push**: `git push gitlab main` — never use bare `git push` (upstream may point at legacy `origin`).
+4. **Verify pipeline**: Wait ~15 s (one short `sleep` command), then via the `gitlab-pipelines` MCP tool:
+   - `list_pipelines(project_id=4, per_page=1)` → get the new pipeline ID; its `sha` must match the pushed commit.
+   - **Poll the *jobs*, not the pipeline**: `list_pipeline_jobs(project_id=4, pipeline_id=<id>)`. The pipeline `status` sticks at `manual` while deploy stage jobs wait, so it is NOT a completion signal. Auto jobs are `lint` (~17 s), `unit_tests` (~150 s), `build_image` (~37 s) — ~3–4 min total. Space polls with `sleep 25` commands. Do NOT use `wait_for_pipeline`/`wait_for_job` (MCP calls hard-time out at 60 s), and do NOT `sleep 30` (exceeds the ~30 s foreground command cap).
+   - If any auto job is `failed`, fetch its trace via `get_pipeline_job_output(project_id=4, job_id)` and diagnose.
+5. **Verify everything**: Check the dev UI responds: `curl -s -o /dev/null -w '%{http_code}' http://192.168.86.38:8787/` → expect 200 or 302.
+7. **Update memory bank**: After successful pipeline, update relevant `memory-bank/` files.
+
+
+## Git
+- Push to the `gitlab` remote, never to `origin` or any GitHub remote.
+- After pushing, check pipeline status using the `gitlab-read` MCP tool.
+
+## Pipelines
+- Pipelines are triggered automatically on push. Do NOT manually trigger them.
+- If a pipeline fails, fetch the job trace via `gitlab-read` and correct the error.
+- When all auto jobs pass, deploy jobs in the deploy stage must be manually triggered:
+  - deploy_test (for test environment)
+  - deploy_production (for production environment) 
+  - dev_debug (for development diagnostics)
+- Application logs can be reviewed with the `log-servers` MCP tool.
+- **Never hand-roll curl calls to GitLab** — the MCP tools are pre-configured with tokens/scopes.
+- If the `gitlab-read` or `gitlab-pipelines` MCP tools aren't available, try `bash scripts/ship.sh -m "<message>" --no-deploy` instead.
+
+## Memory Banks
+- At the start of each task, read files in `memory-bank/` for context.
+- After each commit where the pipeline passes, update relevant memory bank files with new decisions.
+- Prune: remove entries that are no longer accurate or have been superseded. 
+- Do not remove content from this document,  Only add and request the user to remove.
+
+## CI/CD Timings (Updated for Enhanced Deployment Validation)
+
+# Build and Deployment Job Timings (in seconds)
+build_image:
+  timeout: 300          # 5 minutes - Docker image build time
+  retry_count: 2        # Retry failed builds up to 2 times
+
+deploy_dev:
+  timeout: 420          # 7 minutes - Full deployment including validation
+  wait_for_app_ready: 30 # Wait up to 30 seconds for app to respond on port 8787
+  retry_count: 1        # Retry failed deployments once
+
+dev_down:
+  timeout: 60           # 1 minute - Container shutdown and cleanup
+  retry_count: 1        # Retry failed teardowns once
+
+# E2E Test Job Timings (in seconds)
+e2e_tests:
+  timeout: 300          # 5 minutes - E2E test suite execution
+  wait_for_app_ready: 30 # Wait for app readiness before starting tests
+  retry_count: 1        # Retry failed E2E runs once
+
+# Overall Pipeline Timings (in seconds)
+pipeline_timeout: 900    # 15 minutes - Total pipeline timeout
+job_wait_time: 15        # 15 seconds - Wait between job status checks
