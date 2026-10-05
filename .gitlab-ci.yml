@@ -456,6 +456,10 @@ e2e_host_management:
   before_script:
     - apt-get update && apt-get install -y docker.io
     - pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
+    - |
+      # Clean up any existing E2E test data before running tests
+      echo "Cleaning up existing E2E test data..."
+      docker exec upstream-healer python -m app.e2e_cleanup
   script:
     - |
       echo "=== Running Host Management E2E Tests ==="
@@ -503,6 +507,10 @@ e2e_all_tests:
   before_script:
     - apt-get update && apt-get install -y docker.io
     - pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
+    - |
+      # Clean up any existing E2E test data before running tests
+      echo "Cleaning up existing E2E test data..."
+      docker exec upstream-healer python -m app.e2e_cleanup
   script:
     - |
       echo "=== Running Complete E2E Test Suite ==="

@@ -68,3 +68,13 @@ e2e_tests:
 # Overall Pipeline Timings (in seconds)
 pipeline_timeout: 900    # 15 minutes - Total pipeline timeout
 job_wait_time: 15        # 15 seconds - Wait between job status checks
+
+## Sed Command Pattern
+
+Instead of:
+sed -i 's/old/new/' file.txt
+
+Use:
+sed 's/old/new/' file.txt > file.txt.tmp && mv file.txt.tmp file.txt   
+
+This safer pattern avoids potential issues with sed -i on NFS mounts and prevents data corruption if the command fails midway.
