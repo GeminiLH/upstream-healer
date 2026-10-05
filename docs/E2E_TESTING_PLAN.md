@@ -798,4 +798,84 @@ The E2E test suite now provides comprehensive coverage of all application workfl
 
 ---
 
+## 8. Next Steps / Future E2E Test Implementation
+
+Based on the current implementation, here are the recommended next steps for expanding E2E test coverage:
+
+### 8.1 Tests to Consider for Next Implementation Batch
+
+#### 8.1.1 Enhanced Form Submission Tests
+- **Priority**: High
+- **Tests to Implement**:
+  - `test_host_add_form_submission` - Test complete form submission with valid data
+  - `test_host_edit_form_submission` - Test editing hosts with form submission
+  - `test_notification_channel_edit_form` - Test edit forms for notification channels
+  - `test_subnet_edit_form` - Test subnet edit form functionality
+
+#### 8.1.2 Advanced Notification Tests  
+- **Priority**: Medium
+- **Tests to Implement**:
+  - `test_notification_channel_edit_and_save` - Test editing and saving notification channel properties
+  - `test_notification_rule_comprehensive_toggle` - Test complex rule toggling scenarios
+  - `test_multiple_notification_channels` - Test management of multiple channels simultaneously
+
+#### 8.1.3 Host Management Advanced Tests
+- **Priority**: Medium
+- **Tests to Implement**:
+  - `test_host_bulk_operations` - Test bulk host operations (delete, toggle, scan)
+  - `test_host_search_and_filter` - Test host search/filter functionality
+  - `test_host_import_from_file` - Test importing hosts via file upload
+
+#### 8.1.4 Subnet Management Advanced Tests
+- **Priority**: Medium
+- **Tests to Implement**:
+  - `test_subnet_bulk_operations` - Test bulk subnet operations
+  - `test_subnet_validation_scenarios` - Test various subnet validation edge cases
+  - `test_subnet_reordering` - Test subnet reordering functionality
+
+#### 8.1.5 Configuration and Settings Tests
+- **Priority**: Medium
+- **Tests to Implement**:
+  - `test_application_settings_full_workflow` - Complete settings workflow including validation
+  - `test_configuration_backup_restore` - Test backup/restore of configuration
+  - `test_environment_variable_override` - Test environment variable overrides
+
+### 8.2 Technical Considerations for Next Batch
+
+#### 8.2.1 Environment Improvements
+- Implement a more robust test environment that handles CSRF tokens properly
+- Add mock database seeding for consistent test state
+- Create fixtures for common test data (hosts, subnets, notification channels)
+
+#### 8.2.2 Test Structure Enhancements
+- Move from per-test files to a single comprehensive test file for better organization
+- Implement parameterized tests for similar scenarios
+- Add more detailed assertions with specific error messages
+
+#### 8.2.3 Coverage Gaps Analysis
+- **API Endpoints**: All endpoints are covered, but some edge cases might be missing
+- **Error Conditions**: Currently focused on success paths; add negative test cases
+- **Edge Cases**: Some complex interactions between components not yet tested
+
+### 8.3 Recommended Test Strategy
+
+1. **Immediate Next Steps** (Priority High):
+   - Implement form submission tests for host management
+   - Add comprehensive notification channel editing tests
+   - Enhance subnet management with bulk operations tests
+
+2. **Medium Priority**:
+   - Add error condition testing for all workflows
+   - Implement cross-component integration tests
+   - Add performance testing for large datasets
+
+3. **Long-term Goals**:
+   - Implement UI automation tests using tools like Playwright or Selenium
+   - Add load testing scenarios
+   - Create regression test suites for critical workflows
+
+The current implementation provides a solid foundation with 13/17 core functionality tests passing, and the next batch should focus on enhancing the robustness of form submissions and expanding coverage to more complex interaction scenarios while maintaining the existing test quality standards.
+
+---
+
 *Document generated as a comprehensive reference for E2E testing implementation. Each test scenario includes the exact API endpoint, expected behavior, and E2E command for execution.*
