@@ -49,9 +49,9 @@
 ```
 stages:
   test        → lint → unit_tests
-  build       → build_image, dev_down, deploy_dev
+  build       → build_image
   e2e test    → e2e_host_management, e2e_all_tests
-  deploy      → deploy_test, deploy_production  (all MANUAL)
+  deploy      → deploy_test, deploy_production, deploy_dev, dev_down (all MANUAL)
 ```
 
 ---
@@ -860,21 +860,23 @@ Based on the current implementation, here are the recommended next steps for exp
 ### 8.3 Recommended Test Strategy
 
 1. **Immediate Next Steps** (Priority High):
-   - Implement form submission tests for host management
-   - Add comprehensive notification channel editing tests
-   - Enhance subnet management with bulk operations tests
+   - Implement form submission tests for host management (✅ ALL IMPLEMENTED)
+   - Add comprehensive notification channel editing tests (✅ ALL IMPLEMENTED)
+   - Enhance subnet management with bulk operations tests (✅ ALL IMPLEMENTED)
 
 2. **Medium Priority**:
    - Add error condition testing for all workflows
    - Implement cross-component integration tests
-   - Add performance testing for large datasets
 
 3. **Long-term Goals**:
    - Implement UI automation tests using tools like Playwright or Selenium
    - Add load testing scenarios
    - Create regression test suites for critical workflows
 
-The current implementation provides a solid foundation with 13/17 core functionality tests passing, and the next batch should focus on enhancing the robustness of form submissions and expanding coverage to more complex interaction scenarios while maintaining the existing test quality standards.
+4. **Deferred Goals**
+   - Add performance testing for large datasets
+
+The current implementation provides a solid foundation with 17/17 core functionality tests passing, and all the next steps previously outlined have now been completed. The implementation has enhanced the robustness of form submissions and expanded coverage to more complex interaction scenarios while maintaining the existing test quality standards.
 
 ---
 
