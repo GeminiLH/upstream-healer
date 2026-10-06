@@ -17,12 +17,12 @@ The pipeline follows this precise execution sequence with specific dependency ru
 
 ### Stage 2: Build (Automatic)  
 - **build_image**: Build Docker image
-- **deploy_dev**: Deploy to development environment
+- **build_dev**: Deploy to development environment
 
 **Dependencies**:
 - `build_image` depends on successful completion of all jobs in the Test stage
 - This includes both `lint` and `unit_tests`
-- `deploy_dev` depends on successful completion of `build_image` AND `dev_down` (with dev_down being optional)
+- `build_dev` depends on successful completion of `build_image` AND `dev_down` (with dev_down being optional)
 
 ### Stage 4: Deploy (Manual)
 - **deploy_dev_auto**: Automatic deployment to dev environment
