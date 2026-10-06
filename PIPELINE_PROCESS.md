@@ -17,19 +17,12 @@ The pipeline follows this precise execution sequence with specific dependency ru
 
 ### Stage 2: Build (Automatic)  
 - **build_image**: Build Docker image
+- **deploy_dev**: Deploy to development environment
 
 **Dependencies**:
-- Depends on successful completion of all jobs in the Test stage
+- `build_image` depends on successful completion of all jobs in the Test stage
 - This includes both `lint` and `unit_tests`
-
-### Stage 3: E2E Test (Automatic)
-- **e2e_host_management**: Host management E2E tests
-- **e2e_all_tests**: Complete integration E2E tests
-
-**Dependencies**:
-- Both E2E test jobs depend on successful completion of the `deploy_dev` job (`needs: - job: deploy_dev optional: true`)
-- This means E2E tests run AFTER `deploy_dev` is completed successfully, not before
-- E2E tests will be skipped if `deploy_dev` fails
+- `deploy_dev` depends on successful completion of `build_image` AND `dev_down` (with dev_down being optional)
 
 ### Stage 4: Deploy (Manual)
 - **deploy_dev_auto**: Automatic deployment to dev environment
@@ -47,12 +40,10 @@ The pipeline follows this precise execution sequence with specific dependency ru
    - Both test jobs must pass for the Test stage to complete successfully
 3. **Build Stage**
    - If Test stage is successful, `build_image` runs
-4. **Deploy Stage** 
-   - `deploy_dev_auto` runs automatically (cleans up old stack, deploys new)
-   - Environment is ready for manual verification
-5. **E2E Tests Stage** (runs after deploy_dev completes successfully)
+   - If `build_image` succeeds, `deploy_dev` runs 
+4. **E2E Tests Stage** (runs after deploy_dev completes successfully)
    - Both E2E tests run against the deployed environment
-6. **Manual Verification** 
+5. **Manual Verification** 
    - User can now run `dev_down` manually to tear down environment
    - Or proceed with `deploy_production` for production deployment
 
