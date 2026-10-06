@@ -4,10 +4,10 @@
 This document outlines the reorganized documentation structure for the Upstream Healer project. The goal is to remove redundant and obsolete content, consolidate information where appropriate, and create clear process documents for testing and CI/CD pipeline operations.
 
 ## Current Documentation Structure
-The project contains several documentation sources:
+The project now contains these documentation sources:
 1. Main README.md - General project overview and usage
-2. PIPELINE_WORKFLOW.md - Pipeline workflow details
-3. END_TO_END_TESTING.md - E2E testing framework
+2. PIPELINE_PROCESS.md - Pipeline workflow details (consolidated)
+3. TESTING_PROCESS.md - E2E testing framework (consolidated)
 4. .gitlab-ci.yml - CI/CD pipeline definition
 5. Memory bank files (context, architecture, progress, decisions, project-plan)
 6. Docs directory with API documentation and test plans
@@ -15,12 +15,12 @@ The project contains several documentation sources:
 ## Redundant/Obsolete Content Identified
 
 ### 1. Redundant Pipeline Documentation
-- PIPELINE_WORKFLOW.md duplicates information from .gitlab-ci.yml and README.md
-- END_TO_END_TESTING.md overlaps with pipeline workflow descriptions
+- PIPELINE_WORKFLOW.md (removed) - duplicated information from .gitlab-ci.yml and README.md
+- END_TO_END_TESTING.md (removed) - overlapped with pipeline workflow descriptions
 
 ### 2. Duplicate Process Information
-- Multiple files contain CI/CD workflow descriptions
-- Similar information exists in both README and memory bank files
+- Multiple files previously contained CI/CD workflow descriptions
+- Similar information existed in both README and memory bank files
 
 ## Consolidated Documentation Plan
 
