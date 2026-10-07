@@ -1,8 +1,7 @@
 """
-Data sanitization utilities for privacy protection.
+Network identifier sanitization utilities for privacy protection.
 """
 import re
-from typing import Optional
 
 
 # Regular expressions for network identifiers
