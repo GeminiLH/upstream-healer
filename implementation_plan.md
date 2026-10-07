@@ -8,16 +8,121 @@
 
 ## Table of Contents
 
+0. [User Goals & Audiences](#0-user-goals--audiences)
 1. [Current Architecture Overview](#1-current-architecture-overview)
 2. [Data Models & Database Schema](#2-data-models--database-schema)
 3. [Module Breakdown](#3-module-breakdown)
 4. [API Endpoints Inventory](#4-api-endpoints-inventory)
 5. [Key Workflows](#5-key-workflows)
+  - 5.6 [First-Run Setup Experience](#56-first-run-setup-experience)
+  - 5.7 [Validation & Assistance Contract](#57-validation--assistance-contract)
+  - 5.8 [Notification Design](#58-notification-design)
+  - 5.9 [Dashboard Specification](#59-dashboard-specification)
+  - 5.10 [Language & Copy Guidelines](#510-language--copy-guidelines)
 6. [Integration Points](#6-integration-points)
 7. [Testing Strategy](#7-testing-strategy)
 8. [Deployment & CI/CD](#8-deployment--cicd)
 9. [Known Limitations & Technical Debt](#9-known-limitations--technical-debt)
 10. [Future Enhancements](#10-future-enhancements)
+
+---
+
+## 0. User Goals & Audiences
+
+> *Why we build this, who it's for, and what "good" looks like.*
+
+### 0.1 Purpose
+
+Upstream Healer keeps a home's **Nginx Proxy Manager (NPM) reverse proxy** running when backend devices (media servers, Home Assistant, NAS, etc.) lose their IP address — after a reboot, DHCP lease expiry, router reset, or power outage. It:
+
+1. **Monitors** every important device on the LAN.
+2. **Self-heals** by finding the device's new IP and updating NPM automatically.
+3. **Notifies** the user when something needs attention — with privacy-preserving messages that never leak MAC or IP addresses to Telegram or Email.
+
+### 0.2 Personas & Page Audiences
+
+| Page | Who uses it | How often | What they need to know |
+|------|-------------|-----------|----------------------|
+| **Dashboard** (`/`) | **Everyone** (primary user) | Daily / glance | "Is my reverse proxy working?" |
+| **Add Host** (`/hosts/add`) | **Primary user** | When adding a device | "What's my device name, MAC, and port?" |
+| **Notifications** (`/notifications`) | **Primary user** (rare) | When configuring | "How do I get alerts? How do I stop them?" |
+| **Settings** (`/settings`) | **Primary user** (rare) | Initial setup only | "What do these settings mean?" |
+| **Diagnostics** (`/diagnostic`) | **Technical support** | When investigating | "Show me what the scanner found." |
+
+**Design implications:**
+- Dashboard and Add Host must be **intuitive, guided, and self-explanatory** — every field needs a plain-English helper text.
+- Notifications and Settings are **rare but critical** — they need clear labels, sane defaults, and inline explanations.
+- Diagnostics is a **technical tool** — raw output is fine here, but it must be clearly marked as diagnostic-only.
+
+### 0.3 User-Facing Language Principles
+
+| Technical term | User-facing term |
+|----------------|-----------------|
+| Subnet / CIDR | "Network segment" (e.g. "Home Network — 192.168.86.0/24") |
+| NPM proxy host | "The NPM page for example.com" (name + domain) |
+| Grace period | "Waiting period before alerting (default 10 minutes)" |
+| MAC address | "Device identifier" — shown only in technical details, not in alerts |
+| ARP scan | "Network scan for the device" |
+| L2 / L3 probe | "Network scan method" (no need to expose this to users) |
+| Quiet period | "Do-not-disturb window" (the UI says "Quiet time", but explanations use DND) |
+| Suppressed CIDRs | "Networks to skip during scans" |
+
+**Golden rule:** Never expose raw IP addresses or MAC addresses in outbound notifications (Telegram, Email). The local dashboard is safe — it's a trusted local interface. Outbound channels are not.
+
+### 0.4 Notification Privacy Boundary
+
+- **Dashboard / local API:** Full details (MAC, IP, subnet) are displayed — this is a trusted internal interface.
+- **Telegram / Email:** Only the device **name** and the **event outcome** are sent. Any raw network identifiers in the message body are stripped.
+- **Email parity:** Both Telegram and Email must apply the same sanitization. (See §3.5 for current implementation status — email is currently unsanitized and must be fixed.)
+
+### 0.5 Privacy-First Notification Design
+
+All outbound notifications must:
+1. Contain **only** the device name and event outcome (e.g. "vault is reachable again", "media-server is unreachable").
+2. Never contain raw IP addresses, MAC addresses, subnet CIDRs, or any network topology information.
+3. Use plain language that any household member can understand.
+4. Include a clear call-to-action if manual intervention is needed.
+
+Example good notification:
+> 🔔 **Upstream Healer**
+> 
+> ✅ **vault** is reachable again.
+
+Example bad notification:
+> ✅ vault is reachable again at 192.168.86.249
+
+### 0.6 Page-Audience Matrix (Summary)
+
+| Page | Primary user | Frequency | Knowledge level | Required in-page help |
+|------|-------------|-----------|----------------|----------------------|
+| Dashboard | Everyone | Daily / glance | None | Status legend, banner |
+| Add Host | Primary | When needed | Basic (name, MAC, port) | Helper text on every field, validate button |
+| Notifications | Primary | Rare | Basic | What each event type means, test button |
+| Settings | Primary | Rare | Intermediate | Per-setting explanation, safe defaults |
+| Diagnostics | Support | When investigating | Advanced | Scan method explanations |
+
+### 0.7 Authentication as a User-Facing Requirement
+
+Authentication is **not** tech debt — it is a user-facing security requirement. The application currently has no access control, which means anyone on the local network can:
+- View all device names, MAC addresses, and IP addresses
+- Add, edit, or delete monitored hosts
+- Modify notification channels (add/remove/change)
+- Trigger arbitrary network scans
+
+**Required behavior:**
+1. **Login page:** Simple username/password login on first visit (or redirect to `/login` if no user exists).
+2. **Default credentials:** First-run creates an admin account; subsequent visits require authentication.
+3. **Session management:** Persistent sessions with configurable timeout (default 24 hours).
+4. **No public access:** All HTML pages and API endpoints require authentication unless explicitly marked public (e.g., health check).
+5. **No hardcoded passwords:** Passwords must be hashed (bcrypt or argon2) and never stored in plaintext.
+6. **Admin-only actions:** Adding/removing hosts, changing notification settings, and modifying NPM credentials require admin privileges.
+7. **Audit trail:** All admin actions are logged in the event history.
+
+**Migration from "tech debt":**
+- This requirement was previously listed in §9.1 (Known Limitations) and §10.1 (Short-Term Enhancements) as "no authentication" and "API authentication."
+- It is now promoted to a **core user-facing requirement** in §0.7.
+- Remove from §9.1 (no longer tech debt — it's a requirement).
+- Remove from §10.1 (no longer short-term enhancement — it's a requirement).
 
 ---
 
@@ -93,7 +198,7 @@
 | `quiet_enabled` | INTEGER DEFAULT 0 | Quiet period enabled |
 | `quiet_start` | TEXT | Quiet period start (HH:MM) |
 | `quiet_end` | TEXT | Quiet period end (HH:MM) |
-| `quiet_mode` | TEXT DEFAULT 'suppress' | 'suppress' or 'monitor' |
+| `quiet_mode` | TEXT DEFAULT 'suppress' | 'suppress' (monitor but silence notifications) or 'delete' (skip checks entirely) |
 | `domain` | TEXT | Optional domain for NPM |
 | `mac_address` | TEXT NOT NULL | MAC address (normalized) |
 | `current_ip` | TEXT | Last known IP |
@@ -439,7 +544,10 @@ while self.running:
 | `_send_email(config, message, details)` | Send SMTP email |
 
 #### Privacy Note
-Both Telegram and Email notifications strip IP addresses and MAC addresses from messages before sending (to avoid leaking network topology to external services).
+
+- **Telegram:** Both message and details strip IP addresses and MAC addresses before sending (via regex substitution).
+- **Email:** ⚠️ **Current implementation does NOT strip network identifiers.** The email handler (`_send_email`) sends the raw `message` and `details` unchanged. This must be fixed to match Telegram's behavior. Until then, email recipients receive full MAC and IP addresses.
+- **Dashboard / local API:** No stripping — full details are appropriate for the trusted local interface.
 
 ---
 
@@ -644,6 +752,353 @@ Manual management:
 
 ---
 
+### 5.6 First-Run Setup Experience
+
+> *The make-or-break moment for average users. Every step must be guided and verifiable.*
+
+#### 5.6.1 Setup Checklist / Wizard Flow
+
+```
+Step 1: NPM Connection Check
+  → GET /api/setup/npm-check
+  → Result: PASS (can reach NPM) or FAIL (with plain-English explanation)
+  → If FAIL: Show where to find NPM MariaDB credentials
+  → User action: Enter NPM DB credentials if auto-discovery fails
+
+Step 2: Pick Proxy Hosts to Watch
+  → GET /api/setup/npm-hosts (list all NPM proxy hosts)
+  → User selects which proxy hosts to monitor
+  → For each selected host:
+    - System pre-fills: name, domain, forward_host, forward_port
+    - System runs a background scan to find the device's MAC
+    - User confirms: "This is the [device name] at [MAC]"
+    - If scan fails: "Device not found — is it powered on?"
+
+Step 3: Notification Channel Setup
+  → GET /notifications/add/telegram or /notifications/add/email
+  → Telegram: "Create a bot with @BotFather → Message it → Paste the chat ID"
+  → Email: "Select provider (Gmail, Outlook, custom) → SMTP prefilled → Enter credentials"
+  → TEST BUTTON: POST /notifications/channel/<id>/test
+    - Sends a test notification to verify the channel works
+    - Result: "Test notification sent — did you receive it?"
+
+Step 4: Confirmation
+  → "Setup complete: X devices being monitored, Y notification channels active"
+  → "First test alert sent — if you see '[Upstream Healer] Setup complete' you're good"
+  → Link to dashboard
+```
+
+#### 5.6.2 Provider Presets for Notification Channels
+
+**Email presets:**
+| Provider | SMTP host | Port |
+|----------|-----------|------|
+| Gmail | smtp.gmail.com | 587 |
+| Outlook | smtp-mail.outlook.com | 587 |
+| Yahoo | smtp.mail.yahoo.com | 587 |
+
+**Telegram:**
+- Step-by-step instructions inline (no presets needed — just @BotFather)
+
+---
+
+### 5.7 Validation & Assistance Contract
+
+> *Every validation outcome must be actionable, not just an error string.*
+
+#### 5.7.1 Validation Flow (Add/Edit Host)
+
+```
+User enters: name, MAC, port, (optionally) IP
+  → POST /api/hosts/validate-new (for new hosts) or POST /hosts/<id>/validate (for edits)
+  → System runs:
+    1. MAC format check (normalize: aa:bb:cc:dd:ee:ff)
+    2. Port range check (1–65535)
+    3. If IP provided: check if IP is in a known subnet
+    4. If MAC provided: run ARP scan to find current IP
+    5. If scan finds device: show "Device found at [IP], MAC [MAC]"
+    6. If scan finds wrong MAC: "IP [IP] belongs to a different device (MAC [found_MAC])"
+    7. If port scan enabled: probe common ports and show "Open ports found: 80, 443, 8080, ..."
+```
+
+#### 5.7.2 Validation Outcome Messages (User-Facing)
+
+| Scenario | User-facing message | Action |
+|----------|-------------------|--------|
+| MAC format invalid | "MAC address should look like aa:bb:cc:dd:ee:ff. We'll fix it automatically." | Auto-normalize |
+| MAC not found on network | "We couldn't find this MAC on your network. Is the device powered on?" | Check device power |
+| IP not in any known subnet | "This IP isn't on any configured network. Add the network in Settings first." | Go to Settings |
+| IP found but wrong MAC | "That IP belongs to a different device. Double-check the MAC address." | Verify MAC |
+| Port not responding | "Port X isn't answering. Did you mean Y? (Open ports: …)" | Suggest alternative |
+| NPM mismatch | "NPM expects [old IP] but you entered [new IP]" | Three choices: Update to match / Link anyway / Don't link |
+| Duplicate MAC+port | "A host with this MAC on this port already exists. Add as a second service?" | Merge or keep separate |
+
+#### 5.7.3 Multi-Service Grouping (Dashboard)
+
+On the dashboard, hosts sharing the same MAC address should be visually grouped:
+```
+┌─────────────────────────────────────────────┐
+│ 🟢 vault (2 services)                       │
+│   ├─ Port 8200 (Plex Metadata) — Healthy    │
+│   └─ Port 8096 (Plex Web) — Healthy         │
+└─────────────────────────────────────────────┘
+```
+
+Each service port is independently monitored but grouped under the device name so users understand they're watching one physical device with multiple services.
+
+---
+
+### 5.8 Notification Design
+
+> *Users must have granular control to avoid notification fatigue and sleep disruption.*
+
+#### 5.8.1 Event Types (User-Friendly Labels)
+
+| Event Type | User-Facing Label | Plain-English Description | Default ON/OFF |
+|------------|------------------|--------------------------|----------------|
+| `unreachable` | ⚠️ Device Down | "The device isn't responding after the waiting period" | ON |
+| `recovered` | ✅ Device Recovered | "The device is back up and working" | ON |
+| `failed` | ❌ Recovery Failed | "We couldn't fix the device automatically" | ON |
+| `scan_started` | 🔍 Scanning… | "We're looking for the device on the network" | OFF (noise) |
+| `ip_found` | 📍 IP Found | "We found a new IP for the device" | OFF (noise) |
+| `updated` | 🔄 NPM Updated | "We updated the proxy configuration" | OFF (noise) |
+| `manual` | 👆 Manual Action | "An action was triggered manually" | ON |
+| `quiet_time` | ⏱️ Quiet Time | "Do-not-disturb window started/ended" | OFF (noise) |
+
+#### 5.8.2 Global Do-Not-Disturb (DND)
+
+- **Settings toggle:** A global "Mute all notifications" switch (in Settings page).
+- **Effect:** All event types are suppressed regardless of per-event toggles.
+- **Use case:** "I'm sleeping, don't page me tonight" — without disabling monitoring entirely.
+- **Duration options:** "Until 7:00 AM", "Custom (HH:MM to HH:MM)", or "Permanent until toggled off".
+- **Recovery:** When DND ends, no backlog of missed notifications is sent — the system simply resumes normal operation.
+
+#### 5.8.3 Per-Host Quiet Period (Existing, Clarified)
+
+The current quiet period feature is per-host. The plan clarifies its behavior:
+- **Quiet mode "suppress":** Continue monitoring the device, but do NOT send notifications. The device is still checked every check_interval.
+- **Quiet mode "delete":** Skip monitoring checks entirely. No reachability check, no IP change detection. Useful for devices that are off during certain hours (e.g., a guest PC at night).
+
+#### 5.8.4 De-duplication & Escalation (Requirement, not Tech Debt)
+
+Current behavior: A persistently unreachable device can trigger notifications on every check cycle (every 600 seconds by default). This is unacceptable for sleep disruption.
+
+Required behavior:
+1. **Initial alert:** When grace period expires → send `unreachable` notification.
+2. **De-duplication:** Do NOT re-notify on subsequent checks while the device stays unreachable.
+3. **Escalation (optional, future):** If the device is still unreachable after X hours (configurable in Settings), send a reminder: "[Device] has been down for X hours — manual intervention may be needed."
+4. **Recovery always notifies:** When a device recovers, always send a `recovered` notification (no de-duplication — this is the resolution).
+5. **State-change only:** Only send notifications on state transitions (healthy → unreachable, unreachable → healthy), not on every check.
+
+#### 5.8.5 Test Notification Endpoint
+
+- **Endpoint:** `POST /notifications/channel/<id>/test`
+- **Behavior:** Sends a test notification through the channel with a message like "This is a test notification from Upstream Healer."
+- **UI:** A "Test" button on each channel card in the Notifications page.
+- **Purpose:** Verify the channel works immediately after setup, without waiting for a real event.
+
+#### 5.8.6 Notification Message Templates (Sanitized)
+
+All outbound messages must use these sanitized templates:
+
+**Event: unreachable**
+```
+⚠️ [Device Name] is unreachable. We're looking for it on your network.
+```
+
+**Event: recovered**
+```
+✅ [Device Name] is reachable again.
+```
+
+**Event: failed**
+```
+❌ We couldn't find [Device Name] on your network. Manual intervention may be needed.
+```
+
+**Event: manual**
+```
+👆 [Device Name] was checked manually.
+```
+
+**Event: quiet_time (log-only, never notified)**
+```
+Quiet time for [Device Name]: started/ended.
+```
+
+#### 5.8.7 Notification Channel Toggle Flow
+
+```
+User visits /notifications:
+  1. Sees all configured channels (Telegram, Email)
+  2. Each channel card shows:
+     - Channel name + type badge
+     - Enabled/Disabled status
+     - Toggle button (Enable/Disable)
+     - Per-event toggle buttons (with plain-English labels)
+     - Test button
+     - Edit/Delete buttons
+  3. Toggling a channel off: stops all notifications through that channel
+  4. Toggling an event type off: stops only that event type through that channel
+  5. Global DND (if implemented): overrides all toggles temporarily
+```
+
+### 5.9 Dashboard Specification
+
+> *The dashboard is the single source of truth for "is my reverse proxy working?"*
+
+#### 5.9.1 Overall Banner
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 🟢 All systems healthy — X devices monitored, Y active  │
+│                                                         │
+│ 🔴 1 device needs attention: [device name]              │
+│    (Tap to see details)                                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+- **Green banner:** All monitored devices are healthy (or in quiet mode).
+- **Amber banner:** One or more devices are in grace period (not yet at alert threshold).
+- **Red banner:** One or more devices are unreachable (past grace period).
+
+#### 5.9.2 Device Card (Per-Host)
+
+```
+┌─────────────────────────────────────────────────┐
+│ 🟢 vault                                        │
+│    Port 8200 — Healthy                          │
+│    Last checked: 2 minutes ago                  │
+│                                                 │
+│ [Force Check] [Events] [Edit]                   │
+└─────────────────────────────────────────────────┘
+```
+
+**Status indicators:**
+| Status | Icon | Color | Meaning |
+|--------|------|-------|---------|
+| `healthy` | 🟢 | Green | Device is responding on its monitored port |
+| `unreachable` | 🔴 | Red | Device is not responding (past grace period) |
+| `recovering` | 🟡 | Amber | We're actively scanning for the device |
+| `unknown` | ⚪ | Gray | Device was just added, not yet checked |
+| `maintenance` | 🔵 | Blue | Device is being edited or in quiet mode |
+
+**Grace period countdown:** When a device first becomes unreachable, show:
+```
+⏱️ Down 4 minutes — alerting in 6 minutes
+```
+This gives the user time to react before being paged.
+
+#### 5.9.3 Multi-Service Grouping
+
+Devices with multiple monitored ports (same MAC, different ports) are grouped:
+```
+┌─────────────────────────────────────────────────┐
+│ 🟢 vault (2 services)                           │
+│    ├─ Port 8200 — Healthy (checked 2m ago)      │
+│    └─ Port 8096 — Healthy (checked 2m ago)      │
+│                                                 │
+│ [Force Check] [Events] [Edit]                   │
+└─────────────────────────────────────────────────┘
+```
+
+If one service is unhealthy:
+```
+┌─────────────────────────────────────────────────┐
+│ 🔴 vault (2 services)                           │
+│    ├─ Port 8200 — Healthy                       │
+│    └─ Port 8096 — Unreachable (in 8 min)        │
+│                                                 │
+│ [Force Check] [Events] [Edit]                   │
+└─────────────────────────────────────────────────┘
+```
+
+#### 5.9.4 Actions
+
+| Action | What it does | User-facing text |
+|--------|-------------|-----------------|
+| Force Check | Immediately scans one device | "Force Check" |
+| Events | Opens the event log for this device | "Events" |
+| Edit | Opens the edit form | "Edit" |
+| Delete | Removes the device from monitoring | "Delete" (with confirmation) |
+                                    ↓
+                              Nginx (reloaded)
+```
+
+---
+
+### 5.10 Language & Copy Guidelines
+
+> *Consistent language across the UI reduces confusion and makes the tool feel polished.*
+
+#### 5.10.1 Tone
+
+- **Calm and helpful:** Never alarmist. "Device is unreachable" not "CRITICAL: DEVICE DOWN".
+- **Actionable:** Every message should suggest what to do (or nothing if no action is needed).
+- **Technical terms only where necessary:** Use "port" and "device name" freely; avoid "CIDR", "proxy host", "ARP" in user-facing text.
+
+#### 5.10.2 Terminology Reference
+
+| UI Label | Technical Meaning |
+|----------|------------------|
+| Device | A monitored host (identified by MAC + port) |
+| Device name | The `name` field (e.g. "vault", "jellyfin") |
+| Network segment | A subnet (e.g. "Home Network — 192.168.86.0/24") |
+| Port | The TCP port to monitor on the device |
+| Service | A specific port on a device (a device can have multiple services) |
+| Waiting period | The grace period before alerting (default 10 minutes) |
+| Do-not-disturb | Quiet time (suppress notifications) |
+| Quiet time | Can be "suppress" (silence alerts) or "skip" (skip checks) |
+| NPM page | An Nginx Proxy Manager proxy host (identified by domain name) |
+| Network scan | ARP scan, scapy scan, or nmap scan (user doesn't need to choose) |
+| Validate | Check if the entered device info is correct (runs a scan) |
+| Event | A state change (device down, device recovered, etc.) |
+| Alert | A notification sent to Telegram or Email |
+| Health | Whether the device is responding on its monitored port |
+
+#### 5.10.3 Error Messages
+
+All error messages must:
+1. Explain **what went wrong** in plain English.
+2. Suggest **what to do** about it.
+3. Never expose raw technical details (SQL errors, stack traces, etc.) to the user.
+
+| Scenario | Bad | Good |
+|----------|-----|------|
+| NPM connection fails | "Connection refused to 192.168.86.40:3306" | "We can't reach Nginx Proxy Manager. Make sure it's running and the database credentials are correct." |
+| MAC format invalid | "Invalid MAC" | "MAC address should look like aa:bb:cc:dd:ee:ff. We'll fix it automatically." |
+| Port scan fails | "Connection timeout" | "Port X isn't answering. The device might not be running this service, or the port number might be wrong." |
+| Device not found | "No hosts found" | "We couldn't find this MAC address on your network. Is the device powered on?" |
+
+#### 5.10.4 Settings Explanations
+
+Every setting in the Settings page should have a one-line explanation:
+
+| Setting | Explanation |
+|---------|-------------|
+| Check interval | "How often we check if devices are responding (default: every 10 minutes)" |
+| Grace period | "How long to wait before alerting (gives devices time to reboot — default: 10 minutes)" |
+| Event retention | "How long to keep event history (default: 10 days)" |
+| Check interval per subnet | "Custom check interval for this network (leave blank to use global default)" |
+
+#### 5.10.5 Inline Help Pattern
+
+Every form field should follow this pattern:
+```
+[Label]
+[Input field]
+<p class="text-xs text-slate-500">Explanation of what this field means and how to fill it</p>
+```
+
+Example:
+```
+Device name *
+[vault                  ]
+<p class="text-xs text-slate-500">A friendly name for this device, shown in alerts and on the dashboard</p>
+```
+
+---
+
 ## 6. Integration Points
 
 ### 6.1 External Tools
@@ -661,18 +1116,21 @@ Manual management:
 
 ### 6.2 Nginx Proxy Manager Integration
 
-```
-Healer ← Docker Exec → NPM Container ← pymysql → NPM MariaDB
-                                    ↓
-                              Nginx (reloaded)
-```
+The scanner uses the Nginx Proxy Manager's MariaDB to discover and update proxy hosts.
 
 **Data flow**:
-1. Monitor detects IP change via MAC scan
-2. NPMClient connects to NPM's MariaDB
-3. Updates `proxy_host.forward_host` for matching proxy host
-4. Runs `nginx -t && nginx -s reload`
-5. Records event and notifies
+```
+Healer ← Docker Exec → NPM Container ← pymysql → NPM MariaDB
+```
+
+1. **Connect to NPM**: Use Docker SDK to exec `pymysql` into the NPM container.
+2. **Query proxy hosts**: `SELECT * FROM proxy_hosts WHERE scheme_http = 1 AND domain_names LIKE ?`
+3. **Match by domain**: Find the proxy host whose domain matches the scanner's mDNS/ARP result.
+4. **Update forward_host**: `UPDATE proxy_hosts SET forward_host = ? WHERE id = ?`
+5. **Reload nginx**: `docker exec npm_nginx_1 nginx -s reload`
+
+**Privacy**: All notifications strip IP addresses and MAC addresses before sending.
+⚠️ **Current status:** Telegram applies stripping; Email does NOT. Email sanitization must be added to match Telegram's behavior.
 
 ### 6.3 Notification Channels
 
@@ -683,6 +1141,7 @@ Monitor.send_event() →
 ```
 
 **Privacy**: All notifications strip IP addresses and MAC addresses before sending.
+⚠️ **Current status:** Telegram applies stripping; Email does NOT. Email sanitization must be added to match Telegram's behavior.
 
 ---
 
@@ -793,7 +1252,6 @@ stages:
 1. **Single monolithic main.py** (1670 lines): All routes in one file. Should be split into routers.
 2. **No Alembic migrations**: Custom migration logic in `database.py` using `PRAGMA table_info`. Alembic directory exists but is not used.
 3. **No API versioning**: All endpoints are at root level.
-4. **No authentication**: The app has no auth — it's designed for trusted networks.
 
 ### 9.2 Scanner
 
@@ -829,10 +1287,9 @@ stages:
 ### 10.1 Short-Term (High Impact)
 
 1. **Route splitting**: Move route handlers from `main.py` into `app/routers/` submodules.
-2. **API authentication**: Add JWT or API key auth.
-3. **REST API**: Add proper JSON API endpoints (currently mostly HTML).
-4. **Health check improvements**: Add SQLite connectivity check.
-5. **Config validation**: Add runtime validation for NPM credentials.
+2. **REST API**: Add proper JSON API endpoints (currently mostly HTML).
+3. **Health check improvements**: Add SQLite connectivity check.
+4. **Config validation**: Add runtime validation for NPM credentials.
 
 ### 10.2 Medium-Term
 

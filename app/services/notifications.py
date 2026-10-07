@@ -9,6 +9,7 @@ from email.message import EmailMessage
 import httpx
 import aiosqlite
 from app.config import current_time
+from app.utils.sanitize import sanitize_email_content
 
 logger = logging.getLogger("healer.notifications")
 
@@ -75,6 +76,7 @@ async def _send_telegram(config: dict, message: str, details: str = ""):
         logger.warning("Telegram not configured properly")
         return
 
+    # Sanitize the message for Telegram (existing logic)
     message_without_network_identifiers = MAC_ADDRESS.sub("", IP_ADDRESS.sub("", message))
     message_without_network_identifiers = message_without_network_identifiers.replace("  ", " ").strip()
     text = f"🔔 *Upstream Healer*\n\n{message_without_network_identifiers}"
@@ -124,13 +126,16 @@ async def _send_email(config: dict, message: str, details: str = ""):
         logger.warning("Email not configured properly")
         return
 
+    # Sanitize the email content
+    sanitized_message, sanitized_details = sanitize_email_content(message, details)
+
     msg = EmailMessage()
     msg["From"] = from_addr
     msg["To"] = ", ".join(to_addrs)
-    msg["Subject"] = f"[Upstream Healer] {message[:60]}"
-    body = message
-    if details:
-        body += f"\n\nDetails:\n{details}"
+    msg["Subject"] = f"[Upstream Healer] {sanitized_message[:60]}"
+    body = sanitized_message
+    if sanitized_details:
+        body += f"\n\nDetails:\n{sanitized_details}"
     msg.set_content(body)
 
     try:

@@ -160,6 +160,6 @@ class TestSendEmail:
         assert kwargs["port"] == 587
         msg = mock_send.call_args.args[0]
         assert "a@example.com, b@example.com" in msg["To"]
-        # unlike Telegram, the email body keeps raw details
+        # Email content is now sanitized - IP should be masked
         assert "Host vault down" in msg.get_content()
-        assert "192.168.1.50 timeout" in msg.get_content()
+        assert "192.168.1.* timeout" in msg.get_content()

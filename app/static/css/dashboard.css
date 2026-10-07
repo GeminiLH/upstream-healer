@@ -1,0 +1,70 @@
+/* Responsive dashboard styling */
+@media (max-width: 640px) {
+  .dashboard-container {
+    padding: 1rem;
+  }
+  
+  .host-card {
+    padding: 1rem;
+  }
+  
+  .host-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+  
+  .host-actions {
+    width: 100%;
+    margin-top: 1rem;
+    justify-content: flex-start;
+  }
+  
+  .host-info {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  
+  .event-list-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+  
+  .event-time,
+  .event-type {
+    width: 100%;
+  }
+}
+
+/* Enhanced responsive design for host cards */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .host-card {
+    padding: 1.25rem;
+  }
+  
+  .host-actions {
+    flex-wrap: wrap;
+  }
+}
+
+/* For larger screens */
+@media (min-width: 1025px) {
+  .dashboard-container {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+}
+
+/* Additional responsive improvements */
+.host-info-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@media (max-width: 768px) {
+  .host-info-item {
+    flex-wrap: wrap;
+  }
+}
