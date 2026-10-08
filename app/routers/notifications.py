@@ -7,7 +7,6 @@ import aiosqlite
 import json
 from app.config import current_time
 from app.database import init_db
-from app.services.notifications import send_event
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
