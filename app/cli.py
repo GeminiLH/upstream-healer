@@ -2,8 +2,8 @@
 import argparse
 import asyncio
 import json
+from collections.abc import Sequence
 from datetime import timedelta
-from typing import Sequence
 
 import aiosqlite
 
@@ -107,18 +107,18 @@ async def add_host(args: argparse.Namespace, db: aiosqlite.Connection) -> None:
         raise ValueError("--grace-minutes must be zero or greater")
     if not 1 <= args.port <= 65535:
         raise ValueError("--port must be between 1 and 65535")
-    
+
     # Check if host with same name already exists
     async with db.execute(
         "SELECT id FROM hosts WHERE name = ?",
         (args.name,)
     ) as cursor:
         existing_host = await cursor.fetchone()
-    
+
     if existing_host:
         # Raise ValueError to indicate that adding a duplicate is not allowed
         raise ValueError(f"Host with name '{args.name}' already exists")
-    
+
 
     # Original insert logic for new hosts - keep this.  i dont want any updating on a new host command.  delete and add again
     now = current_time().isoformat()
@@ -258,6 +258,7 @@ async def check_npm_db(args=None) -> None:
     Namespace from ``check-npm-db``); defaults win when they are unset.
     """
     import subprocess
+
     import docker as _docker
 
     print("=" * 60)
@@ -350,7 +351,6 @@ async def _check_npm_db_steps2(db_creds: dict | None, args=None) -> None:
     print("[4] NPM database connectivity:")
     try:
         import pymysql
-
         import pymysql.cursors  # registers pymysql.cursors.DictCursor
 
         # CLI flags > container env (DB_MYSQL_*) > app settings

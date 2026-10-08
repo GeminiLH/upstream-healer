@@ -13,7 +13,6 @@ import re
 import socket
 import subprocess
 import xml.etree.ElementTree as ET
-from typing import Optional
 
 from app.config import current_time
 from app.services import diag_log
@@ -32,7 +31,7 @@ def normalize_mac(mac: str) -> str:
     return mac
 
 
-async def find_ip_by_mac(target_mac: str, interface: Optional[str] = None, subnets: Optional[list[str]] = None) -> Optional[str]:
+async def find_ip_by_mac(target_mac: str, interface: str | None = None, subnets: list[str] | None = None) -> str | None:
     """
     Search the local network for a device with the given MAC.
     Returns the IP address if found, else None.
@@ -57,8 +56,8 @@ async def find_ip_by_mac(target_mac: str, interface: Optional[str] = None, subne
 async def run_scan(
     target_mac: str,
     method: str = "arp-scan",
-    interface: Optional[str] = None,
-    subnets: Optional[list[str]] = None,
+    interface: str | None = None,
+    subnets: list[str] | None = None,
     scan_ports: bool = False,
 ) -> dict:
     """Run one scanner and return a JSON-ready dict for the diagnostic UI.
@@ -96,7 +95,7 @@ async def run_scan(
             found_ip = _match_mac_in_output(target_mac, output, subnets=subnets)
 
     hosts = await resolve_hostnames(_parse_scan_output(output, subnets=subnets))
-    ports_error: Optional[str] = None
+    ports_error: str | None = None
     if scan_ports and hosts:
         port_map, ports_error = await asyncio.to_thread(
             run_port_scan, [h["ip"] for h in hosts]
@@ -117,7 +116,7 @@ async def run_scan(
     return result
 
 
-def _parse_scan_output(output: str, subnets: Optional[list[str]] = None) -> list[dict]:
+def _parse_scan_output(output: str, subnets: list[str] | None = None) -> list[dict]:
     """Parse responder lines into ``[{ip, mac, detail}]`` (deduped, subnet-scoped).
 
     Both scanner output shapes share the same first two columns (IP, MAC):
@@ -192,7 +191,7 @@ async def resolve_hostnames(hosts: list[dict], limit: int = 256) -> list[dict]:
             name = (await asyncio.to_thread(socket.gethostbyaddr, host["ip"]))[0]
             host["hostname"] = name
             resolved += 1
-        except Exception:  # noqa: BLE001 - best-effort; display falls back to IP
+        except Exception:
             host["hostname"] = None
 
     if hosts:
@@ -221,7 +220,7 @@ async def load_known_hostnames(db) -> dict[str, str]:
                 name = (row["name"] or "").strip()
                 if mac and name:
                     out[mac] = name
-    except Exception:  # noqa: BLE001 - a missing/odd table shouldn't abort a scan
+    except Exception:
         return {}
     return out
 
@@ -246,7 +245,7 @@ async def load_known_hostnames_by_ip(db) -> dict[str, str]:
                 name = (row["name"] or "").strip()
                 if ip and name:
                     out[ip] = name
-    except Exception:  # noqa: BLE001 - a missing/odd table shouldn't abort a scan
+    except Exception:
         return {}
     return out
 
@@ -281,11 +280,11 @@ async def remember_mdns_names(db, mac_map: dict[str, str]) -> None:
                 """,
                 (mac, name, now),
             )
-        except Exception as exc:  # noqa: BLE001 - caching must never fail a scan
+        except Exception as exc:
             logger.debug("remember_mdns_names: could not store %s: %s", mac, exc)
     try:
         await db.commit()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("remember_mdns_names: commit failed: %s", exc)
 
 
@@ -306,17 +305,17 @@ async def load_mdns_names(db) -> dict[str, str]:
                 name = (row["hostname"] or "").strip()
                 if mac and name:
                     out[mac] = name
-    except Exception:  # noqa: BLE001 - a missing/odd table shouldn't abort a scan
+    except Exception:
         return {}
     return out
 
 
 def apply_hostnames(
     hosts: list[dict],
-    mdns: Optional[tuple[dict[str, str], dict[str, str]]] = None,
-    known: Optional[dict[str, str]] = None,
-    cached: Optional[dict[str, str]] = None,
-    known_by_ip: Optional[dict[str, str]] = None,
+    mdns: tuple[dict[str, str], dict[str, str]] | None = None,
+    known: dict[str, str] | None = None,
+    cached: dict[str, str] | None = None,
+    known_by_ip: dict[str, str] | None = None,
 ) -> list[dict]:
     """Assign a ``hostname`` to each swept host from every available source.
 
@@ -364,7 +363,7 @@ def apply_hostnames(
     return sorted(hosts, key=_key)
 
 
-def _match_mac_in_output(target_mac: str, output: str, subnets: Optional[list[str]] = None) -> Optional[str]:
+def _match_mac_in_output(target_mac: str, output: str, subnets: list[str] | None = None) -> str | None:
     """Return the IP for ``target_mac`` in an arp-scan table, or ``None``.
 
     When ``subnets`` is given, only responders whose IP falls inside one of the
@@ -379,7 +378,7 @@ def _match_mac_in_output(target_mac: str, output: str, subnets: Optional[list[st
     return None
 
 
-def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], str, Optional[str]]:
+def run_arp_scan(subnets: list[str] | None = None) -> tuple[str | None, str, str | None]:
     """Actively sweep the requested networks with ``arp-scan``.
 
     Returns ``(found_ip, raw_output, error)`` where ``found_ip`` is ``None``
@@ -480,7 +479,7 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
         except FileNotFoundError:
             diag_log.emit("arp-scan", "binary not found (passive -l)")
             return None, "", "arp-scan binary not found"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             diag_log.exc("arp-scan", exc, "passive -l")
             return None, "", f"arp-scan failed: {exc}"
         diag_log.proc("arp-scan", ["arp-scan", "-l", "-q", "--retry=3"], proc)
@@ -507,14 +506,14 @@ def run_arp_scan(subnets: Optional[list[str]] = None) -> tuple[Optional[str], st
 
 def _run_sweeps(
     sweeps: list[tuple[str, str]],
-) -> tuple[list[str], Optional[str]]:
+) -> tuple[list[str], str | None]:
     """Execute each ``(iface, cidr)`` sweep; return ``(non_empty_outputs, error)``.
 
     One failing sweep is recorded in ``error`` but the remaining sweeps still
     run — a wedged NIC must not hide the other networks.
     """
     chunks: list[str] = []
-    error: Optional[str] = None
+    error: str | None = None
     for iface, cidr in sweeps:
         kind = classify_subnet(cidr, iface)["kind"]
         # arp-scan is a Layer-2 (ARP broadcast) tool: it cannot reach hosts beyond
@@ -544,7 +543,7 @@ def _run_sweeps(
         except FileNotFoundError:
             diag_log.emit("arp-scan", "binary not found", "cmd=" + " ".join(cmd))
             return [], "arp-scan binary not found"
-        except Exception as exc:  # noqa: BLE001 - per-sweep isolation
+        except Exception as exc:
             diag_log.exc("arp-scan", exc, "cmd=" + " ".join(cmd))
             error = f"arp-scan failed: {exc}"
             continue
@@ -599,7 +598,7 @@ def _plan_sweeps(
             notes.append(f"(skipped {cidr_norm}: no local interface)")
 
 
-def _filter_and_dedupe(output: str, cidrs: Optional[list[str]]) -> str:
+def _filter_and_dedupe(output: str, cidrs: list[str] | None) -> str:
     """Keep only responder lines inside ``cidrs`` (when given); dedupe rows.
 
     A responder line is one whose first field is an IP address.  Banner,
@@ -629,9 +628,9 @@ def _filter_and_dedupe(output: str, cidrs: Optional[list[str]]) -> str:
 
 def run_scapy_scan(
     target_mac: str,
-    interface: Optional[str] = None,
-    subnets: Optional[list[str]] = None,
-) -> tuple[Optional[str], str, Optional[str]]:
+    interface: str | None = None,
+    subnets: list[str] | None = None,
+) -> tuple[str | None, str, str | None]:
     """ARP-sweep with scapy and find ``target_mac``.
 
     Sweeps ``subnets`` (a list of CIDRs) one at a time.  When ``subnets`` is
@@ -643,7 +642,7 @@ def run_scapy_scan(
     still works — ``error`` is set in that case rather than raising.
     """
     try:
-        from scapy.all import ARP, Ether, srp, conf  # type: ignore
+        from scapy.all import ARP, Ether, conf, srp  # type: ignore
     except ImportError:
         diag_log.emit("scapy", "library not installed — cannot sweep")
         return None, "", "scapy library not installed"
@@ -682,7 +681,7 @@ def run_scapy_scan(
         # ValueError and aborts the whole sweep.  Passing `iface=` per-packet
         # keeps the default resolution path intact, so a full-table sweep still
         # works even when no per-network interface matches.
-        found_ip: Optional[str] = None
+        found_ip: str | None = None
         lines: list[str] = []
         for network in networks:
             # Per-network egress: pick the local interface that owns this
@@ -693,7 +692,7 @@ def run_scapy_scan(
             # ``conf.route.default_iface`` when ``conf.iface`` changes, and then
             # ``int("enp6s0")`` aborts the whole sweep.  Always pass ``iface=``
             # to ``srp()`` directly.
-            egress: Optional[str] = interface
+            egress: str | None = interface
             if not egress:
                 local_ip, iface = get_local_ip_for_network(network)
                 if local_ip:
@@ -757,7 +756,7 @@ def run_scapy_scan(
                         Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network),
                         timeout=3, retry=2, verbose=0,
                     )
-            except Exception as exc:  # noqa: BLE001 - per-network isolation
+            except Exception as exc:
                 diag_log.exc("scapy sweep", exc, f"network={network}", f"egress={egress}")
                 logger.warning(f"scapy: sweep of {network} failed ({exc})")
                 continue
@@ -781,12 +780,12 @@ def run_scapy_scan(
         output = "\n".join(lines) if lines else "(no ARP responses received)"
         diag_log.emit("scapy", f"lines={len(lines)}", f"found_ip={found_ip}", f"output={output}")
         return found_ip, output, None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         diag_log.exc("scapy", exc, f"target={target_mac}")
         return None, "", f"scapy scan failed: {exc}"
 
 
-async def _scan_with_arp_scan(target_mac: str, subnets: Optional[list[str]] = None) -> Optional[str]:
+async def _scan_with_arp_scan(target_mac: str, subnets: list[str] | None = None) -> str | None:
     """Find a single MAC via ``arp-scan`` (async wrapper over :func:`run_arp_scan`).
 
     ``subnets`` optionally scopes the sweep to specific CIDRs; ``None`` keeps the
@@ -794,7 +793,7 @@ async def _scan_with_arp_scan(target_mac: str, subnets: Optional[list[str]] = No
     """
     target_mac = normalize_mac(target_mac)
 
-    def _work() -> Optional[str]:
+    def _work() -> str | None:
         _, output, error = run_arp_scan(subnets=subnets)
         if error:
             return None
@@ -812,13 +811,13 @@ async def _scan_with_arp_scan(target_mac: str, subnets: Optional[list[str]] = No
     return await asyncio.get_running_loop().run_in_executor(None, _work)
 
 
-async def _scan_with_scapy(target_mac: str, interface: Optional[str] = None, subnets: Optional[list[str]] = None) -> Optional[str]:
+async def _scan_with_scapy(target_mac: str, interface: str | None = None, subnets: list[str] | None = None) -> str | None:
     """Find a single MAC via scapy (async wrapper over :func:`run_scapy_scan`)."""
     found_ip, _, _ = run_scapy_scan(target_mac, interface, subnets=subnets)
     return found_ip
 
 
-def _get_primary_ip() -> Optional[str]:
+def _get_primary_ip() -> str | None:
     """Best-effort way to get the primary local IPv4 address."""
     # Linux
     try:
@@ -869,7 +868,7 @@ def ip_in_subnets(ip: str, subnets: list[str]) -> bool:
     return False
 
 
-def get_local_ip_for_network(cidr: str) -> tuple[Optional[str], Optional[str]]:
+def get_local_ip_for_network(cidr: str) -> tuple[str | None, str | None]:
     """Return ``(local_ip, interface)`` the kernel uses to reach ``cidr``.
 
     Resolves via ``ip route get <network-address>`` — the most reliable signal
@@ -889,7 +888,7 @@ def get_local_ip_for_network(cidr: str) -> tuple[Optional[str], Optional[str]]:
         match = re.search(r"(?:src\s+(\d+\.\d+\.\d+\.\d+).*?dev\s+(\S+))|(?:dev\s+(\S+).*?src\s+(\d+\.\d+\.\d+\.\d+))", result.stdout)
         if match:
             return match.group(1) or match.group(4), match.group(2) or match.group(3)
-    except Exception:  # noqa: BLE001 - best-effort helper
+    except Exception:
         pass
     return None, None
 
@@ -910,7 +909,7 @@ def get_default_subnets() -> list[dict]:
             ["ip", "-4", "-o", "addr"],
             capture_output=True, text=True, timeout=5,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
     found: list[dict] = []
@@ -952,7 +951,7 @@ def get_local_interfaces() -> list[dict]:
             ["ip", "-4", "-o", "addr"],
             capture_output=True, text=True, timeout=5,
         )
-    except Exception:  # noqa: BLE001 - no `ip` (Windows) etc. -> no suggestions
+    except Exception:
         return []
 
     found: list[dict] = []
@@ -988,7 +987,7 @@ _TUNNEL_IFACE_PREFIXES = (
 )
 
 
-def get_interface_flags(iface: Optional[str]) -> Optional[str]:
+def get_interface_flags(iface: str | None) -> str | None:
     """Return the kernel flags inside ``<...>`` for ``iface`` (e.g.
     ``"BROADCAST,MULTICAST,UP"``) via ``ip -o link``, or ``None`` when it cannot
     be read (no ``ip``/iproute2, or the name is unknown)."""
@@ -1007,7 +1006,7 @@ def get_interface_flags(iface: Optional[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def is_tunnel_interface(iface: Optional[str], flags: Optional[str] = None) -> bool:
+def is_tunnel_interface(iface: str | None, flags: str | None = None) -> bool:
     """True when ``iface`` is a Layer‑3 point‑to‑point/tunnel interface
     (WireGuard, ``tun*``, ``gre*``, …) — i.e. **not** a Layer‑2 broadcast medium.
 
@@ -1059,7 +1058,7 @@ def interface_has_address_in(iface: str, cidr: str) -> bool:
     return False
 
 
-def classify_subnet(cidr: str, explicit_iface: Optional[str] = None) -> dict:
+def classify_subnet(cidr: str, explicit_iface: str | None = None) -> dict:
     """Decide how a subnet must be swept.
 
     Returns ``{"cidr", "egress", "kind", "flags"}`` where ``kind`` is:
@@ -1089,7 +1088,7 @@ def classify_subnet(cidr: str, explicit_iface: Optional[str] = None) -> dict:
     return {"cidr": cidr, "egress": iface, "kind": kind, "flags": flags}
 
 
-def subnet_is_l3_only(cidr: str, explicit_iface: Optional[str] = None) -> bool:
+def subnet_is_l3_only(cidr: str, explicit_iface: str | None = None) -> bool:
     """True when the subnet must be probed at Layer 3 (tunnel or routed): an ARP
     *broadcast* cannot reach the hosts inside it."""
     return classify_subnet(cidr, explicit_iface)["kind"] in ("tunnel", "routed")
@@ -1106,7 +1105,7 @@ def _usable_hosts(cidr: str) -> list[str]:
     return [str(h) for h in net.hosts()]
 
 
-def _l3_probe_egress(cidr: str, iface: Optional[str] = None) -> Optional[str]:
+def _l3_probe_egress(cidr: str, iface: str | None = None) -> str | None:
     """Egress interface for a Layer‑3 probe of ``cidr``.
 
     A user‑named interface wins; otherwise the kernel's *routed* egress (``ip
@@ -1119,7 +1118,7 @@ def _l3_probe_egress(cidr: str, iface: Optional[str] = None) -> Optional[str]:
     return dev or None
 
 
-def _l3_alive_scapy(hosts: list[str], egress: Optional[str], timeout: float) -> Optional[set]:
+def _l3_alive_scapy(hosts: list[str], egress: str | None, timeout: float) -> set | None:
     """ICMP‑echo sweep via scapy.  Returns the set of live IPs, or ``None`` when
     scapy is unavailable or the send fails (so the caller can fall back)."""
     if not hosts:
@@ -1127,13 +1126,13 @@ def _l3_alive_scapy(hosts: list[str], egress: Optional[str], timeout: float) -> 
     try:
         from scapy.all import ICMP, IP
         from scapy.sendrecv import sr
-    except Exception:  # noqa: BLE001 - scapy missing/failed to import
+    except Exception:
         diag_log.emit("l3-scapy", "import failed", f"hosts={len(hosts)}")
         return None
     try:
         packets = [IP(dst=h) / ICMP() for h in hosts]
         answered, _ = sr(packets, iface=egress, timeout=timeout, retry=1, verbose=0)
-    except Exception as exc:  # noqa: BLE001 - can't open a socket on the iface, etc.
+    except Exception as exc:
         diag_log.exc("l3-scapy", exc, f"hosts={len(hosts)}", f"egress={egress}", f"timeout={timeout}")
         return None
     alive = set()
@@ -1156,8 +1155,8 @@ _NMAP_TIMEOUT_L3 = 30
 
 
 def _l3_alive_nmap(
-    cidr: str, egress: Optional[str], kind: Optional[str] = None,
-) -> Optional[dict[str, dict[str, Optional[str]]]]:
+    cidr: str, egress: str | None, kind: str | None = None,
+) -> dict[str, dict[str, str | None]] | None:
     """Host discovery via ``nmap -sn`` (robust: ICMP + TCP/UDP probes).  Returns a
     mapping of live IP → ``{"mac": …, "hostname": …}`` — ``mac`` is ``None`` when
     nmap reports no MAC (e.g. a routed/tunnel host) and ``hostname`` is the
@@ -1179,7 +1178,7 @@ def _l3_alive_nmap(
     if kind is None:
         try:
             kind = classify_subnet(cidr)["kind"]
-        except Exception:  # noqa: BLE001 - classification is best-effort here
+        except Exception:
             kind = "unknown"
     l3 = kind in ("tunnel", "routed")
     try:
@@ -1205,8 +1204,8 @@ def _l3_alive_nmap(
             "stderr=" + (proc.stderr or "").strip()[:800],
         )
         return None
-    alive: dict[str, dict[str, Optional[str]]] = {}
-    pending_ip: Optional[str] = None
+    alive: dict[str, dict[str, str | None]] = {}
+    pending_ip: str | None = None
     for line in proc.stdout.splitlines():
         s = line.strip()
         if s.startswith("Host:"):
@@ -1249,12 +1248,12 @@ def _l3_alive_nmap(
     return alive
 
 
-def _l3_alive_ping(hosts: list[str], egress: Optional[str], concurrency: int = 32) -> set:
+def _l3_alive_ping(hosts: list[str], egress: str | None, concurrency: int = 32) -> set:
     """Last‑resort Layer‑3 sweep using the ``ping`` binary (iputils‑ping, already in
     the image), fanned out across a small thread pool."""
     import concurrent.futures
 
-    def _one(host: str) -> Optional[str]:
+    def _one(host: str) -> str | None:
         try:
             cmd = ["ping", "-c", "1", "-W", "1"]
             if egress:
@@ -1273,7 +1272,7 @@ def _l3_alive_ping(hosts: list[str], egress: Optional[str], concurrency: int = 3
     return alive
 
 
-def _host_line(ip: str, mac: str, routed: bool, egress: Optional[str], via: str, hostname: Optional[str] = None) -> str:
+def _host_line(ip: str, mac: str, routed: bool, egress: str | None, via: str, hostname: str | None = None) -> str:
     """Format one discovered host as a parseable scanner line:
     ``<ip>  <mac-or---->  (<tag>)`` — optionally suffixed `` hostname:<name>``
     when the sweep itself learned a name for the host (``nmap -sn`` reverse
@@ -1287,10 +1286,10 @@ def _host_line(ip: str, mac: str, routed: bool, egress: Optional[str], via: str,
 
 def run_l3_probe(
     cidr: str,
-    egress: Optional[str] = None,
-    target_mac: Optional[str] = None,
+    egress: str | None = None,
+    target_mac: str | None = None,
     timeout: float = 3.0,
-) -> tuple[Optional[str], str, Optional[str]]:
+) -> tuple[str | None, str, str | None]:
     """Discover live hosts in a routed/tunnel subnet with a Layer‑3 probe.
 
     An ARP *broadcast* cannot reach hosts behind a tunnel or gateway, so sweep with
@@ -1339,10 +1338,10 @@ def run_l3_probe(
 
 
 def run_nmap_scan(
-    subnets: Optional[list[str]] = None,
-    target_mac: Optional[str] = None,
-    interface: Optional[str] = None,
-) -> tuple[Optional[str], str, Optional[str]]:
+    subnets: list[str] | None = None,
+    target_mac: str | None = None,
+    interface: str | None = None,
+) -> tuple[str | None, str, str | None]:
     """Host discovery via ``nmap -sn`` — a diagnostic aid, **not** the recovery path.
 
     ``nmap -sn`` uses ARP for locally‑attached networks and ICMP/ping probes for
@@ -1431,7 +1430,7 @@ async def load_suppressed_subnets(db=None) -> list[str]:
             "SELECT value FROM settings WHERE key = 'suppressed_subnets'"
         ) as cursor:
             rows = await cursor.fetchall()
-    except Exception:  # noqa: BLE001 - missing table etc. shouldn't abort scans
+    except Exception:
         return []
     if not rows:
         return []
@@ -1475,7 +1474,7 @@ async def list_subnets(db=None, include_suppressed: bool = False) -> list[dict]:
                         "id": row["id"], "name": row["name"], "cidr": row["cidr"],
                         "interface": row["interface"], "source": "manual",
                     })
-        except Exception:  # noqa: BLE001 - a missing table etc. shouldn't abort a scan
+        except Exception:
             logger.exception("list_subnets: could not read subnets table")
 
     suppressed = set(await load_suppressed_subnets(db))
@@ -1661,10 +1660,10 @@ def parse_nmap_services_by_host(raw: str) -> dict[str, list[dict]]:
 
 def run_service_scan(
     ip: str,
-    tcp_ports: Optional[list[int]] = None,
-    udp_ports: Optional[list[int]] = None,
+    tcp_ports: list[int] | None = None,
+    udp_ports: list[int] | None = None,
     timeout: float = 120.0,
-) -> tuple[list[dict], Optional[str]]:
+) -> tuple[list[dict], str | None]:
     """Blocking nmap port+service scan of one host (run via ``asyncio.to_thread``).
 
     Probes ``DEFAULT_PROBE_TCP/UDP_PORTS`` merged with ``tcp_ports``/``udp_ports``
@@ -1707,8 +1706,8 @@ def run_service_scan(
 
 
 def run_port_scan(
-    hosts: list[str], timeout: Optional[float] = None,
-) -> tuple[dict[str, list[dict]], Optional[str]]:
+    hosts: list[str], timeout: float | None = None,
+) -> tuple[dict[str, list[dict]], str | None]:
     """Connect-scan ALL TCP ports of the given live hosts → ``{ip: [open ports]}``.
 
     Diagnostic aid (the /diagnostic "scan open ports" option), NOT a recovery
@@ -1753,9 +1752,9 @@ def run_port_scan(
 
 async def run_port_scan_incremental(
     hosts: list[str],
-    callback: Optional[callable] = None,
-    timeout: Optional[float] = None,
-) -> tuple[dict[str, list[dict]], Optional[str]]:
+    callback: callable | None = None,
+    timeout: float | None = None,
+) -> tuple[dict[str, list[dict]], str | None]:
     """Scan hosts one at a time, invoking ``callback(host_result)`` after each.
 
     Unlike :func:`run_port_scan` which batches all targets into a single nmap
@@ -1775,7 +1774,7 @@ async def run_port_scan_incremental(
 
     by_host: dict[str, list[dict]] = {}
 
-    def _scan_one_host(ip: str) -> tuple[dict[str, list[dict]], Optional[str]]:
+    def _scan_one_host(ip: str) -> tuple[dict[str, list[dict]], str | None]:
         """Blocking scan of a single host (runs in a worker thread)."""
         cmd = [
             "nmap", "-Pn", "-sT", "-sV", "--open", "-p-",
@@ -1809,7 +1808,7 @@ async def run_port_scan_incremental(
         if callback:
             try:
                 await callback({**partial, "_index": i, "_total": len(hosts)})
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass  # callback failure must not abort the scan
 
         diag_log.emit(
@@ -1824,8 +1823,8 @@ async def run_port_scan_incremental(
 
 async def probe_services(
     ip: str,
-    tcp_ports: Optional[list[int]] = None,
-    udp_ports: Optional[list[int]] = None,
+    tcp_ports: list[int] | None = None,
+    udp_ports: list[int] | None = None,
     timeout: float = 60.0,
 ) -> dict:
     """Async wrapper around :func:`run_service_scan`.
@@ -1837,12 +1836,12 @@ async def probe_services(
         services, error = await asyncio.to_thread(
             run_service_scan, ip, tcp_ports, udp_ports, timeout
         )
-    except Exception as exc:  # noqa: BLE001 - a probe error is a result, not a crash
+    except Exception as exc:
         return {"ok": False, "error": f"service scan failed: {exc}", "services": []}
     return {"ok": error is None, "error": error, "services": services}
 
 
-def _arp_sweep_rows(subnets: Optional[list[str]]) -> tuple[list[dict], Optional[str]]:
+def _arp_sweep_rows(subnets: list[str] | None) -> tuple[list[dict], str | None]:
     """One full ARP sweep → every responder as ``[{ip, mac, detail}]``.
 
     arp-scan first; if it produced nothing *and* reported an error (missing
@@ -1860,17 +1859,17 @@ def _arp_sweep_rows(subnets: Optional[list[str]]) -> tuple[list[dict], Optional[
     return rows, (error if not rows else None)
 
 
-async def sweep_responder_hosts(subnets: Optional[list[str]] = None) -> tuple[list[dict], Optional[str]]:
+async def sweep_responder_hosts(subnets: list[str] | None = None) -> tuple[list[dict], str | None]:
     """Async wrapper around :func:`_arp_sweep_rows` (blocking work off the loop)."""
     return await asyncio.to_thread(_arp_sweep_rows, subnets)
 
 
 async def resolve_hostname(
-    ip: Optional[str] = None,
-    mac: Optional[str] = None,
+    ip: str | None = None,
+    mac: str | None = None,
     db=None,
-    mdns: Optional[tuple[dict[str, str], dict[str, str]]] = None,
-) -> Optional[str]:
+    mdns: tuple[dict[str, str], dict[str, str]] | None = None,
+) -> str | None:
     """Best-effort hostname for one host, via the same layered chain as the scan page.
 
     ``ip`` and/or ``mac`` may be supplied; ``mdns`` is an optional pre-fetched
@@ -1910,7 +1909,7 @@ async def validate_host_record(
     mac: str,
     ip: str,
     port: int,
-    subnet_cidrs: Optional[list[str]] = None,
+    subnet_cidrs: list[str] | None = None,
 ) -> dict:
     """Run the edit screen's *Validate* check for one host; returns UI JSON.
 
@@ -1934,7 +1933,7 @@ async def validate_host_record(
         mdns = await discover_hostnames()
         if db is not None:
             await remember_mdns_names(db, mdns[1])
-    except Exception:  # noqa: BLE001 - discovery must never fail the validation
+    except Exception:
         mdns = ({}, {})
 
     mac_row = None

@@ -57,14 +57,15 @@ import platform
 import re
 import subprocess
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 _DEFAULT_MAX_BYTES = 512 * 1024
 _DEFAULT_KEEP = 20
 
 # The log for the scan currently running on this task/thread, or None.
-_current: contextvars.ContextVar[Optional["ScanLog"]] = contextvars.ContextVar(
+_current: contextvars.ContextVar[ScanLog | None] = contextvars.ContextVar(
     "healer_diag_log", default=None
 )
 # Per-process sequence so two scans of the same target in the same second
@@ -78,7 +79,7 @@ def _sequence() -> int:
     return _SEQ
 
 
-def log_dir() -> Optional[str]:
+def log_dir() -> str | None:
     """Effective debug-log directory, or ``None`` when logging is disabled."""
     directory = os.environ.get("UPSTREAM_HEALER_DEBUG_LOG_DIR", "").strip()
     if not directory:
@@ -110,7 +111,7 @@ def recent_scans(limit: int = 10) -> list[dict]:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[: max(1, int(limit))]
-    except Exception:  # noqa: BLE001 - unreadable dir: nothing to list
+    except Exception:
         return []
     out: list[dict] = []
     for p in files:
@@ -123,7 +124,7 @@ def recent_scans(limit: int = 10) -> list[dict]:
                     "mtime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime)),
                 }
             )
-        except Exception:  # noqa: BLE001 - a vanishing file must not break the list
+        except Exception:
             continue
     return out
 
@@ -153,7 +154,7 @@ def _snap(value: Any, limit: int = 16_000) -> str:
     """
     try:
         text = str(value)
-    except Exception:  # noqa: BLE001 - rendering must never raise
+    except Exception:
         return f"<unrenderable {type(value).__name__}>"
     text = text.replace("\r", " ").replace("\n", " \\ ")
     if len(text) > limit:
@@ -167,7 +168,7 @@ def _rotate(directory: Path) -> None:
         files = sorted(directory.glob("diag_*.log"), key=lambda p: p.stat().st_mtime)
         for old in files[: max(0, len(files) - _keep())]:
             old.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -185,7 +186,7 @@ def self_identity() -> dict:
         import socket
 
         info["hostname"] = socket.gethostname()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         proc = subprocess.run(
@@ -243,15 +244,15 @@ class ScanLog:
         self._closed = False
         self._bytes = 0
         self._max = _max_bytes()
-        self._fh: Optional[Any] = None
+        self._fh: Any | None = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._fh = path.open("x", encoding="utf-8")  # create-only: never overwrite
-        except Exception:  # noqa: BLE001 - unreadable dir: become a pure no-op
+        except Exception:
             self._fh = None
             try:
                 _rotate(path.parent)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     def _write(self, text: str) -> None:
@@ -265,7 +266,7 @@ class ScanLog:
             self._fh.write(text)
             self._fh.flush()
             self._bytes += len(text)
-        except Exception:  # noqa: BLE001
+        except Exception:
             self._fh = None
 
     @staticmethod
@@ -311,28 +312,28 @@ class ScanLog:
         if self._fh is not None:
             try:
                 self._fh.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             self._fh = None
         try:
             _rotate(self._path.parent)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 
 class _NullLog:
     """Drop-in replacement for :class:`ScanLog` when logging is disabled."""
 
-    def emit(self, section: str, *args: Any) -> None:  # noqa: B027
+    def emit(self, section: str, *args: Any) -> None:
         pass
 
-    def proc(self, tool: str, cmd: list, proc: Any, extra: Any = None) -> None:  # noqa: B027
+    def proc(self, tool: str, cmd: list, proc: Any, extra: Any = None) -> None:
         pass
 
-    def exc(self, section: str, exc: BaseException, *context: Any) -> None:  # noqa: B027
+    def exc(self, section: str, exc: BaseException, *context: Any) -> None:
         pass
 
-    def close(self, *summary: Any) -> None:  # noqa: B027
+    def close(self, *summary: Any) -> None:
         pass
 
 
@@ -345,7 +346,7 @@ def _self_is_target(target_mac: str) -> bool:
         from app.services.scanner import normalize_mac
 
         target_mac = normalize_mac(target_mac)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
     for iface in self_identity()["interfaces"].values():
         if iface.get("mac") and iface["mac"] == target_mac:
@@ -358,8 +359,8 @@ def scan_context(
     *,
     target_mac: str,
     method: str,
-    subnets: Optional[list[str]] = None,
-) -> Iterator[Optional[ScanLog]]:
+    subnets: list[str] | None = None,
+) -> Iterator[ScanLog | None]:
     """Open the per-scan log (when enabled) and register it for this task.
 
     Use as a context manager around a whole scan (see the
@@ -374,7 +375,7 @@ def scan_context(
 
     try:
         target = normalize_mac(target_mac or "")
-    except Exception:  # noqa: BLE001
+    except Exception:
         target = (target_mac or "").strip() or "unknown"
     stamp = time.strftime("%Y%m%d_%H%M%S")
     safe_target = re.sub(r"[^a-z0-9:]", "_", target)
@@ -396,7 +397,7 @@ def _write_header(
     log: ScanLog,
     target: str,
     method: str,
-    subnets: Optional[list[str]],
+    subnets: list[str] | None,
 ) -> None:
     identity = self_identity()
     log.emit(

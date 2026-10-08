@@ -1,10 +1,12 @@
 """
 Subnet management routes for Upstream Healer.
 """
-from fastapi import APIRouter, Request, Depends, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
-import aiosqlite
 import ipaddress
+
+import aiosqlite
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
 from app.database import init_db
 from app.services.scanner import (
     get_default_subnets,
@@ -21,10 +23,10 @@ async def subnets_page(request: Request, db: aiosqlite.Connection = Depends(init
     """
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cursor:
         subnets = [dict(r) for r in await cursor.fetchall()]
-    
+
     # Get default subnets
     default_subnets = get_default_subnets()
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
@@ -52,7 +54,7 @@ async def add_subnet(
         ipaddress.ip_network(cidr)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid CIDR: {e}")
-    
+
     await db.execute(
         "INSERT INTO subnets (name, cidr, interface, enabled) VALUES (?, ?, ?, 1)",
         (name, cidr, interface),
@@ -88,7 +90,7 @@ async def suppressed_page(request: Request, db: aiosqlite.Connection = Depends(i
     """
     async with db.execute("SELECT id, mac_address, reason FROM suppressed_hosts ORDER BY created_at DESC") as cursor:
         suppressed = [dict(r) for r in await cursor.fetchall()]
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
@@ -112,7 +114,7 @@ async def add_suppressed_host(
     """
     # Normalize MAC address
     normalized_mac = normalize_mac(mac_address)
-    
+
     await db.execute(
         "INSERT INTO suppressed_hosts (mac_address, reason) VALUES (?, ?)",
         (normalized_mac, reason),

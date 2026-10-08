@@ -1,14 +1,15 @@
 """
 Scan control routes for Upstream Healer.
 """
-from fastapi import APIRouter, Request, Depends
-from fastapi.responses import HTMLResponse
 import aiosqlite
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
+
 from app.database import init_db
 from app.services.scanner import (
     get_default_subnets,
-    run_scan,
     run_port_scan_incremental,
+    run_scan,
 )
 
 router = APIRouter(prefix="/scan", tags=["scan"])
@@ -22,10 +23,10 @@ async def scan_page(request: Request, db: aiosqlite.Connection = Depends(init_db
     # Get all subnets
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cursor:
         subnets = [dict(r) for r in await cursor.fetchall()]
-    
+
     # Get default subnets
     default_subnets = get_default_subnets()
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
@@ -47,10 +48,10 @@ async def run_scan_endpoint(db: aiosqlite.Connection = Depends(init_db)):
     # Get all subnets
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cursor:
         subnets = [dict(r) for r in await cursor.fetchall()]
-    
+
     # Run the scan
     await run_scan(subnets)
-    
+
     return {"status": "Scan initiated"}
 
 
@@ -62,8 +63,8 @@ async def run_port_scan_endpoint(db: aiosqlite.Connection = Depends(init_db)):
     # Get all subnets
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cursor:
         subnets = [dict(r) for r in await cursor.fetchall()]
-    
+
     # Run the port scan
     await run_port_scan_incremental(subnets)
-    
+
     return {"status": "Port scan initiated"}

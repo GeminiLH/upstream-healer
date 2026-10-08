@@ -1,10 +1,11 @@
 """
 Dashboard routes for Upstream Healer.
 """
-from fastapi import APIRouter, Request, Depends
-from fastapi.responses import HTMLResponse
 import aiosqlite
-from app.config import format_timestamp, current_time
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
+
+from app.config import current_time, format_timestamp
 from app.database import init_db
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -24,7 +25,7 @@ async def dashboard_page(request: Request, db: aiosqlite.Connection = Depends(in
             ORDER BY h.name, h.port"""
     ) as cursor:
         hosts = [dict(r) for r in await cursor.fetchall()]
-    
+
     # A box can be watched on several ports via several records that share one
     # MAC. Count the other records per MAC so each card can flag the device it
     # belongs to — transparent multi-port monitoring at a glance.
@@ -40,11 +41,11 @@ async def dashboard_page(request: Request, db: aiosqlite.Connection = Depends(in
         if host["last_check_at"]:
             host["last_check_display"] = format_timestamp(host["last_check_at"])
             host["last_seen_display"] = format_timestamp(host["last_seen_at"])
-    
+
     # Get subnet info
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cursor:
         subnets = [dict(r) for r in await cursor.fetchall()]
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
@@ -75,7 +76,7 @@ async def dashboard_pinned_subnet(subnet_id: int, db: aiosqlite.Connection = Dep
         (subnet_id,),
     ) as cursor:
         hosts = [dict(r) for r in await cursor.fetchall()]
-    
+
     # A box can be watched on several ports via several records that share one
     # MAC. Count the other records per MAC so each card can flag the device it
     # belongs to — transparent multi-port monitoring at a glance.
@@ -91,11 +92,11 @@ async def dashboard_pinned_subnet(subnet_id: int, db: aiosqlite.Connection = Dep
         if host["last_check_at"]:
             host["last_check_display"] = format_timestamp(host["last_check_at"])
             host["last_seen_display"] = format_timestamp(host["last_seen_at"])
-    
+
     # Get subnet info
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets WHERE id = ? ORDER BY name", (subnet_id,)) as cursor:
         subnets = [dict(r) for r in await cursor.fetchall()]
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")

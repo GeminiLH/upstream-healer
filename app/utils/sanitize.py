@@ -3,7 +3,6 @@ Network identifier sanitization utilities for privacy protection.
 """
 import re
 
-
 # Regular expressions for network identifiers
 IP_ADDRESS = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 MAC_ADDRESS = re.compile(
@@ -23,16 +22,16 @@ def sanitize_mac_address(mac: str) -> str:
     """
     if not mac:
         return ""
-    
+
     # Normalize MAC format to use colons
     normalized_mac = mac.replace("-", ":").replace(".", ":")
-    
+
     # Split into octets and mask the last three
     octets = normalized_mac.split(":")
     if len(octets) >= 3:
         # Mask last 3 octets, keep first 3
         octets[3:] = ["*"] * (len(octets) - 3)
-    
+
     return ":".join(octets)
 
 
@@ -48,12 +47,12 @@ def sanitize_ip_address(ip: str) -> str:
     """
     if not ip:
         return ""
-        
+
     # Split into octets and mask the last one
     octets = ip.split(".")
     if len(octets) >= 4:
         octets[3] = "*"
-    
+
     return ".".join(octets)
 
 
@@ -70,16 +69,16 @@ def sanitize_message_text(text: str, preserve_names: bool = True) -> str:
     """
     if not text:
         return ""
-        
+
     # First, mask MAC addresses
     sanitized = MAC_ADDRESS.sub(lambda m: sanitize_mac_address(m.group()), text)
-    
-    # Then, mask IP addresses  
+
+    # Then, mask IP addresses
     sanitized = IP_ADDRESS.sub(lambda m: sanitize_ip_address(m.group()), sanitized)
-    
+
     # Clean up extra spaces from masking
     sanitized = re.sub(r"\s+", " ", sanitized).strip()
-    
+
     return sanitized
 
 
@@ -96,5 +95,5 @@ def sanitize_email_content(message: str, details: str = "") -> tuple[str, str]:
     """
     sanitized_message = sanitize_message_text(message)
     sanitized_details = sanitize_message_text(details) if details else ""
-    
+
     return sanitized_message, sanitized_details

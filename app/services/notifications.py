@@ -4,10 +4,12 @@ Notification system – Telegram + Email with per-event toggles.
 import json
 import logging
 import re
-import aiosmtplib
 from email.message import EmailMessage
-import httpx
+
+import aiosmtplib
 import aiosqlite
+import httpx
+
 from app.config import current_time
 from app.utils.sanitize import sanitize_email_content
 

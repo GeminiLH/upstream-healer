@@ -1,24 +1,25 @@
 import asyncio
 import ipaddress
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, Request, Form, Depends, HTTPException
+
+import aiosqlite
+from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import aiosqlite
-import json
+from pydantic import BaseModel, Field
 
 from app.config import current_time, format_timestamp, settings, time_ago
 from app.database import init_db
-from app.services.monitor import monitor
 from app.services import diag_log
-from app.services.npm import NPMClient
-from app.services.notifications import send_event
 from app.services.mdns import discover_hostnames
+from app.services.monitor import monitor
+from app.services.notifications import send_event
+from app.services.npm import NPMClient
 from app.services.scanner import (
     apply_hostnames,
     check_host_reachable,
@@ -227,7 +228,7 @@ def _npm_forward_for(npm_id):
     npm = NPMClient()
     try:
         ph = npm.get_proxy_host(npm_id)
-    except Exception:  # noqa: BLE001 - NPM down must not block the form
+    except Exception:
         ph = None
     if not ph or not ph.get("forward_host"):
         return None
@@ -282,7 +283,7 @@ async def _render_host_form(
     npm = NPMClient()
     try:
         proxy_hosts = npm.list_proxy_hosts()
-    except Exception:  # noqa: BLE001
+    except Exception:
         proxy_hosts = []
     subnets = await list_subnets(db)
     for ph in proxy_hosts:
@@ -609,7 +610,7 @@ async def force_scan(host_id: int, db: aiosqlite.Connection = Depends(get_db)):
         try:
             ph = npm.get_proxy_host(npm_id)
             old_fwd = ph.get("forward_host") if ph else None
-        except Exception:  # noqa: BLE001 - NPM down must not abort the scan
+        except Exception:
             ph = None
         if old_fwd and old_fwd != mac_ip:
             updated = npm.update_forward_host(npm_id, mac_ip)
@@ -1408,23 +1409,23 @@ async def diagnostic_scan(body: ScanRequest, db: aiosqlite.Connection = Depends(
             )
             try:
                 mdns_names = await mdns_task
-            except Exception:  # noqa: BLE001
+            except Exception:
                 mdns_names = ({}, {})
             try:
                 await remember_mdns_names(db, mdns_names[1] or {})
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             try:
                 known_names = await load_known_hostnames(db)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 known_names = {}
             try:
                 known_by_ip = await load_known_hostnames_by_ip(db)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 known_by_ip = {}
             try:
                 cached_names = await load_mdns_names(db)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 cached_names = {}
             hosts = result.get("hosts") or []
             hosts = apply_hostnames(
@@ -1581,7 +1582,7 @@ async def diagnostic_scan_log(limit: int = 10):
         latest["content"] = (Path(directory) / latest["name"]).read_text(
             encoding="utf-8", errors="replace"
         )
-    except Exception:  # noqa: BLE001 - unreadable file: still serve the file list
+    except Exception:
         latest["content"] = "(could not read log file)"
     return {"files": files, "latest": latest}
 
@@ -1599,7 +1600,6 @@ async def diagnostic_debug():
     import os
 
     import pymysql
-
     import pymysql.cursors  # registers pymysql.cursors.DictCursor
 
     npm = NPMClient()
@@ -1640,7 +1640,7 @@ async def diagnostic_debug():
             cursorclass=pymysql.cursors.DictCursor,
             connect_timeout=5,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["connection"] = f"FAILED: {type(exc).__name__}: {exc}"
         return result
 
@@ -1658,7 +1658,7 @@ async def diagnostic_debug():
                 "FROM proxy_host ORDER BY id"
             )
             result["proxy_host_rows"] = [dict(r) for r in cur.fetchall()]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["query"] = f"FAILED: {type(exc).__name__}: {exc}"
     finally:
         conn.close()

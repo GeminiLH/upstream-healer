@@ -4,16 +4,17 @@ Main monitoring & recovery loop.
 import asyncio
 import logging
 from datetime import datetime, time, timedelta, timezone
+
 import aiosqlite
-from app.config import settings
-from app.config import current_time
+
+from app.config import current_time, settings
+from app.services.notifications import send_event
+from app.services.npm import NPMClient
 from app.services.scanner import (
     check_host_reachable,
     find_ip_by_mac,
     list_subnets,
 )
-from app.services.npm import NPMClient
-from app.services.notifications import send_event
 
 logger = logging.getLogger("healer.monitor")
 
@@ -352,7 +353,7 @@ class Monitor:
                 try:
                     ph = self.npm.get_proxy_host(npm_id)
                     old_fwd = ph.get("forward_host") if ph else None
-                except Exception:  # noqa: BLE001 - NPM down must not abort recovery
+                except Exception:
                     ph = None
                 if old_fwd == new_ip:
                     await send_event(

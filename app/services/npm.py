@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.config import settings
 
@@ -22,8 +22,8 @@ class NPMClient:
     def __init__(self) -> None:
         self._client = None
         self.container_name = settings.npm_container  # nginx-app-1
-        self._docker_available: Optional[bool] = None
-        self._db_creds: Optional[Dict[str, str]] = None
+        self._docker_available: bool | None = None
+        self._db_creds: dict[str, str] | None = None
 
     # ------------------------------------------------------------------
     # Docker helpers
@@ -74,7 +74,7 @@ class NPMClient:
     # ------------------------------------------------------------------
     # Credential discovery (never stored permanently)
     # ------------------------------------------------------------------
-    def _get_db_credentials(self) -> Dict[str, str]:
+    def _get_db_credentials(self) -> dict[str, str]:
         """
         Read DB_MYSQL_* environment variables from the NPM app container.
         This keeps secrets out of the healer repository and config files.
@@ -87,7 +87,7 @@ class NPMClient:
             raise RuntimeError("Docker not available – cannot read DB credentials")
 
         raw = self.exec("env")
-        creds: Dict[str, str] = {}
+        creds: dict[str, str] = {}
         for line in raw.splitlines():
             if "=" not in line:
                 continue
@@ -155,7 +155,7 @@ class NPMClient:
     # ------------------------------------------------------------------
     # Public API (same as before)
     # ------------------------------------------------------------------
-    def get_proxy_host(self, proxy_host_id: int) -> Optional[Dict[str, Any]]:
+    def get_proxy_host(self, proxy_host_id: int) -> dict[str, Any] | None:
         if not self.available:
             return None
         try:
@@ -210,21 +210,20 @@ class NPMClient:
             logger.error(f"update_forward_host failed: {e}")
             return False
 
-    def list_proxy_hosts(self) -> List[Dict[str, Any]]:
+    def list_proxy_hosts(self) -> list[dict[str, Any]]:
         if not self.available:
             return []
         try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
+            with self._get_connection() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """
                         SELECT id, domain_names, forward_host, forward_port
                         FROM proxy_host
                         WHERE is_deleted = 0
                         ORDER BY id
                         """
-                    )
-                    return [dict(row) for row in cur.fetchall()]
+                )
+                return [dict(row) for row in cur.fetchall()]
         except Exception as e:
             logger.warning(f"Could not list proxy hosts: {e}")
             return []
@@ -241,7 +240,7 @@ class NPMClient:
         logger.info("nginx gracefully reloaded")
         return True
 
-    def get_all_hosts(self) -> List[Dict[str, Any]]:
+    def get_all_hosts(self) -> list[dict[str, Any]]:
         """Return every non-deleted host row from the NPM database."""
         if not self.available:
             logger.info("get_all_hosts: Docker not available, returning empty list")
@@ -271,6 +270,6 @@ class NPMClient:
             return []
 
     @staticmethod
-    def scan_types() -> List[str]:
+    def scan_types() -> list[str]:
         """Return the list of scanner types the system can use."""
         return ["arp-scan", "scapy"]

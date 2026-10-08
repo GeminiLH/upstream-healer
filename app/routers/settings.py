@@ -1,9 +1,10 @@
 """
 Settings and health routes for Upstream Healer.
 """
-from fastapi import APIRouter, Request, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse
 import aiosqlite
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
 from app.database import init_db
 from app.services.scanner import (
     get_local_interfaces,
@@ -32,7 +33,7 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(ini
                 "interface": iface["name"],
                 "enabled": True,
             })
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
@@ -66,7 +67,7 @@ async def health_page(request: Request, db: aiosqlite.Connection = Depends(init_
         last_id = (await cur.fetchone())[0]
     async with db.execute("SELECT created_at FROM scan_log ORDER BY created_at DESC LIMIT 1") as cur:
         last_scan = await cur.fetchone()
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")

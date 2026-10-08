@@ -19,7 +19,6 @@ import asyncio
 import logging
 import re
 import time
-from typing import Optional
 
 logger = logging.getLogger("healer.mdns")
 
@@ -76,7 +75,7 @@ def instance_display_name(fqdn: str) -> str:
     return cleaned or inst
 
 
-def instance_mac(fqdn: str) -> Optional[str]:
+def instance_mac(fqdn: str) -> str | None:
     """Best-effort MAC (lowercase, colon-separated) parsed from an instance name.
 
     Handles both the ``<12-hex>@`` prefix and a ``aa:bb:cc:dd:ee:ff`` form.
@@ -118,14 +117,14 @@ def _discover_sync(timeout: float) -> tuple[dict[str, str], dict[str, str]]:
             mac_map[mac] = display
         try:
             info = zeroconf.get_service_info(service_type, name)
-        except Exception:  # noqa: BLE001 - one slow/odd device shouldn't break the rest
+        except Exception:
             info = None
         if info is not None:
             try:
                 for addr in info.parsed_addresses():  # all versions -> list[str]
                     if addr:
                         ip_map[addr] = display
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     zc = Zeroconf()
@@ -133,13 +132,13 @@ def _discover_sync(timeout: float) -> tuple[dict[str, str], dict[str, str]]:
         for st in _SERVICE_TYPES:
             try:
                 ServiceBrowser(zc, st, [_on_add])
-            except Exception:  # noqa: BLE001 - a bad type shouldn't abort the others
+            except Exception:
                 logger.debug("mDNS: could not start browser for %s", st)
         time.sleep(timeout)
     finally:
         try:
             zc.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return ip_map, mac_map
 
@@ -155,6 +154,6 @@ async def discover_hostnames(
     """
     try:
         return await asyncio.to_thread(_discover_sync, timeout)
-    except Exception as exc:  # noqa: BLE001 - discovery must never abort a scan
+    except Exception as exc:
         logger.warning("mDNS discovery failed: %s", exc)
         return {}, {}

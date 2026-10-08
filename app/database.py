@@ -1,4 +1,5 @@
 import aiosqlite
+
 from app.config import settings
 
 SCHEMA = """

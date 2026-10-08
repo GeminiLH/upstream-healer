@@ -1,10 +1,12 @@
 """
 Notification management routes for Upstream Healer.
 """
-from fastapi import APIRouter, Request, Depends, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
-import aiosqlite
 import json
+
+import aiosqlite
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
 from app.config import current_time
 from app.database import init_db
 
@@ -18,12 +20,12 @@ async def notifications_page(request: Request, db: aiosqlite.Connection = Depend
     """
     async with db.execute("SELECT id, type, name, enabled FROM notification_channels") as cur:
         channels = [dict(r) for r in await cur.fetchall()]
-    
+
     # Build a mapping of rules by channel ID
     rules_by_channel: dict[int, list[dict]] = {}
     for channel in channels:
         rules_by_channel[channel["id"]] = []
-    
+
     async with db.execute(
         "SELECT event_type, channel_id, enabled FROM notification_rules ORDER BY channel_id"
     ) as cur:
@@ -31,7 +33,7 @@ async def notifications_page(request: Request, db: aiosqlite.Connection = Depend
             channel_id = rule["channel_id"]
             if channel_id in rules_by_channel:
                 rules_by_channel[channel_id].append(rule)
-    
+
     # Import templates to avoid F821 error - use the same approach as main.py
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
@@ -67,7 +69,7 @@ async def add_telegram_channel(
     await db.commit()
     async with db.execute("SELECT last_insert_rowid()") as cur:
         channel_id = (await cur.fetchone())[0]
-    
+
     for event in ["unreachable", "ip_found", "updated", "recovered", "failed"]:
         await db.execute(
             "INSERT INTO notification_rules (event_type, channel_id, enabled) VALUES (?, ?, 1)",
@@ -107,7 +109,7 @@ async def add_email_channel(
     await db.commit()
     async with db.execute("SELECT last_insert_rowid()") as cur:
         channel_id = (await cur.fetchone())[0]
-    
+
     for event in ["unreachable", "ip_found", "updated", "recovered", "failed"]:
         await db.execute(
             "INSERT INTO notification_rules (event_type, channel_id, enabled) VALUES (?, ?, 1)",
