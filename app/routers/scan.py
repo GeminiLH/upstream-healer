@@ -31,9 +31,9 @@ async def scan_page(request: Request, db: aiosqlite.Connection = Depends(init_db
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
+        request,
         "scan.html",
         {
-            "request": request,
             "subnets": subnets,
             "default_subnets": default_subnets,
         },

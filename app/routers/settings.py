@@ -38,9 +38,9 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(ini
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
+        request,
         "settings.html",
         {
-            "request": request,
             "conf": conf,
             "subnets": subnets,
         },
@@ -72,9 +72,9 @@ async def health_page(request: Request, db: aiosqlite.Connection = Depends(init_
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
+        request,
         "health.html",
         {
-            "request": request,
             "first_host_time": first_host["created_at"] if first_host else None,
             "host_count": last_id,
             "last_scan_time": last_scan["created_at"] if last_scan else None,
@@ -92,8 +92,8 @@ async def logs_page(request: Request):
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
+        request,
         "logs.html",
         {
-            "request": request,
         },
     )

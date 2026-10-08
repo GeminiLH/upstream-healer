@@ -31,9 +31,9 @@ async def subnets_page(request: Request, db: aiosqlite.Connection = Depends(init
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
+        request,
         "subnets.html",
         {
-            "request": request,
             "subnets": subnets,
             "default_subnets": default_subnets,
         },
@@ -95,9 +95,9 @@ async def suppressed_page(request: Request, db: aiosqlite.Connection = Depends(i
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
+        request,
         "suppressed.html",
         {
-            "request": request,
             "suppressed": suppressed,
         },
     )

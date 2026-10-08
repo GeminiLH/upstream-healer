@@ -38,9 +38,9 @@ async def notifications_page(request: Request, db: aiosqlite.Connection = Depend
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
+        request,
         "notifications.html",
         {
-            "request": request,
             "channels": channels,
             "rules_by_channel": rules_by_channel,
         },
