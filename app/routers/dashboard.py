@@ -1,0 +1,122 @@
+"""
+Dashboard routes for Upstream Healer.
+"""
+from fastapi import APIRouter, Request, Depends
+from fastapi.responses import HTMLResponse
+import aiosqlite
+from app.config import format_timestamp, current_time
+from app.database import init_db
+from app.services.scanner import (
+    get_default_subnets,
+    load_known_hostnames,
+    load_mdns_names,
+    load_suppressed_subnets,
+    apply_hostnames,
+    check_host_reachable,
+    find_ip_by_mac,
+    list_subnets,
+    run_scan,
+    run_port_scan_incremental,
+    validate_host_record,
+)
+from app.services.mdns import discover_hostnames
+
+router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+
+# Note: These functions are imported from main.py but will be moved to their own modules
+# For now, keeping them here for reference until we refactor the dependencies properly
+
+
+@router.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+    """
+    Render the main dashboard page showing all hosts and their status.
+    """
+    async with db.execute(
+        """SELECT h.*, s.status, s.last_seen_at, s.unreachable_since, s.last_check_at, s.last_ip,
+                 sn.name AS subnet_name
+            FROM hosts h
+            LEFT JOIN host_state s ON s.host_id = h.id
+            LEFT JOIN subnets sn ON sn.id = h.subnet_id
+            ORDER BY h.name, h.port"""
+    ) as cursor:
+        hosts = [dict(r) for r in await cursor.fetchall()]
+    
+    # A box can be watched on several ports via several records that share one
+    # MAC. Count the other records per MAC so each card can flag the device it
+    # belongs to — transparent multi-port monitoring at a glance.
+    mac_counts: dict[str, int] = {}
+    for host in hosts:
+        key = (host.get("mac_address") or "").strip().lower()
+        if key:
+            mac_counts[key] = mac_counts.get(key, 0) + 1
+    for host in hosts:
+        key = (host.get("mac_address") or "").strip().lower()
+        host["device_peer_count"] = max(0, mac_counts.get(key, 0) - 1)
+    for host in hosts:
+        if host["last_check_at"]:
+            host["last_check_display"] = format_timestamp(host["last_check_at"])
+            host["last_seen_display"] = format_timestamp(host["last_seen_at"])
+    
+    # Get subnet info
+    async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cursor:
+        subnets = [dict(r) for r in await cursor.fetchall()]
+    
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "hosts": hosts,
+            "subnets": subnets,
+            "current_time": current_time(),
+        },
+    )
+
+
+@router.get("/pinned-subnet/{subnet_id}")
+async def dashboard_pinned_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
+    """
+    Render the dashboard with a specific subnet pinned.
+    """
+    async with db.execute(
+        """SELECT h.*, s.status, s.last_seen_at, s.unreachable_since, s.last_check_at, s.last_ip,
+                 sn.name AS subnet_name
+            FROM hosts h
+            LEFT JOIN host_state s ON s.host_id = h.id
+            LEFT JOIN subnets sn ON sn.id = h.subnet_id
+            WHERE h.subnet_id = ?
+            ORDER BY h.name, h.port""",
+        (subnet_id,),
+    ) as cursor:
+        hosts = [dict(r) for r in await cursor.fetchall()]
+    
+    # A box can be watched on several ports via several records that share one
+    # MAC. Count the other records per MAC so each card can flag the device it
+    # belongs to — transparent multi-port monitoring at a glance.
+    mac_counts: dict[str, int] = {}
+    for host in hosts:
+        key = (host.get("mac_address") or "").strip().lower()
+        if key:
+            mac_counts[key] = mac_counts.get(key, 0) + 1
+    for host in hosts:
+        key = (host.get("mac_address") or "").strip().lower()
+        host["device_peer_count"] = max(0, mac_counts.get(key, 0) - 1)
+    for host in hosts:
+        if host["last_check_at"]:
+            host["last_check_display"] = format_timestamp(host["last_check_at"])
+            host["last_seen_display"] = format_timestamp(host["last_seen_at"])
+    
+    # Get subnet info
+    async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets WHERE id = ? ORDER BY name", (subnet_id,)) as cursor:
+        subnets = [dict(r) for r in await cursor.fetchall()]
+    
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "hosts": hosts,
+            "subnets": subnets,
+            "current_time": current_time(),
+            "pinned_subnet_id": subnet_id
+        },
+    )
