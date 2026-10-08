@@ -13,7 +13,7 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
 @router.get("/", response_class=HTMLResponse)
-async def notifications_page(request: Request, db: aiosqlite.Connection = Depends(init_db):
+async def notifications_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
     """
     Render the notification settings page.
     """
@@ -119,7 +119,7 @@ async def add_email_channel(
 
 
 @router.post("/channel/{channel_id}/toggle")
-async def toggle_channel(channel_id: int, db: aiosqlite.Connection = Depends(init_db):
+async def toggle_channel(channel_id: int, db: aiosqlite.Connection = Depends(init_db)):
     """
     Toggle a notification channel's enabled state.
     """
@@ -132,7 +132,7 @@ async def toggle_channel(channel_id: int, db: aiosqlite.Connection = Depends(ini
 
 
 @router.post("/rule/{channel_id}/{event_type}/toggle")
-async def toggle_rule(channel_id: int, event_type: str, db: aiosqlite.Connection = Depends(init_db):
+async def toggle_rule(channel_id: int, event_type: str, db: aiosqlite.Connection = Depends(init_db)):
     """
     Toggle a notification rule's enabled state.
     """
@@ -157,7 +157,7 @@ async def toggle_rule(channel_id: int, event_type: str, db: aiosqlite.Connection
 
 
 @router.post("/channel/{channel_id}/delete")
-async def delete_channel(channel_id: int, db: aiosqlite.Connection = Depends(init_db):
+async def delete_channel(channel_id: int, db: aiosqlite.Connection = Depends(init_db)):
     """
     Delete a notification channel.
     """
