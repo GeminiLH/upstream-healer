@@ -23,9 +23,6 @@ from app.services.mdns import discover_hostnames
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
-# Note: These functions are imported from main.py but will be moved to their own modules
-# For now, keeping them here for reference until we refactor the dependencies properly
-
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: aiosqlite.Connection = Depends(init_db)):
