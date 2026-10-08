@@ -1,25 +1,14 @@
 """
 Subnet management routes for Upstream Healer.
 """
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 import aiosqlite
-import json
-from app.config import current_time
+import ipaddress
 from app.database import init_db
 from app.services.scanner import (
     get_default_subnets,
-    load_known_hostnames,
-    load_mdns_names,
-    load_suppressed_subnets,
-    apply_hostnames,
-    check_host_reachable,
-    find_ip_by_mac,
-    list_subnets,
-    run_scan,
-    run_port_scan_incremental,
-    validate_host_record,
-    save_suppressed_subnets,
+    normalize_mac,
 )
 
 router = APIRouter(prefix="/subnets", tags=["subnets"])
@@ -36,6 +25,9 @@ async def subnets_page(request: Request, db: aiosqlite.Connection = Depends(init
     # Get default subnets
     default_subnets = get_default_subnets()
     
+    # Import templates to avoid F821 error - use the same approach as main.py
+    from fastapi.templating import Jinja2Templates
+    templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
         "subnets.html",
         {
@@ -48,47 +40,41 @@ async def subnets_page(request: Request, db: aiosqlite.Connection = Depends(init
 
 @router.post("/add")
 async def add_subnet(
-    name: str,
-    cidr: str,
-    interface: str = "",
+    name: str = Form(...),
+    cidr: str = Form(...),
+    interface: str = Form(""),
     db: aiosqlite.Connection = Depends(init_db),
 ):
     """
-    Add a new subnet to the database.
+    Add a new subnet.
     """
     try:
-        # Validate CIDR
-        import ipaddress
         ipaddress.ip_network(cidr)
-        
-        await db.execute(
-            "INSERT INTO subnets (name, cidr, interface, enabled, created_at) VALUES (?, ?, ?, 1, ?)",
-            (name, cidr, interface, current_time().isoformat()),
-        )
-        await db.commit()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CIDR: {str(e)}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid CIDR: {e}")
     
-    return RedirectResponse("/subnets", status_code=303)
-
-
-@router.post("/toggle/{subnet_id}")
-async def toggle_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
-    """
-    Toggle the enabled state of a subnet.
-    """
     await db.execute(
-        "UPDATE subnets SET enabled = 1 - enabled WHERE id = ?",
-        (subnet_id,),
+        "INSERT INTO subnets (name, cidr, interface, enabled) VALUES (?, ?, ?, 1)",
+        (name, cidr, interface),
     )
     await db.commit()
     return RedirectResponse("/subnets", status_code=303)
 
 
-@router.post("/delete/{subnet_id}")
+@router.post("/{subnet_id}/toggle")
+async def toggle_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
+    """
+    Toggle a subnet's enabled state.
+    """
+    await db.execute("UPDATE subnets SET enabled = 1 - enabled WHERE id = ?", (subnet_id,))
+    await db.commit()
+    return RedirectResponse("/subnets", status_code=303)
+
+
+@router.post("/{subnet_id}/delete")
 async def delete_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
     """
-    Delete a subnet from the database.
+    Delete a subnet.
     """
     await db.execute("DELETE FROM subnets WHERE id = ?", (subnet_id,))
     await db.commit()
@@ -96,13 +82,16 @@ async def delete_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_
 
 
 @router.get("/suppressed", response_class=HTMLResponse)
-async def suppressed_subnets_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def suppressed_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
     """
-    Render the page for managing suppressed subnets.
+    Render the suppressed hosts page.
     """
-    async with db.execute("SELECT * FROM suppressed_subnets") as cursor:
+    async with db.execute("SELECT id, mac_address, reason FROM suppressed_hosts ORDER BY created_at DESC") as cursor:
         suppressed = [dict(r) for r in await cursor.fetchall()]
     
+    # Import templates to avoid F821 error - use the same approach as main.py
+    from fastapi.templating import Jinja2Templates
+    templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
         "suppressed.html",
         {
@@ -113,31 +102,30 @@ async def suppressed_subnets_page(request: Request, db: aiosqlite.Connection = D
 
 
 @router.post("/suppressed/add")
-async def add_suppressed_subnet(cidr: str, db: aiosqlite.Connection = Depends(init_db)):
+async def add_suppressed_host(
+    mac_address: str = Form(...),
+    reason: str = Form(""),
+    db: aiosqlite.Connection = Depends(init_db),
+):
     """
-    Add a subnet to the suppressed list.
+    Add a host to the suppressed list.
     """
-    try:
-        # Validate CIDR
-        import ipaddress
-        ipaddress.ip_network(cidr)
-        
-        await db.execute(
-            "INSERT INTO suppressed_subnets (cidr, created_at) VALUES (?, ?)",
-            (cidr, current_time().isoformat()),
-        )
-        await db.commit()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CIDR: {str(e)}")
+    # Normalize MAC address
+    normalized_mac = normalize_mac(mac_address)
     
+    await db.execute(
+        "INSERT INTO suppressed_hosts (mac_address, reason) VALUES (?, ?)",
+        (normalized_mac, reason),
+    )
+    await db.commit()
     return RedirectResponse("/subnets/suppressed", status_code=303)
 
 
-@router.post("/suppressed/delete/{subnet_id}")
-async def delete_suppressed_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
+@router.post("/suppressed/{host_id}/delete")
+async def delete_suppressed_host(host_id: int, db: aiosqlite.Connection = Depends(init_db)):
     """
-    Delete a subnet from the suppressed list.
+    Delete a suppressed host.
     """
-    await db.execute("DELETE FROM suppressed_subnets WHERE id = ?", (subnet_id,))
+    await db.execute("DELETE FROM suppressed_hosts WHERE id = ?", (host_id,))
     await db.commit()
     return RedirectResponse("/subnets/suppressed", status_code=303)

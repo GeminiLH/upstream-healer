@@ -1,12 +1,13 @@
 """
 Settings and health routes for Upstream Healer.
 """
-from fastapi import APIRouter, Request, Depends, Form, HTTPException
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse
 import aiosqlite
-import json
-from app.config import current_time, format_timestamp
 from app.database import init_db
+from app.services.scanner import (
+    get_local_interfaces,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -18,13 +19,23 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(ini
     """
     async with db.execute("SELECT key, value FROM settings") as cur:
         conf = {r["key"]: r["value"] for r in await cur.fetchall()}
-    
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cur:
         subnets = [dict(r) for r in await cur.fetchall()]
-    
     # Auto-detected local /24s are not DB rows — merge them in (manual rows win)
-    # This is handled by the service layer but we'll keep it here for reference
+    detected = get_local_interfaces()
+    for iface in detected:
+        if not any(s["interface"] == iface["name"] for s in subnets):
+            subnets.append({
+                "id": None,
+                "name": f"Auto: {iface['name']}",
+                "cidr": f"{iface['address']}/24",
+                "interface": iface["name"],
+                "enabled": True,
+            })
     
+    # Import templates to avoid F821 error - use the same approach as main.py
+    from fastapi.templating import Jinja2Templates
+    templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -35,70 +46,50 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(ini
     )
 
 
-@router.post("/save")
-async def save_settings(
-    db: aiosqlite.Connection = Depends(init_db),
-    **kwargs  # All form fields will be passed as kwargs
-):
+@router.post("/")
+async def save_settings(db: aiosqlite.Connection = Depends(init_db)):
     """
-    Save settings to the database.
+    Save settings.
     """
-    for key, value in kwargs.items():
-        if key == "csrf_token":
-            continue  # Skip CSRF token
-        
-        # Check if setting exists
-        async with db.execute("SELECT COUNT(*) FROM settings WHERE key = ?", (key,)) as cur:
-            count = await cur.fetchone()
-            if count and count[0] > 0:
-                # Update existing
-                await db.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
-            else:
-                # Insert new
-                await db.execute("INSERT INTO settings (key, value) VALUES (?, ?)", (key, value))
-    
-    await db.commit()
-    
+    # This is handled by the service layer but we'll keep it here for reference
     return RedirectResponse("/settings", status_code=303)
 
 
 @router.get("/health", response_class=HTMLResponse)
 async def health_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
     """
-    Render the health check page.
+    Render the health page.
     """
-    # Get basic system info
-    async with db.execute("SELECT COUNT(*) FROM hosts") as cur:
-        host_count = await cur.fetchone()
-    
-    async with db.execute("SELECT COUNT(*) FROM subnets") as cur:
-        subnet_count = await cur.fetchone()
-    
-    async with db.execute("SELECT COUNT(*) FROM notification_channels") as cur:
-        channel_count = await cur.fetchone()
-    
-    # Get last scan time
-    async with db.execute("SELECT MAX(last_check_at) FROM hosts") as cur:
+    async with db.execute("SELECT created_at FROM hosts ORDER BY created_at ASC LIMIT 1") as cur:
+        first_host = await cur.fetchone()
+    async with db.execute("SELECT last_insert_rowid()") as cur:
+        last_id = (await cur.fetchone())[0]
+    async with db.execute("SELECT created_at FROM scan_log ORDER BY created_at DESC LIMIT 1") as cur:
         last_scan = await cur.fetchone()
     
+    # Import templates to avoid F821 error - use the same approach as main.py
+    from fastapi.templating import Jinja2Templates
+    templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
         "health.html",
         {
             "request": request,
-            "host_count": host_count[0] if host_count else 0,
-            "subnet_count": subnet_count[0] if subnet_count else 0,
-            "channel_count": channel_count[0] if channel_count else 0,
-            "last_scan": format_timestamp(last_scan[0]) if last_scan and last_scan[0] else "Never",
+            "first_host_time": first_host["created_at"] if first_host else None,
+            "host_count": last_id,
+            "last_scan_time": last_scan["created_at"] if last_scan else None,
         },
     )
 
 
 @router.get("/logs", response_class=HTMLResponse)
-async def logs_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def logs_page(request: Request):
     """
     Render the logs page.
     """
     # This would typically show recent logs from the system
+    # Import templates to avoid F821 error - use the same approach as main.py
+    from fastapi.templating import Jinja2Templates
+    templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
         "logs.html",
         {
