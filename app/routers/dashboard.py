@@ -50,9 +50,9 @@ async def dashboard_page(request: Request, db: aiosqlite.Connection = Depends(in
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
-        request,
         "dashboard.html",
         {
+            "request": request,
             "hosts": hosts,
             "subnets": subnets,
             "current_time": current_time(),
@@ -101,9 +101,9 @@ async def dashboard_pinned_subnet(subnet_id: int, db: aiosqlite.Connection = Dep
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="app/templates")
     return templates.TemplateResponse(
-        request,
         "dashboard.html",
         {
+            "request": request,
             "hosts": hosts,
             "subnets": subnets,
             "current_time": current_time(),
