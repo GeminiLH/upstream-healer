@@ -17,12 +17,30 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from app.config import current_time, format_timestamp, settings, time_ago
-from app.database import init_db
+from app.database import init_db, get_db
 from app.services import diag_log
 from app.services.mdns import discover_hostnames
 from app.services.monitor import monitor
 from app.services.notifications import send_event
 from app.services.npm import NPMClient
+from app.services.scanner import (
+    apply_hostnames,
+    check_host_reachable,
+    find_ip_by_mac,
+    get_default_subnets,
+    get_local_interfaces,
+    list_subnets,
+    load_known_hostnames,
+    load_known_hostnames_by_ip,
+    load_mdns_names,
+    load_suppressed_subnets,
+    normalize_mac,
+    remember_mdns_names,
+    run_port_scan_incremental,
+    run_scan,
+    save_suppressed_subnets,
+    validate_host_record,
+)
 
 # Global dictionary to track scan progress by request ID
 scan_progress = {}
@@ -48,16 +66,7 @@ templates = Jinja2Templates(directory="app/templates")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
-async def get_db():
-    db = await aiosqlite.connect(settings.db_path)
-    db.row_factory = aiosqlite.Row
-    try:
-        yield db
-    finally:
-        await db.close()
-
-
-# Import and include all router modules
+# Include all router modules
 from app.routers import dashboard, subnets, scan, notifications, settings
 
 app.include_router(dashboard.router)
