@@ -61,7 +61,7 @@ async def dashboard_page(request: Request, db: aiosqlite.Connection = Depends(in
 
 
 @router.get("/pinned-subnet/{subnet_id}", response_class=HTMLResponse)
-async def dashboard_pinned_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
+async def dashboard_pinned_subnet(request: Request, subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
     """
     Render the main dashboard page with a specific subnet pinned.
     """
