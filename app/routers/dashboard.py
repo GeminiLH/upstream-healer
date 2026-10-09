@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from app.config import current_time, format_timestamp
 from app.database import init_db
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+router = APIRouter(tags=["dashboard"])
 
 
 @router.get("/", response_class=HTMLResponse)

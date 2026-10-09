@@ -52,20 +52,93 @@
 - **Description**: Get specific event details
 - **Response**: Event object
 
-### Settings Endpoints
+### Host Management Endpoints
 
-#### GET /api/settings
+#### GET /api/hosts
 - **Method**: GET
 - **Authentication**: None
-- **Description**: Get application settings
-- **Response**: Settings object
+- **Description**: List all monitored hosts
+- **Response**: Array of host objects
 
-#### PUT /api/settings
+#### GET /api/hosts/{host_id}
+- **Method**: GET
+- **Authentication**: None
+- **Description**: Get specific host details
+- **Response**: Host object
+
+#### POST /api/hosts
+- **Method**: POST
+- **Authentication**: None
+- **Description**: Create a new monitored host
+- **Request Body**: Host object
+- **Response**: Created host object with ID
+
+#### PUT /api/hosts/{host_id}
 - **Method**: PUT
 - **Authentication**: None
-- **Description**: Update application settings
-- **Request Body**: Settings object
-- **Response**: Updated settings object## HTML Routes (Web UI)
+- **Description**: Update existing host details
+- **Request Body**: Host object
+- **Response**: Updated host object
+
+#### DELETE /api/hosts/{host_id}
+- **Method**: DELETE
+- **Authentication**: None
+- **Description**: Remove a monitored host
+- **Response**: Success status
+
+### Subnet Management Endpoints
+
+#### GET /api/subnets
+- **Method**: GET
+- **Authentication**: None
+- **Description**: List all subnets
+- **Response**: Array of subnet objects
+
+#### POST /api/subnets
+- **Method**: POST
+- **Authentication**: None
+- **Description**: Create a new subnet
+- **Request Body**: Subnet object
+- **Response**: Created subnet object with ID
+
+#### PUT /api/subnets/{subnet_id}
+- **Method**: PUT
+- **Authentication**: None
+- **Description**: Update existing subnet details
+- **Request Body**: Subnet object
+- **Response**: Updated subnet object
+
+#### DELETE /api/subnets/{subnet_id}
+- **Method**: DELETE
+- **Authentication**: None
+- **Description**: Remove a subnet
+- **Response**: Success status
+
+### Diagnostic Endpoints
+
+#### GET /api/diagnostic/scan/{mac_address}
+- **Method**: GET
+- **Authentication**: None
+- **Description**: Scan for host by MAC address
+- **Response**: Scan result object
+
+#### GET /api/diagnostic/scan/{mac_address}/{port}
+- **Method**: GET
+- **Authentication**: None
+- **Description**: Scan for host by MAC address and port
+- **Response**: Port scan result object
+
+#### GET /api/diagnostic/scan
+- **Method**: GET
+- **Authentication**: None
+- **Description**: Start a full diagnostic scan
+- **Response**: Scan status object
+
+#### GET /api/diagnostic/scan-progress/{scan_id}
+- **Method**: GET
+- **Authentication**: None
+- **Description**: Get progress of ongoing scan
+- **Response**: Progress object
 
 ### GET /
 - **Method**: GET

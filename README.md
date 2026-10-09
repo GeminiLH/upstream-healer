@@ -265,3 +265,13 @@ The database schema is currently managed using Alembic with the following tables
 - subnets
 
 The initial migration () has been created to set up the basic database structure.
+
+## Code Structure
+
+The application has been modularized into dedicated router files for better organization:
+
+- **Dashboard**: `/app/routers/dashboard.py` - Main dashboard page and host monitoring
+- **Subnets**: `/app/routers/subnets.py` - Subnet management and suppression lists  
+- **Scan**: `/app/routers/scan.py` - Diagnostic scanning capabilities
+- **Notifications**: `/app/routers/notifications.py` - Notification channel management
+- **Settings**: `/app/routers/settings.py` - System settings and configuration
