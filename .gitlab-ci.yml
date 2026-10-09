@@ -396,7 +396,6 @@ dev_down:
       docker volume ls | grep -E 'healer-data|npm-data|npm-certs|npm-mysql' || echo "(no dev volumes left)"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: always
 
 deploy_production:
   extends: .deploy_base
