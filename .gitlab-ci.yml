@@ -368,7 +368,7 @@ build_dev:
       echo "=============================================================="
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: always
+      when: on_success
 
 dev_down:
   # Tears the dev stack back down. Named volumes are KEPT so the next
