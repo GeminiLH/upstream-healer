@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 # Local imports
 from app.database import init_db, get_db
+from app.helpers import find_ip_by_mac, NPMClient, list_subnets, run_scan, check_host_reachable
 from app.services.monitor import monitor
 from app.routers import dashboard, subnets, scan, notifications, hosts, settings
 
@@ -213,28 +214,20 @@ def _publish_discovery_progress(request_id: str, hosts: list, result: dict, scan
         scan_progress[request_id]["result"] = result
 
 
-# Helper function needed for tests
-async def list_subnets(db: aiosqlite.Connection) -> list:
     """List all subnets from database."""
     # This would normally query the database
     return []
 
 
-# Helper function needed for tests
-def find_ip_by_mac(mac_address: str) -> dict | None:
     """Find an IP address by MAC address."""
     # This would normally query the database
     return None
 
-# Helper function needed for tests
-async def run_scan(target_mac: str, scan_ports: bool, db: aiosqlite.Connection) -> dict:
     """Run a network scan."""
     # This would normally perform the actual scan
     return {}
 
 
-# Mock NPMClient for testing (needed by tests)
-class NPMClient:
     """Mock NPM client for testing purposes."""
     def __init__(self):
         pass
@@ -256,8 +249,6 @@ class NPMClient:
         return True
 
 
-# Helper function needed for tests
-def check_host_reachable(ip: str) -> bool:
     """Check if a host is reachable."""
     # This would normally do network checks
     return True

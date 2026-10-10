@@ -11,6 +11,7 @@ from app.services.scanner import (
     get_default_subnets,
     validate_host_record,
 )
+from app.main import find_ip_by_mac, NPMClient
 
 router = APIRouter(tags=["hosts"])
 
@@ -150,4 +151,3 @@ async def validate_existing_host(
         for_new=False
     )
     
-    return result
