@@ -3,16 +3,14 @@ Hosts routes for Upstream Healer.
 """
 import aiosqlite
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 
-from app.config import current_time, format_timestamp
+from app.config import current_time
 from app.database import get_db
 from app.services.scanner import (
     get_default_subnets,
-    load_known_hostnames_by_ip,
     validate_host_record,
 )
-from app.services.npm import NPMClient
 
 router = APIRouter(tags=["hosts"])
 

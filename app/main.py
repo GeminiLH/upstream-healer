@@ -1,46 +1,26 @@
-import asyncio
-import ipaddress
-import json
+# Standard library imports
 import logging
 import os
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Third-party imports
 import aiosqlite
-import pymysql
-import pymysql.cursors
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from app.config import current_time, format_timestamp, settings, time_ago
+# Local imports
 from app.database import init_db, get_db
-from app.services import diag_log
-from app.services.mdns import discover_hostnames
 from app.services.monitor import monitor
-from app.services.notifications import send_event
-from app.services.npm import NPMClient
-from app.services.scanner import (
-    apply_hostnames,
-    check_host_reachable,
-    find_ip_by_mac,
-    get_default_subnets,
-    get_local_interfaces,
-    list_subnets,
-    load_known_hostnames,
-    load_known_hostnames_by_ip,
-    load_mdns_names,
-    load_suppressed_subnets,
-    normalize_mac,
-    remember_mdns_names,
-    run_port_scan_incremental,
-    run_scan,
-    save_suppressed_subnets,
-    validate_host_record,
-)
+from app.routers import dashboard, subnets, scan, notifications, hosts
+
+# Define Pydantic model for request data
+class ScanRequest(BaseModel):
+    target_mac: str | None = None
+    method: str | None = None
 
 # Global dictionary to track scan progress by request ID
 scan_progress = {}
@@ -66,66 +46,11 @@ templates = Jinja2Templates(directory="app/templates")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
-# ───────────────────────────── Helper Functions ──────────────────────────────
-
-def _subnet_for_ip(ip: str, known_subnets: list) -> str | None:
-    """Find the subnet that contains an IP address."""
-    try:
-        ip_obj = ipaddress.ip_address(ip)
-        for subnet_dict in known_subnets:
-            subnet_obj = ipaddress.ip_network(subnet_dict["cidr"])
-            if ip_obj in subnet_obj:
-                return str(subnet_obj)
-        # If no known subnet contains the IP, fall back to /24
-        if isinstance(ip_obj, ipaddress.IPv4Address):
-            return f"{ip_obj}/24"
-        return None
-    except (ValueError, TypeError):
-        return None
-
-
-def _publish_discovery_progress(request_id: str, hosts: list, result: dict, scan_ports: bool):
-    """Publish scan progress updates to WebSocket clients."""
-    # In a real implementation, this would publish progress updates
-    # For testing purposes, we just store it in the global dictionary
-    if request_id not in scan_progress:
-        scan_progress[request_id] = {}
-    
-    # Update the existing entry in place (as tested)
-    if "start_time" not in scan_progress[request_id]:
-        scan_progress[request_id]["start_time"] = time.time()
-    
-    # Update based on result
-    if result and result.get("found_ip"):
-        scan_progress[request_id]["status"] = "discovered"
-    elif scan_ports:
-        scan_progress[request_id]["status"] = "scanning_ports"
-    else:
-        scan_progress[request_id]["status"] = "starting"
-    
-    # Add hosts information if provided
-    if hosts:
-        scan_progress[request_id]["hosts"] = hosts
-    
-    # Add result info
-    if result:
-        scan_progress[request_id]["result"] = result
-
-
-# Define Pydantic model for request data
-class ScanRequest(BaseModel):
-    target_mac: str | None = None
-    method: str | None = None
-
-
 # Include all router modules
-from app.routers import dashboard, subnets, scan, notifications, settings, hosts
-
 app.include_router(dashboard.router)
 app.include_router(subnets.router)
 app.include_router(scan.router)
 app.include_router(notifications.router)
-app.include_router(settings.router)
 app.include_router(hosts.router)
 
 
