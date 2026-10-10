@@ -1,6 +1,8 @@
 # Standard library imports
+import ipaddress
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from pydantic import BaseModel
 # Local imports
 from app.database import init_db, get_db
 from app.services.monitor import monitor
-from app.routers import dashboard, subnets, scan, notifications, settings, hosts
+from app.routers import dashboard, subnets, scan, notifications, hosts
 
 # Define Pydantic model for request data
 class ScanRequest(BaseModel):
