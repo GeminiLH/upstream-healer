@@ -229,6 +229,8 @@ build_dev:
   needs:
     - job: build_image
     - job: dev_down
+    - job: lint
+    - job: unit_tests
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
     # Sandbox credentials for the dev NPM pair (compose reads these for
