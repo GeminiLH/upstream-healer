@@ -97,7 +97,6 @@ async def diagnostic_scan_endpoint(
     
     # Start background scan task (mocked)
     # The real implementation would schedule this properly
-    from app.services.scanner import run_scan
     
     # In a real implementation, this would be async but for tests we mock it
     return {
