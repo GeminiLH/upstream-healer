@@ -1,173 +1,132 @@
-### NPM Integration Endpoints
+# Upstream Healer - API Reference
 
-#### GET /api/npm/hosts
-- **Method**: GET
-- **Authentication**: None
-- **Description**: List available NPM proxy hosts
-- **Response**: Array of NPM host objects
+## Web Interface Endpoints
 
-#### GET /api/npm/hosts/{host_id}
-- **Method**: GET
-- **Authentication**: None
-- **Description**: Get specific NPM proxy host details
-- **Response**: NPM host object
+### Main Dashboard
+- **GET /** 
+  - **Response Type**: HTML
+  - **Description**: Main dashboard page showing monitored hosts and status
 
-### Notification Endpoints
+### Host Management
+- **GET /hosts/add**
+  - **Response Type**: HTML
+  - **Description**: Form to add a new host
 
-#### GET /api/notifications/channels
-- **Method**: GET
-- **Authentication**: None
-- **Description**: List notification channels
-- **Response**: Array of channel objects
+- **GET /hosts/{host_id}/edit**
+  - **Response Type**: HTML
+  - **Description**: Host edit form
 
-#### POST /api/notifications/channels
-- **Method**: POST
-- **Authentication**: None
-- **Description**: Create new notification channel
-- **Request Body**:
-```json
-{
-  "type": "string",
-  "name": "string",
-  "config": "object"
-}
-```
-- **Response**: Channel object with created ID
+### Subnet Management
+- **GET /subnets/**
+  - **Response Type**: HTML
+  - **Description**: Subnet management page
 
-### Event Endpoints
+- **POST /subnets/add**
+  - **Method**: POST
+  - **Description**: Add a new subnet
 
-#### GET /api/events
-- **Method**: GET
-- **Authentication**: None
-- **Description**: List events
-- **Query Parameters**:
-  - `host_id` (integer): Filter by host
-  - `limit` (integer): Limit results
-  - `days` (integer): Days back to look
-- **Response**: Array of event objects
+- **POST /subnets/{subnet_id}/toggle**
+  - **Method**: POST
+  - **Description**: Toggle a subnet's enabled state
 
-#### GET /api/events/{event_id}
-- **Method**: GET
-- **Authentication**: None
-- **Description**: Get specific event details
-- **Response**: Event object
+- **POST /subnets/{subnet_id}/delete**
+  - **Method**: POST
+  - **Description**: Delete a subnet
 
-### Host Management Endpoints
+- **GET /subnets/suppressed**
+  - **Response Type**: HTML
+  - **Description**: Suppressed hosts page
 
-#### GET /api/hosts
-- **Method**: GET
-- **Authentication**: None
-- **Description**: List all monitored hosts
-- **Response**: Array of host objects
+- **POST /subnets/suppressed/add**
+  - **Method**: POST
+  - **Description**: Add a host to the suppressed list
 
-#### GET /api/hosts/{host_id}
-- **Method**: GET
-- **Authentication**: None
-- **Description**: Get specific host details
-- **Response**: Host object
+- **POST /subnets/suppressed/{host_id}/delete**
+  - **Method**: POST
+  - **Description**: Delete a suppressed host
 
-#### POST /api/hosts
-- **Method**: POST
-- **Authentication**: None
-- **Description**: Create a new monitored host
-- **Request Body**: Host object
-- **Response**: Created host object with ID
+### Scan Control
+- **GET /scan/**
+  - **Response Type**: HTML
+  - **Description**: Scan control page
 
-#### PUT /api/hosts/{host_id}
-- **Method**: PUT
-- **Authentication**: None
-- **Description**: Update existing host details
-- **Request Body**: Host object
-- **Response**: Updated host object
+- **POST /scan/run-scan**
+  - **Method**: POST
+  - **Description**: Run a full scan
 
-#### DELETE /api/hosts/{host_id}
-- **Method**: DELETE
-- **Authentication**: None
-- **Description**: Remove a monitored host
-- **Response**: Success status
+- **POST /scan/run-port-scan**
+  - **Method**: POST
+  - **Description**: Run a port scan
 
-### Subnet Management Endpoints
+### Notification Management
+- **GET /notifications/**
+  - **Response Type**: HTML
+  - **Description**: Notification settings page
 
-#### GET /api/subnets
-- **Method**: GET
-- **Authentication**: None
-- **Description**: List all subnets
-- **Response**: Array of subnet objects
+- **POST /notifications/channel/telegram**
+  - **Method**: POST
+  - **Description**: Add a new Telegram notification channel
 
-#### POST /api/subnets
-- **Method**: POST
-- **Authentication**: None
-- **Description**: Create a new subnet
-- **Request Body**: Subnet object
-- **Response**: Created subnet object with ID
+- **POST /notifications/channel/email**
+  - **Method**: POST
+  - **Description**: Add a new email notification channel
 
-#### PUT /api/subnets/{subnet_id}
-- **Method**: PUT
-- **Authentication**: None
-- **Description**: Update existing subnet details
-- **Request Body**: Subnet object
-- **Response**: Updated subnet object
+- **POST /notifications/channel/{channel_id}/toggle**
+  - **Method**: POST
+  - **Description**: Toggle a notification channel's enabled state
 
-#### DELETE /api/subnets/{subnet_id}
-- **Method**: DELETE
-- **Authentication**: None
-- **Description**: Remove a subnet
-- **Response**: Success status
+- **POST /notifications/rule/{channel_id}/{event_type}/toggle**
+  - **Method**: POST
+  - **Description**: Toggle a notification rule's enabled state
 
-### Diagnostic Endpoints
+- **POST /notifications/channel/{channel_id}/delete**
+  - **Method**: POST
+  - **Description**: Delete a notification channel
 
-#### GET /api/diagnostic/scan/{mac_address}
-- **Method**: GET
-- **Authentication**: None
-- **Description**: Scan for host by MAC address
-- **Response**: Scan result object
+### Settings and Configuration
+- **GET /settings/**
+  - **Response Type**: HTML
+  - **Description**: Application settings page
 
-#### GET /api/diagnostic/scan/{mac_address}/{port}
-- **Method**: GET
-- **Authentication**: None
-- **Description**: Scan for host by MAC address and port
-- **Response**: Port scan result object
+- **POST /settings/**
+  - **Method**: POST
+  - **Description**: Save application settings
 
-#### GET /api/diagnostic/scan
-- **Method**: GET
-- **Authentication**: None
-- **Description**: Start a full diagnostic scan
-- **Response**: Scan status object
+- **GET /settings/health**
+  - **Response Type**: HTML
+  - **Description**: Health status page
 
-#### GET /api/diagnostic/scan-progress/{scan_id}
-- **Method**: GET
-- **Authentication**: None
-- **Description**: Get progress of ongoing scan
-- **Response**: Progress object
+- **GET /settings/logs**
+  - **Response Type**: HTML
+  - **Description**: Logs page
 
-### GET /
-- **Method**: GET
-- **Response Type**: HTML
-- **Description**: Main dashboard page showing monitored hosts and status
+### Dashboard Views
+- **GET /dashboard/**
+  - **Response Type**: HTML
+  - **Description**: Main dashboard page showing all hosts
 
-### GET /hosts/{host_id}/edit
-- **Method**: GET
-- **Response Type**: HTML
-- **Description**: Host edit form
+- **GET /dashboard/pinned-subnet/{subnet_id}**
+  - **Response Type**: HTML
+  - **Description**: Dashboard page with a specific subnet pinned
 
-### GET /notifications
-- **Method**: GET
-- **Response Type**: HTML
-- **Description**: Notifications configuration page
+## API Endpoints
 
-### GET /settings
-- **Method**: GET
-- **Response Type**: HTML
-- **Description**: Application settings page
-
-### GET /diagnostic
-- **Method**: GET
-- **Response Type**: HTML
-- **Description**: Diagnostic tools and scan interface
+### Health Check
+- **GET /api/health**
+  - **Method**: GET
+  - **Authentication**: None
+  - **Description**: Health check endpoint for service monitoring
+  - **Response**: 
+    ```json
+    {
+      "status": "ok",
+      "service": "upstream-healer"
+    }
+    ```
 
 ## Error Responses
 
-All API endpoints may return standard HTTP error codes:
+All endpoints may return standard HTTP error codes:
 - **400 Bad Request**: Invalid request parameters or body
 - **404 Not Found**: Resource not found
 - **500 Internal Server Error**: Server-side errors
@@ -182,11 +141,11 @@ Common error response format:
 
 ## Authentication and Security
 
-The API currently uses no authentication for endpoints, as designed for the specific use case. All data is stored in a local SQLite database within a Docker volume.
+The web interface currently uses no authentication for endpoints, as designed for the specific use case. All data is stored in a local SQLite database within a Docker volume.
 
 ## Rate Limiting
 
-No rate limiting is implemented at this time. The application is designed to run in controlled environments where API access is restricted by network configuration.
+No rate limiting is implemented at this time. The application is designed to run in controlled environments where access is restricted by network configuration.
 
 ## Versioning
 
@@ -194,29 +153,7 @@ API versioning is not currently implemented. Future versions may introduce a ver
 
 ## Examples
 
-### Add a new host via API:
+### Health check:
 ```bash
-curl -X POST http://localhost:8787/api/hosts \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "vault",
-    "mac": "AA:BB:CC:DD:EE:11",
-    "ip": "192.168.1.100",
-    "port": 80,
-    "enabled": true
-  }'
-```
-
-### Trigger a diagnostic scan:
-```bash
-curl -X POST http://localhost:8787/api/diagnostic/scan \
-  -H "Content-Type: application/json" \
-  -d '{
-    "method": "arp-scan"
-  }'
-```
-
-### Get scan progress:
-```bash
-curl -X GET http://localhost:8787/api/diagnostic/scan-progress/12345
+curl -X GET http://localhost:8787/api/health
 ```

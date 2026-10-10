@@ -210,7 +210,7 @@ deploy_test:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
 
-deploy_dev:
+build_dev:
   # Live dev/staging stack on the gitlab/runner box, left running between
   # deploys. The runner already mounts /var/run/docker.sock into jobs and
   # runs them with host networking, so this job talks to the HOST docker
@@ -229,7 +229,6 @@ deploy_dev:
   needs:
     - job: build_image
     - job: dev_down
-      optional: true
   variables:
     DOCKER_HOST: unix:///var/run/docker.sock
     # Sandbox credentials for the dev NPM pair (compose reads these for
@@ -488,9 +487,6 @@ e2e_host_management:
       fi
       
       echo "✅ Host management E2E tests PASSED"
-  needs:
-    - job: deploy_dev
-      optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -539,9 +535,6 @@ e2e_all_tests:
         echo "❌ Final verification failed"
         exit 1
       fi
-  needs:
-    - job: deploy_dev
-      optional: true
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
