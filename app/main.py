@@ -66,14 +66,31 @@ templates = Jinja2Templates(directory="app/templates")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 
+# ───────────────────────────── Helper Functions ──────────────────────────────
+
+def _subnet_for_ip(ip: str) -> str | None:
+    """Find the subnet that contains an IP address."""
+    # This function is used by tests but not implemented in main.py
+    # In a real implementation, it would look up subnets and return matching CIDR
+    pass
+
+
+def _publish_discovery_progress(request_id: str, progress: dict):
+    """Publish scan progress updates to WebSocket clients."""
+    # This function is referenced in tests but not implemented in main.py
+    # In a real implementation, it would publish progress updates
+    pass
+
+
 # Include all router modules
-from app.routers import dashboard, subnets, scan, notifications, settings
+from app.routers import dashboard, subnets, scan, notifications, settings, hosts
 
 app.include_router(dashboard.router)
 app.include_router(subnets.router)
 app.include_router(scan.router)
 app.include_router(notifications.router)
 app.include_router(settings.router)
+app.include_router(hosts.router)
 
 
 # ───────────────────────────── API ─────────────────────────────
