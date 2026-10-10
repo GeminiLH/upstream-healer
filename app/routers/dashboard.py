@@ -6,13 +6,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from app.config import current_time, format_timestamp
-from app.database import init_db
+from app.database import get_db
 
 router = APIRouter(tags=["dashboard"])
 
 
 @router.get("/", response_class=HTMLResponse)
-async def dashboard_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def dashboard_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """
     Render the main dashboard page.
     """
@@ -61,7 +61,7 @@ async def dashboard_page(request: Request, db: aiosqlite.Connection = Depends(in
 
 
 @router.get("/pinned-subnet/{subnet_id}", response_class=HTMLResponse)
-async def dashboard_pinned_subnet(request: Request, subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
+async def dashboard_pinned_subnet(request: Request, subnet_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """
     Render the main dashboard page with a specific subnet pinned.
     """

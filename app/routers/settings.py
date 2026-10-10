@@ -5,7 +5,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.database import init_db
+from app.database import get_db
 from app.services.scanner import (
     get_local_interfaces,
 )
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 @router.get("/", response_class=HTMLResponse)
-async def settings_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """
     Render the settings page.
     """
@@ -48,7 +48,7 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(ini
 
 
 @router.post("/")
-async def save_settings(db: aiosqlite.Connection = Depends(init_db)):
+async def save_settings(db: aiosqlite.Connection = Depends(get_db)):
     """
     Save settings.
     """
@@ -57,7 +57,7 @@ async def save_settings(db: aiosqlite.Connection = Depends(init_db)):
 
 
 @router.get("/health", response_class=HTMLResponse)
-async def health_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def health_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """
     Render the health page.
     """

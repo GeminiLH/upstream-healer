@@ -7,7 +7,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from app.database import init_db
+from app.database import get_db
 from app.services.scanner import (
     get_default_subnets,
     normalize_mac,
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/subnets", tags=["subnets"])
 
 
 @router.get("/", response_class=HTMLResponse)
-async def subnets_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def subnets_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """
     Render the subnet management page.
     """
@@ -45,7 +45,7 @@ async def add_subnet(
     name: str = Form(...),
     cidr: str = Form(...),
     interface: str = Form(""),
-    db: aiosqlite.Connection = Depends(init_db),
+    db: aiosqlite.Connection = Depends(get_db),
 ):
     """
     Add a new subnet.
@@ -64,7 +64,7 @@ async def add_subnet(
 
 
 @router.post("/{subnet_id}/toggle")
-async def toggle_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
+async def toggle_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """
     Toggle a subnet's enabled state.
     """
@@ -74,7 +74,7 @@ async def toggle_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_
 
 
 @router.post("/{subnet_id}/delete")
-async def delete_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_db)):
+async def delete_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """
     Delete a subnet.
     """
@@ -84,7 +84,7 @@ async def delete_subnet(subnet_id: int, db: aiosqlite.Connection = Depends(init_
 
 
 @router.get("/suppressed", response_class=HTMLResponse)
-async def suppressed_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def suppressed_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """
     Render the suppressed hosts page.
     """
@@ -107,7 +107,7 @@ async def suppressed_page(request: Request, db: aiosqlite.Connection = Depends(i
 async def add_suppressed_host(
     mac_address: str = Form(...),
     reason: str = Form(""),
-    db: aiosqlite.Connection = Depends(init_db),
+    db: aiosqlite.Connection = Depends(get_db),
 ):
     """
     Add a host to the suppressed list.
@@ -124,7 +124,7 @@ async def add_suppressed_host(
 
 
 @router.post("/suppressed/{host_id}/delete")
-async def delete_suppressed_host(host_id: int, db: aiosqlite.Connection = Depends(init_db)):
+async def delete_suppressed_host(host_id: int, db: aiosqlite.Connection = Depends(get_db)):
     """
     Delete a suppressed host.
     """

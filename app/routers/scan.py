@@ -5,7 +5,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
-from app.database import init_db
+from app.database import get_db
 from app.services.scanner import (
     get_default_subnets,
     run_port_scan_incremental,
@@ -16,7 +16,7 @@ router = APIRouter(prefix="/scan", tags=["scan"])
 
 
 @router.get("/", response_class=HTMLResponse)
-async def scan_page(request: Request, db: aiosqlite.Connection = Depends(init_db)):
+async def scan_page(request: Request, db: aiosqlite.Connection = Depends(get_db)):
     """
     Render the scan control page.
     """
@@ -41,7 +41,7 @@ async def scan_page(request: Request, db: aiosqlite.Connection = Depends(init_db
 
 
 @router.post("/run-scan")
-async def run_scan_endpoint(db: aiosqlite.Connection = Depends(init_db)):
+async def run_scan_endpoint(db: aiosqlite.Connection = Depends(get_db)):
     """
     Run a full scan.
     """
@@ -56,7 +56,7 @@ async def run_scan_endpoint(db: aiosqlite.Connection = Depends(init_db)):
 
 
 @router.post("/run-port-scan")
-async def run_port_scan_endpoint(db: aiosqlite.Connection = Depends(init_db)):
+async def run_port_scan_endpoint(db: aiosqlite.Connection = Depends(get_db)):
     """
     Run a port scan.
     """
