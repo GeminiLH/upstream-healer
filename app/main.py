@@ -106,33 +106,19 @@ async def diagnostic_scan_endpoint(
                 "start_time": time.time()
             }
             
-            # Run the actual scan - this should be replaced with proper implementation
-            # For now, we'll mock it but ensure it properly initializes the progress
-            import asyncio
-            await asyncio.sleep(0.1)  # Simulate some work
+            # Run the actual scan with proper implementation
+            scan_result = await run_scan(
+                target_mac=request.target_mac,
+                method=request.method or "arp-scan"
+            )
             
-            # Mock result - in real implementation this would come from run_scan()
-            result = {
-                "method": request.method or "arp-scan",
-                "found_ip": "192.168.1.100",
-                "found_via": "arp-scan", 
-                "output": "",
-                "error": None,
-                "hosts": [{"ip": "192.168.1.100", "mac": request.target_mac or "aa:bb:cc:dd:ee:ff"}]
-            }
-            
-            # Update progress tracking
-            scan_progress[scan_id]["status"] = "discovered"
-            scan_progress[scan_id]["result"] = result
-            scan_progress[scan_id]["hosts"] = result["hosts"]
-            
-            # Mark as complete with final elapsed time
-            scan_progress[scan_id]["status"] = "complete"
-            scan_progress[scan_id]["final_elapsed_time"] = time.time() - scan_progress[scan_id]["start_time"]
+            # Update progress tracking with result - this should populate hosts correctly
+            _publish_discovery_progress(scan_id, scan_result.get("hosts", []), scan_result, False)
             
         except Exception as e:
+            logger.error(f"Scan failed: {e}")
             scan_progress[scan_id] = {
-                "status": "error",
+                "status": "failed",
                 "error": str(e),
                 "start_time": time.time()
             }
