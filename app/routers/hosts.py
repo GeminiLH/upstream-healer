@@ -164,7 +164,66 @@ async def force_scan_host(
     and updates the host record accordingly. If NPM is enabled for this host,
     it also updates the NPM proxy configuration.
     """
-    # For now, just return redirect - we'll implement the full logic later
-    # as we're primarily focused on fixing the missing endpoint
-    return RedirectResponse(url=f"/hosts/{host_id}", status_code=303)
+    # Get host info first
+    async with db.execute(
+        "SELECT id, name, mac_address, current_ip, port, npm_proxy_host_id FROM hosts WHERE id = ?",
+        (host_id,)
+    ) as cursor:
+        host = await cursor.fetchone()
+        if not host:
+            raise HTTPException(status_code=404, detail="Host not found")
+    
+    # Get the new IP address using ARP scan
+    try:
+        from app.helpers import find_ip_by_mac, check_host_reachable
+        new_ip = await find_ip_by_mac(host["mac_address"])
+        if not new_ip:
+            raise HTTPException(status_code=404, detail="Host not found on network")
+        
+        # Check if host is reachable
+        if not await check_host_reachable(new_ip):
+            raise HTTPException(status_code=404, detail="Host not reachable")
+            
+        # Update the host record with new IP
+        async with db.execute(
+            "UPDATE hosts SET current_ip = ? WHERE id = ?",
+            (new_ip, host_id)
+        ):
+            pass
+        
+        # If this host has an NPM proxy, update it
+        if host["npm_proxy_host_id"]:
+            try:
+                from app.helpers import NPMClient
+                npm_client = NPMClient()
+                # Get the current proxy host info to check if we need to update
+                proxy_info = await npm_client.get_proxy_host(host["npm_proxy_host_id"])
+                if proxy_info and proxy_info.get("forward_host") != new_ip:
+                    # Update the NPM proxy forward host
+                    await npm_client.update_forward_host(host["npm_proxy_host_id"], new_ip)
+                    # Reload nginx to apply changes
+                    await npm_client.reload_nginx()
+            except Exception as e:
+                # Log error but don't fail the entire operation
+                print(f"Warning: Failed to update NPM proxy for host {host_id}: {e}")
+        
+        # Record event
+        async with db.execute(
+            "INSERT INTO events (host_id, event_type, message, details) VALUES (?, ?, ?, ?)",
+            (
+                host_id,
+                "ip_found",
+                f"IP address updated from {host['current_ip']} to {new_ip}",
+                f"Host IP found via force-scan: {new_ip}"
+            )
+        ):
+            pass
+            
+        await db.commit()
+        
+        # Redirect to the host details page
+        return RedirectResponse(url=f"/hosts/{host_id}", status_code=303)
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to force scan: {str(e)}")
     
