@@ -96,7 +96,6 @@ async def diagnostic_scan_endpoint(
     scan_id = str(uuid.uuid4())
     
     # Start background scan task properly
-    from app.services.scanner import run_scan
     from asyncio import create_task
     
     async def run_scan_background():
