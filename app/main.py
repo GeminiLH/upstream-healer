@@ -16,7 +16,6 @@ from pydantic import BaseModel
 
 # Local imports
 from app.database import init_db, get_db
-from app.helpers import find_ip_by_mac, NPMClient, list_subnets, run_scan, check_host_reachable
 from app.services.monitor import monitor
 from app.routers import dashboard, subnets, scan, notifications, hosts, settings
 
