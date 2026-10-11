@@ -108,8 +108,9 @@ async def diagnostic_scan_endpoint(
             
             # Run the actual scan with proper implementation
             scan_result = await run_scan(
-                target_mac=request.target_mac,
-                method=request.method or "arp-scan"
+                target_mac=request.target_mac or "",
+                scan_ports=False,  # We're doing a discovery scan, not port scan
+                db=db
             )
             
             # Update progress tracking with result - this should populate hosts correctly
