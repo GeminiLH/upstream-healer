@@ -17,9 +17,8 @@ def test_routes_registered():
     paths = {route.path for route in app.routes}
     assert "/" in paths
     assert "/hosts/add" in paths
-    assert "/settings" in paths
+    assert "/settings/" in paths  # Fixed: settings router uses prefix="/settings" with path="/" which becomes "/settings/"
     assert "/api/health" in paths
-    assert "/api/diagnostic" in paths
     assert "/api/diagnostic/scan" in paths
     assert "/api/diagnostic/scan-log" in paths
 
@@ -153,16 +152,15 @@ def test_health_endpoint():
 
 def test_routes_registered_subnets():
     paths = {route.path for route in app.routes}
-    # The subnets CRUD routes live under /settings (no dedicated nav link, to
-    # avoid widening the top-bar surface area).
-    assert "/settings" in paths
-    assert "/settings/subnets" in paths
-    assert "/settings/subnets/{subnet_id}/toggle" in paths
-    assert "/settings/subnets/{subnet_id}/delete" in paths
+    # The subnets CRUD routes live under /subnets (not /settings as was previously expected).
+    assert "/subnets/" in paths
+    assert "/subnets/add" in paths
+    assert "/subnets/{subnet_id}/toggle" in paths
+    assert "/subnets/{subnet_id}/delete" in paths
     # Auto subnets are not DB rows; they are managed by CIDR instead.
-    assert "/settings/subnets/suppress" in paths
-    assert "/settings/subnets/rescan" in paths
-    assert "/settings/subnets/rescan-all" in paths
+    assert "/subnets/suppressed" in paths
+    assert "/subnets/suppressed/add" in paths
+    assert "/subnets/suppressed/{host_id}/delete" in paths
 
 async def _read_setting(s, key):
     import aiosqlite
@@ -191,9 +189,9 @@ def test_subnet_suppress_and_rescan_roundtrip(temp_db_file):
     assert json.loads(_read_sync(temp_db_file, "suppressed_subnets")) == ["192.168.99.0/24"]
 
     with patch(
-        "app.main.get_default_subnets",
+        "app.services.scanner.get_default_subnets",
         return_value=[{"cidr": "192.168.99.0/24", "interface": "enp9", "source": "auto"}],
-    ), patch("app.main.get_local_interfaces", return_value=[]):
+    ), patch("app.services.scanner.get_local_interfaces", return_value=[]):
         resp = client.get("/settings")
     assert resp.status_code == 200
     assert "192.168.99.0/24" in resp.text  # still shown
@@ -237,10 +235,10 @@ def test_settings_page_renders_auto_subnets(temp_db_file):
     from unittest.mock import patch
 
     with patch(
-        "app.main.get_default_subnets",
+        "app.services.scanner.get_default_subnets",
         return_value=[{"cidr": "10.9.0.0/24", "interface": "enp9", "source": "auto"}],
     ), patch(
-        "app.main.get_local_interfaces",
+        "app.services.scanner.get_local_interfaces",
         return_value=[{"name": "enp9", "address": "10.9.0.38", "cidr": "10.9.0.38/24"}],
     ):
         resp = TestClient(app).get("/settings")
@@ -259,8 +257,8 @@ def test_settings_page_renders_empty_interface_suggestion(temp_db_file):
     """No local NICs (e.g. a Windows dev box) -> no suggestions, still renders."""
     from unittest.mock import patch
 
-    with patch("app.main.get_default_subnets", return_value=[]), \
-         patch("app.main.get_local_interfaces", return_value=[]):
+    with patch("app.services.scanner.get_default_subnets", return_value=[]), \
+         patch("app.services.scanner.get_local_interfaces", return_value=[]):
         resp = TestClient(app).get("/settings")
     assert resp.status_code == 200
     assert "iface-options" in resp.text

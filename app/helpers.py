@@ -2,7 +2,7 @@
 Helper functions for Upstream Healer.
 """
 import aiosqlite
-from typing import Dict, List, Optional, Union
+from typing import Dict, Union
 
 # Helper function needed for tests
 async def list_subnets(db: aiosqlite.Connection) -> list:
