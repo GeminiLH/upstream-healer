@@ -18,7 +18,10 @@ When asked to "commit, push, and verify the pipeline", follow these steps in ord
    - `list_pipelines(project_id=4, per_page=1)` → get the new pipeline ID; its `sha` must match the pushed commit.
    - **Poll the *jobs*, not the pipeline**: `list_pipeline_jobs(project_id=4, pipeline_id=<id>)`. The pipeline `status` sticks at `manual` while deploy stage jobs wait, so it is NOT a completion signal. Auto jobs are `lint` (~17 s), `unit_tests` (~150 s), `build_image` (~37 s) — ~3–4 min total. Space polls with `sleep 25` commands. Do NOT use `wait_for_pipeline`/`wait_for_job` (MCP calls hard-time out at 60 s), and do NOT `sleep 30` (exceeds the ~30 s foreground command cap).
    - If any auto job is `failed`, fetch its trace via `get_pipeline_job_output(project_id=4, job_id)` and diagnose.
-5. **Verify everything**: Check the dev UI responds: `curl -s -o /dev/null -w '%{http_code}' http://192.168.86.38:8787/` → expect 200 or 302.
+   - All jobs in the test, build, and e2e test stages are auto jobs
+   - The entire process can take 5 minutes or more as all jobs run.  Do not consider the task finished prematurely. 
+5. **Verify pipeline again**: If the pipeline is in failed status, end here and consider this task failed.
+6. **Verify everything**: Check the dev UI responds: `curl -s -o /dev/null -w '%{http_code}' http://192.168.86.38:8787/` → expect 200 or 302.
 7. **Update memory bank**: After successful pipeline, update relevant `memory-bank/` files.
 
 
