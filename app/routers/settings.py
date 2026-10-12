@@ -9,7 +9,6 @@ import json
 from app.database import get_db
 from app.services.scanner import (
     get_local_interfaces,
-    get_default_subnets,
 )
 import ipaddress
 
