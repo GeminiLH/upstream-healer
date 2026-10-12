@@ -20,7 +20,7 @@ When asked to "commit, push, and verify the pipeline", follow these steps in ord
    - If any auto job is `failed`, fetch its trace via `get_pipeline_job_output(project_id=4, job_id)` and diagnose.
    - All jobs in the test, build, and e2e test stages are auto jobs
    - The entire process can take 5 minutes or more as all jobs run.  Do not consider the task finished prematurely. 
-5. **Verify pipeline again**: If the pipeline is in failed status, end here and consider this task failed.
+5. **Verify pipeline again**: If the pipeline is in failed status, end here and consider this verification as failed.
 6. **Verify everything**: Check the dev UI responds: `curl -s -o /dev/null -w '%{http_code}' http://192.168.86.38:8787/` → expect 200 or 302.
 7. **Update memory bank**: After successful pipeline, update relevant `memory-bank/` files.
 
@@ -53,7 +53,7 @@ build_image:
   timeout: 300          # 5 minutes - Docker image build time
   retry_count: 2        # Retry failed builds up to 2 times
 
-deploy_dev:
+buils_dev:
   timeout: 420          # 7 minutes - Full deployment including validation
   wait_for_app_ready: 30 # Wait up to 30 seconds for app to respond on port 8787
   retry_count: 1        # Retry failed deployments once
