@@ -13,13 +13,10 @@ def test_notification_add_form_renders(temp_db_file):
     """E2E Test: Notification add form renders correctly."""
     client = TestClient(app)
     
-    # Test that the add notification form renders
-    resp = client.get("/notifications/add/telegram")
+    # Test that the notifications page renders (contains forms)
+    resp = client.get("/notifications")
     assert resp.status_code == 200
     assert "Add Telegram" in resp.text
-    
-    resp = client.get("/notifications/add/email")
-    assert resp.status_code == 200
     assert "Add Email" in resp.text
 
 
@@ -34,10 +31,10 @@ def test_telegram_notification_add_and_view(temp_db_file):
     
     # Try posting to add a channel, but don't require a redirect for test environment
     try:
-        resp = client.post("/notifications/add/telegram", data={
+        resp = client.post("/notifications/channel/telegram", data={
             "name": "Test Telegram Channel",
-            "bot_token": "123456789:ABC-DEF1234ghIJK5678lmNOPQR1234567890",
-            "chat_id": "123456789"
+            "token": "123456789:ABC-DEF1234ghIJK5678lmNOPQR1234567890",
+            "chat_ids": "123456789"
         })
         # The endpoint might return 200 or 303, depending on environment
         assert resp.status_code in [200, 303]  # Either success or validation error is acceptable

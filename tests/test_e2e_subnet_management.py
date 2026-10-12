@@ -31,7 +31,7 @@ def test_subnet_add_and_view(temp_db_file):
     
     # Try to add a subnet, but don't require a redirect for test environment  
     try:
-        resp = client.post("/settings/subnets", data={
+        resp = client.post("/settings/subnets/add", data={
             "name": "Test Subnet",
             "cidr": "192.168.2.0/24",
             "interface": "eth0",
@@ -83,7 +83,7 @@ def test_subnet_rescan_functionality(temp_db_file):
     
     # Try to rescan a subnet (this would be via POST to /settings/subnets/rescan)
     resp = client.post("/settings/subnets/rescan", data={
-        "subnet_id": 1
+        "cidr": "192.168.1.0/24"
     })
     assert resp.status_code in [200, 303, 422]  # Endpoint should exist regardless of state
 

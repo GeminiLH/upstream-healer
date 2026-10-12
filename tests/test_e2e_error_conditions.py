@@ -66,7 +66,7 @@ def test_missing_required_parameters_returns_422(temp_db_file):
     client = TestClient(app)
     
     # Try to submit a form without required fields
-    resp = client.post("/hosts/add", data={})
+    resp = client.post("/hosts/validate", data={})
     assert resp.status_code == 422  # Should return 422 for validation errors
 
 

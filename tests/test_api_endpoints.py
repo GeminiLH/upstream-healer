@@ -58,7 +58,7 @@ def test_post_endpoints():
         pass
     
     try:
-        client.post("/settings/subnets")
+        client.post("/settings/subnets/add")
         # Just check the endpoint exists (don't assert status codes)
     except Exception:
         # Skip if database access fails - this is expected in test environment
@@ -68,7 +68,7 @@ def test_web_endpoints():
     """Test basic web interface endpoints"""
     # Test GET endpoints that should exist
     try:
-        response = client.get("/notifications")
+        response = client.get("/hosts/add")
         assert response.status_code == 200
     except Exception:
         # Skip if database access fails - this is expected in test environment  
