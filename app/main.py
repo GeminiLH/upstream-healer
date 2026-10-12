@@ -17,6 +17,7 @@ from pydantic import BaseModel
 # Local imports
 from app.database import init_db, get_db
 from app.helpers import find_ip_by_mac, NPMClient, list_subnets, run_scan, check_host_reachable  # noqa: F401
+from app.services.scanner import run_port_scan_incremental, get_local_interfaces, validate_host_record  # noqa: F401
 from app.services.monitor import monitor
 from app.routers import dashboard, subnets, scan, notifications, hosts, settings
 
