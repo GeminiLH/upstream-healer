@@ -2,13 +2,16 @@
 Settings and health routes for Upstream Healer.
 """
 import aiosqlite
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
+import json
 
 from app.database import get_db
 from app.services.scanner import (
     get_local_interfaces,
+    get_default_subnets,
 )
+import ipaddress
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -20,8 +23,15 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get
     """
     async with db.execute("SELECT key, value FROM settings") as cur:
         conf = {r["key"]: r["value"] for r in await cur.fetchall()}
+    
+    # Get suppressed subnets from settings
+    async with db.execute("SELECT value FROM settings WHERE key = 'suppressed_subnets'") as cur:
+        suppressed_row = await cur.fetchone()
+        suppressed_subnets = json.loads(suppressed_row[0]) if suppressed_row and suppressed_row[0] else []
+    
     async with db.execute("SELECT id, name, cidr, interface, enabled FROM subnets ORDER BY name") as cur:
         subnets = [dict(r) for r in await cur.fetchall()]
+    
     # Auto-detected local /24s are not DB rows — merge them in (manual rows win)
     detected = get_local_interfaces()
     for iface in detected:
@@ -43,6 +53,7 @@ async def settings_page(request: Request, db: aiosqlite.Connection = Depends(get
         {
             "conf": conf,
             "subnets": subnets,
+            "suppressed_subnets": suppressed_subnets,
         },
     )
 
@@ -97,3 +108,137 @@ async def logs_page(request: Request):
         {
         },
     )
+
+
+# ───────────────────────────── Subnet CRUD Operations ─────────────────────────────
+
+
+@router.post("/subnets", response_class=RedirectResponse)
+async def add_subnet(
+    name: str = Form(...),
+    cidr: str = Form(...),
+    interface: str = Form(""),
+    enabled: str = Form("off"),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """
+    Add a new subnet.
+    """
+    # Validate CIDR
+    try:
+        ipaddress.ip_network(cidr)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid subnet CIDR")
+    
+    # Reject /32 (single host) CIDRs
+    try:
+        ip_network = ipaddress.ip_network(cidr)
+        if ip_network.prefixlen == 32:
+            raise HTTPException(status_code=400, detail="A /32 (single link/host) can't be swept")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid subnet CIDR")
+
+    # Handle 'auto' interface - treat as blank
+    if interface == "auto":
+        interface = ""
+    
+    # Validate interface against local interfaces if not blank
+    if interface:
+        local_interfaces = get_local_interfaces()
+        if not any(iface["name"] == interface for iface in local_interfaces):
+            available_interfaces = [iface["name"] for iface in local_interfaces]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Interface '{interface}' not found on this host. Available interfaces: {', '.join(available_interfaces)}"
+            )
+
+    # Insert into database
+    await db.execute(
+        "INSERT INTO subnets (name, cidr, interface, enabled) VALUES (?, ?, ?, ?)",
+        (name, cidr, interface if interface else None, 1 if enabled == "on" else 0)
+    )
+    await db.commit()
+    
+    # Redirect back to settings page
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/subnets/rescan", response_class=RedirectResponse)
+async def rescan_subnet(
+    cidr: str = Form(...),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """
+    Rescan a specific subnet CIDR.
+    """
+    # Validate CIDR
+    try:
+        ipaddress.ip_network(cidr)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid subnet CIDR")
+    
+    # Get current suppressed subnets
+    async with db.execute("SELECT value FROM settings WHERE key = 'suppressed_subnets'") as cur:
+        suppressed_row = await cur.fetchone()
+        suppressed_subnets = json.loads(suppressed_row[0]) if suppressed_row and suppressed_row[0] else []
+    
+    # Remove from suppressed list if present
+    if cidr in suppressed_subnets:
+        suppressed_subnets.remove(cidr)
+        await db.execute(
+            "UPDATE settings SET value = ? WHERE key = 'suppressed_subnets'",
+            (json.dumps(suppressed_subnets),)
+        )
+        await db.commit()
+    
+    # Redirect back to settings page
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/subnets/suppress", response_class=RedirectResponse)
+async def suppress_subnet(
+    cidr: str = Form(...),
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """
+    Suppress a subnet (add to suppressed list).
+    """
+    # Validate CIDR
+    try:
+        ipaddress.ip_network(cidr)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid subnet CIDR")
+    
+    # Get current suppressed subnets
+    async with db.execute("SELECT value FROM settings WHERE key = 'suppressed_subnets'") as cur:
+        suppressed_row = await cur.fetchone()
+        suppressed_subnets = json.loads(suppressed_row[0]) if suppressed_row and suppressed_row[0] else []
+    
+    # Add to suppressed list if not already present
+    if cidr not in suppressed_subnets:
+        suppressed_subnets.append(cidr)
+        await db.execute(
+            "UPDATE settings SET value = ? WHERE key = 'suppressed_subnets'",
+            (json.dumps(suppressed_subnets),)
+        )
+        await db.commit()
+    
+    # Redirect back to settings page
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/subnets/rescan-all", response_class=RedirectResponse)
+async def rescan_all_subnets(
+    db: aiosqlite.Connection = Depends(get_db)
+):
+    """
+    Rescan all networks (clear suppressed subnets).
+    """
+    # Clear suppressed subnets
+    await db.execute(
+        "UPDATE settings SET value = '[]' WHERE key = 'suppressed_subnets'"
+    )
+    await db.commit()
+    
+    # Redirect back to settings page
+    return RedirectResponse("/settings", status_code=303)
